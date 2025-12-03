@@ -1,0 +1,1 @@
+git+https://github.com/automl/ifBO.git@421ff96986c8efbe92bd2ab64a4bab49b0dd46fb#egg=ifBO

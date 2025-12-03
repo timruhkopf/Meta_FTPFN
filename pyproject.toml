@@ -1,0 +1,9 @@
+[project]
+name = "meta-ftpfn"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+	"ifBO @ git+https://github.com/automl/ifBO.git@421ff96986c8efbe92bd2ab64a4bab49b0dd46fb#egg=ifBO",
+]
