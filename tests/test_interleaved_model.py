@@ -53,7 +53,7 @@ def optimizer(setup_model):
     optim = torch.optim.Adam(model.trainable_parameters(), lr=1e-3)
     return optim
 
-def test_gradients_only_interleaved(setup_model, optimizer):
+def test_gradients_only_interleaved(setup_model, optimizer, ft_pfn):
     """Verify gradients flow ONLY to interleaved layers"""
     model, d_model = setup_model
     
