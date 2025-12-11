@@ -84,7 +84,8 @@ def dummy_ft_batch(T=32, B=8, D=5, Tsplit=25):
     returns:
         x: tuple of (features, targets)
         Tsplit: int, split index between train and test
-    """
+    """ 
+    torch.manual_seed(42)
 
     assert D >= 1 and D <= 11  # 1 int + up to 10 float features
 
