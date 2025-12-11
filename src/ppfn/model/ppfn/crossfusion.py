@@ -4,34 +4,28 @@ from torch import nn
 from torch.nn.modules.transformer import MultiheadAttention
 
 
-class Connector:
+class Connector(nn.Module):
     """
     Simple connector module to adapt dimensions between frozen model and interleaved layers.
     E.g., linear projection to match d_model sizes.
     """
 
-    def __init__(self, is_first=False, dual_path=True):
+    def __init__(
+        self,
+        is_first=False,
+    ):
+        super().__init__()
         self.is_first = is_first
-        self.dual_path = dual_path
-
-        self._train = True
-
-    def train(self, mode: bool = True):
-        self._train = mode
-        return self
-
-    def eval(self):
-        self._train = False
-        return self
 
     def create_target_in_batch(self, x: torch.Tensor) -> torch.Tensor:
         """Create a target context within the batch by shifting inputs."""
 
-        if self._train:
+        if self.training:
             return x.roll(1, dims=1)  # shift by one along sequence dimension
         else:
+            T, B, D = x.shape
             # during eval, the first example is the target task, all other tasks in the batch need to be paired with it
-            return x[0:1].expand(x.shape[0], -1, -1)
+            return x[:, :1, :].repeat(1, B, 1)
 
     def forward_in(self, x, single_eval_pos=None):
         """
@@ -137,7 +131,7 @@ class CrossFusion(nn.Module):
     def __init__(self, d_model, num_heads, dropout=0.0, is_first=False):
         super().__init__()
 
-        self.connector = Connector(is_first=is_first, dual_path=True)
+        self.connector = Connector(is_first=is_first)
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
         self.cross_test = MultiheadAttention(d_model, num_heads, dropout)
         self.norm = nn.LayerNorm(d_model)  # optional but recommended
@@ -194,4 +188,3 @@ class CrossFusion(nn.Module):
         return self.connector.forward_out(
             train_old_x, test_old_x, train_new_x, test_new_x
         )
-
