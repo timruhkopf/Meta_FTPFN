@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 import torch
 import torch.nn as nn
-from ppfn.model.ppfn.ppfn import InterleavedModel
+from ppfn.model.mymodel.interleavedmodel import InterleavedModel
 
 
 class FrozenEncoder(nn.Module):

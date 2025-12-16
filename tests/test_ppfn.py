@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from ppfn.model.ppfn.ppfn import PPFN
-from ppfn.model.ppfn.crossfusion import CrossFusion
+from ppfn.model.mymodel.interleavedmodel import PPFN
+from ppfn.model.mymodel.crossfusion import CrossFusion
 
 
 def test_PPFN_CrossFusion_single_interleaved(ft_pfn, dummy_ft_batch):
