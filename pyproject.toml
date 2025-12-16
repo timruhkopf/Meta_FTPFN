@@ -5,5 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-	"ifBO @ git+https://github.com/automl/ifBO.git@421ff96986c8efbe92bd2ab64a4bab49b0dd46fb#egg=ifBO",
+	"dotenv>=0.9.9",
+	"gpytorch>=1.14.3",
+	"grakel>=0.1.10",
+	"ifbo @ git+https://github.com/automl/ifBO.git@421ff96986c8efbe92bd2ab64a4bab49b0dd46fb#egg=ifBO",
+	"matplotlib>=3.10.8",
+	"nltk>=3.9.2",
+	"numpy==1.26.4",
+	"pandas>=2.3.3",
+	"path>=17.1.1",
+	"portalocker>=3.2.0",
+	"psutil>=7.1.3",
+	"pyyaml>=6.0.3",
+	"scipy>=1.15.3",
+	"submitit>=1.5.3",
+	"tensorboard>=2.20.0",
+	"torch>=2.9.1",
 ]

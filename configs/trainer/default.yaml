@@ -1,0 +1,29 @@
+# Default trainer configuration
+epochs: 10
+trainer_class:
+  _target_: ppfn.trainer.PPFNTrainer
+  use_amp: false
+  grad_clip: 1.0
+  aggregate_k_gradients: 1
+  verbose: true
+  callbacks:
+    - _target_: ppfn.trainer.callbacks.MLflowCallback
+      log_frequency: 10
+    - _target_: ppfn.trainer.callbacks.PrintCallback
+  val_frequency: 5
+  experiment_name: ${experiment_name}
+
+# Optimizer configuration - will be instantiated with model as first argument
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+# Scheduler configuration - will be instantiated with optimizer as first argument
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  _partial_: true
+  T_max: ${epochs}
+  eta_min: 1e-6

@@ -1,0 +1,8 @@
+# Paired extrapolation dataset
+type: "paired_extrapolation"
+batch_size: 4
+num_features: 5
+support_points: 20
+gap: [0.4, 0.6]
+shuffle: true
+num_workers: 0

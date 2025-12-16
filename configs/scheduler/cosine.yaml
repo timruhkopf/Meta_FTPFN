@@ -1,0 +1,3 @@
+# Cosine annealing scheduler
+type: "cosine"
+eta_min: 1e-6

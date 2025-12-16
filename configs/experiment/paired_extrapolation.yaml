@@ -1,0 +1,21 @@
+# @package _global_
+# Experiment: Full training on paired extrapolation data
+defaults:
+  - override /model: multi_layer
+  - override /dataset: paired_extrapolation
+  - override /trainer: full
+
+experiment_name: "ppfn_paired_extrapolation"
+
+dataset:
+  batch_size: 8
+  num_features: 10
+  support_points: 50
+  gap: [0.3, 0.7]
+
+trainer:
+  epochs: 100
+  use_amp: true
+  grad_clip: 1.0
+  val_frequency: 10
+  verbose: true

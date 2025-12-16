@@ -1,0 +1,10 @@
+defaults:
+  - override /trainer/trainer_class: default
+
+
+epochs: 100
+trainer_class:
+  use_amp: true
+  val_frequency: 10
+
+

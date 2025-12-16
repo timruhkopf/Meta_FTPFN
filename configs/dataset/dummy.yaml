@@ -1,0 +1,8 @@
+# Dummy dataset for testing
+type: "dummy"
+batch_size: 2
+num_features: 5
+seq_len: 32
+num_samples: 100
+shuffle: true
+num_workers: 0

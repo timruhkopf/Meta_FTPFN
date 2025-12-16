@@ -238,3 +238,4 @@ external/
 models/
 .vscode/
 resources/
+outputs/

@@ -1,0 +1,14 @@
+# Default configuration for PPFN training
+# Override with specific experiments via configs/experiment/
+
+defaults:
+  - model: default
+  - dataset: paired_extrapolation
+  - optimizer: adamw
+  - scheduler: cosine
+  - trainer: default
+  - _self_
+
+device: "cuda"
+experiment_name: "ppfn_training"
+run_name: null

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from torch.nn.modules.transformer import MultiheadAttention
+from torch.nn import MultiheadAttention
 
 
 class Connector(nn.Module):
