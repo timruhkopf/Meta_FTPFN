@@ -1,14 +1,15 @@
 import pytest
 
-def test_ft_pfn_initialization(ft_pfn):
+def test_ft_pfn_initialization(get_ft_pfn):
     """Test if the ft_pfn fixture initializes correctly"""
+    ft_pfn = get_ft_pfn()
     assert ft_pfn is not None
 
-def test_ft_pfn_forward_pass(ft_pfn, dummy_ft_batch):
+def test_ft_pfn_forward_pass(get_ft_pfn, ft_batch_factory):
     """Test a forward pass through the ft_pfn model"""
-    x, T_split = dummy_ft_batch
+    (x, y), T_split = ft_batch_factory(T=32, B=9, D=5, Tsplit=25)
 
-    pfn, _ = ft_pfn
-    output = pfn(x, single_eval_pos=T_split)
+    pfn = get_ft_pfn()
+    output = pfn((x, y), single_eval_pos=T_split)
     assert output is not None
-    assert output.shape[0] == x[0].shape[0] - T_split
+    assert output.shape[0] == x.shape[0] - T_split

@@ -1,118 +1,112 @@
-# tests/test_interleaved_model.py
-from copy import deepcopy
 import pytest
 import torch
 import torch.nn as nn
-from ppfn.model.mymodel.interleavedmodel import InterleavedModel
+from ppfn.model.mymodel.cross_fusion import CrossFusion
 
+from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
 
-class FrozenEncoder(nn.Module):
-    """Dummy Model to simulate frozen layers and inject new layers"""
-
-    def __init__(self, d_model=64, n_layers=3):
-        super().__init__()
-        self.layers = nn.ModuleList(
-            [nn.Linear(d_model, d_model) for _ in range(n_layers)]
-        )
-
-    def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return x
-
-
-class TinyMLP(nn.Module):
-    """Interleaving linear layers with residual connection"""
-
-    def __init__(self, d_model):
-        super().__init__()
-        self.net = nn.Linear(d_model, d_model)
-
-    def forward(self, inp):
-        x = inp[0]
-        return self.net(x) + x
 
 
 @pytest.fixture
-def d_model():
-    """Dimension of model embeddings"""
-    return 64
+def model_wrapped(get_ft_pfn):
+    """
+    Fixture that wraps the real frozen model with CrossFusion layers.
+    Note: 'ft_pfn' is assumed to be provided by your existing test suite.
+    """
+    ft_pfn = get_ft_pfn()
+    interleaved_layers = {
+        "transformer_encoder.layers.0.linear1": CrossFusion(d_model=512, num_heads=8),
+        "transformer_encoder.layers.2.linear1": CrossFusion(d_model=512, num_heads=8),
+    }
+    return HierarchicalPFN(frozen_model=ft_pfn, interleaved_layers=interleaved_layers)
 
-
-@pytest.fixture
-def raw_model(d_model):
-    """Setup raw frozen model without interleaving"""
-    torch.manual_seed(42)
-    model = FrozenEncoder(d_model)
-    return model, d_model
-
-
-@pytest.fixture
-def setup_model(d_model):
-    """Setup interleaved model with one trainable layer"""
-    torch.manual_seed(42)
-    frozen = FrozenEncoder(d_model)
-
-    model = InterleavedModel(frozen, interleaved_layers={"layers.1": TinyMLP(d_model)})
-    return model, d_model
-
-
-@pytest.fixture
-def optimizer(setup_model):
-    """Setup optimizer for trainable parameters"""
-    model, _ = setup_model
-    optim = torch.optim.Adam(model.trainable_parameters(), lr=1e-3)
-    return optim
-
-
-@pytest.fixture
-def dummy_input(d_model, batch_size=10, seq_len=32):
-    """Generate dummy input tensor"""
-    torch.manual_seed(42)
-    return torch.randn(seq_len, batch_size, d_model)
-
-
-
-def test_different_outputs(dummy_input, raw_model):
-    """Verify outputs differ correctly"""
+def test_integration_constancy_eval(model_wrapped,get_ft_pfn, ft_batch_factory):
+    """
+    Checks if Stream A and B survive the ENTIRE HierarchicalPFN pass 
+    completely unchanged during evaluation.
+    """
     
+    (x, y), single_eval_pos = ft_batch_factory(T=32, B=9, D=5, Tsplit=25)
+    # In eval mode: B=9 -> R = (9-1)//2 = 4
+    # Stream A: [:, 0, :]
+    # Stream B: [:, 1:5, :]
+    # Stream C: [:, 5:, :]
+    ft_pfn = get_ft_pfn()
+    ft_pfn.eval()
+    with torch.no_grad():
+        frozen_out = ft_pfn((x, y), single_eval_pos=single_eval_pos)
+    
+    model_wrapped.eval()
+    with torch.no_grad():
 
-    frozen_out = raw_model[0](dummy_input)
+        
+        # Run full Hierarchical PFN pass
+        # The output of the PFN is usually a tensor (logits or embeddings)
+        output = model_wrapped((x, y), single_eval_pos=single_eval_pos)
+        
+        # Check if output is a tuple or tensor depending on your PFN head
+        out_x = output[0] if isinstance(output, tuple) else output
 
-    model = InterleavedModel(raw_model[0], interleaved_layers={"layers.1": TinyMLP(raw_model[1])})
-    interleaved_out = model(dummy_input)
+    # CRITICAL TEST: 
+    # Even after many layers of PFN, the first 1+R indices of the batch 
+    # should be identical to the input because CrossFusion shields them.
+    R = (x.shape[1] - 1) // 2
+    
+    # Check Stream A
+    torch.testing.assert_close(out_x[:, :1, :], frozen_out[:, :1, :], 
+                               msg="Target Task (Stream A) was corrupted by the PFN pass.")
+    
+    # Check Stream B
+    torch.testing.assert_close(out_x[:, 1:R+1, :], frozen_out[:, 1:R+1, :], 
+                               msg="Related Marginals (Stream B) were corrupted by the PFN pass.")
+    
+    # Check Stream C (Should be different)
+    assert not torch.allclose(out_x[:, R+1:, :], frozen_out[:, R+1:, :]), \
+        "Workspace (Stream C) was not updated by the PFN pass."
 
-    assert not torch.equal(frozen_out, interleaved_out), (
-        "outputs are the same; interleaving failed!"
-    )
+def test_integration_constancy_train(model_wrapped, get_ft_pfn, ft_batch_factory):
+    """Checks for constancy in 3R training mode."""
+    (x, y), single_eval_pos = ft_batch_factory(T=32, B=9, D=5, Tsplit=25)
+    # Batch is 9, so R=3 for training [A:3, B:3, C:3]
+    R = x.shape[1] // 3
 
+    ft_pfn = get_ft_pfn()
+    ft_pfn.train()
+    output_frozen = ft_pfn((x, y), single_eval_pos=single_eval_pos)
+    
+    model_wrapped.train()
+   
+    
+    output = model_wrapped((x, y), single_eval_pos=single_eval_pos)
+    out_x = output[0] if isinstance(output, tuple) else output
 
+    # Check Streams A and B (indices 0 to 2*R)
+    torch.testing.assert_close(out_x[:, :2*R, :], output_frozen[:, :2*R, :],
+                               msg="Streams A or B corrupted during training forward pass.")
 
-def test_gradients_only_interleaved(setup_model, optimizer, ft_pfn, dummy_input):
-    """Verify gradients flow ONLY to interleaved layers"""
-    model, d_model = setup_model
+def test_single_eval_pos_reset(model_wrapped, ft_batch_factory):
+    """Ensures that single_eval_pos is cleaned up to prevent side effects."""
+    batch_data, single_eval_pos = ft_batch_factory(T=32, B=9, D=5, Tsplit=25)
+    
+    model_wrapped.eval()
+    _ = model_wrapped(batch_data, single_eval_pos=single_eval_pos)
+    
+    assert model_wrapped.single_eval_pos is None
+    for layer in model_wrapped.interleaved_layers.values():
+        assert layer.single_eval_pos is None
 
-    state = deepcopy(model.state_dict())
+def test_pfn_param_freezing(model_wrapped):
+    """Verify that only CrossFusion layers have gradients."""
 
-    optimizer.zero_grad()
+    # Check an arbitrary frozen weight
+    intercepted = model_wrapped.interleaved_layers.keys()
+    for name, param in model_wrapped.frozen_model.named_parameters():
+        if any(name.startswith(n) for n in intercepted): 
+            continue
 
-    # Forward + backward
-    out = model(dummy_input)
-    loss = out.sum()
-    loss.backward()
-
-    optimizer.step()
-    for name, param in model.named_parameters():
-        if "interleaved_layers" in name:
-            # Check that interleaved layers updated
-            assert not torch.equal(state[name], model.state_dict()[name]), (
-                f"Interleaved layer {name} did not update!"
-            )
-        else:
-            # Check frozen layers have no gradients
-            assert torch.equal(state[name], model.state_dict()[name]), (
-                f"Frozen layer {name} updated!"
-            )
-
-
-# Run with: pytest tests/test_interleaved_model.py -v
+        assert not param.requires_grad, f"Parameter {name} was not frozen!"
+    
+    # Check CrossFusion weight
+    for layer in model_wrapped.interleaved_layers.values():
+        for param in layer.parameters():
+            assert param.requires_grad, "CrossFusion layer was accidentally frozen!"

@@ -77,53 +77,57 @@ def temp_dir():
 
 
 @pytest.fixture
-def dummy_ft_batch(T=32, B=8, D=5, Tsplit=25):
-    """
-    Create a dummy batch of input data.
-    
-    returns:
-        x: tuple of (features, targets)
-        Tsplit: int, split index between train and test
-    """ 
-    torch.manual_seed(42)
+def ft_batch_factory():
+    def dummy_ft_batch(T=32, B=8, D=5, Tsplit=25):
+        """
+        Create a dummy batch of input data.
+        
+        returns:
+            x: tuple of (features, targets)
+            Tsplit: int, split index between train and test
+        """ 
+        torch.manual_seed(42)
 
-    assert D >= 1 and D <= 11  # 1 int + up to 10 float features
+        assert D >= 1 and D <= 11  # 1 int + up to 10 float features
 
-    # First feature: integer in [0, 1000]
-    ints = torch.randint(low=0, high=1001, size=(T, B))  # [T, B, 1][web:1]
-    floats = torch.rand(T, B, D)  # [T, B, D-1][web:5]
+        # First feature: integer in [0, 1000]
+        ints = torch.randint(low=0, high=1001, size=(T, B))  # [T, B, 1][web:1]
+        floats = torch.rand(T, B, D)  # [T, B, D-1][web:5]
 
-    x_train = floats[:Tsplit]
-    x_test = floats[Tsplit:]
-    y_train = ints[:Tsplit].float()
+        x_train = floats[:Tsplit]
+        x_test = floats[Tsplit:]
+        y_train = ints[:Tsplit].float()
 
 
-    # this is the target format: 
-    x = (
-            torch.cat([x_train, x_test], dim=0),
-            y_train
-    )
-    # single_eval_pos=x_train.shape[0],
-    # src_key_padding_mask=None
+        # this is the target format: 
+        x = (
+                torch.cat([x_train, x_test], dim=0),
+                y_train
+        )
+        # single_eval_pos=x_train.shape[0],
+        # src_key_padding_mask=None
 
-    return x, Tsplit
+        return x, Tsplit
+    return dummy_ft_batch
 
 
 @pytest.fixture
-def ft_pfn():
-    import os
-    from pathlib import Path
+def get_ft_pfn():
+    def ft_pfn():
+        import os
+        from pathlib import Path
 
-    from dotenv import load_dotenv
-    from ifbo.surrogate import FTPFN
+        from dotenv import load_dotenv
+        from ifbo.surrogate import FTPFN
 
-    load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
+        load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
 
-    model_path = os.getenv("MODELDIR") + "pfn_ckpt"
-    frozen_model = FTPFN(
-        target_path=Path(model_path), version="0.0.1", device="cpu"
-    ).model
+        model_path = os.getenv("MODELDIR") + "pfn_ckpt"
+        frozen_model = FTPFN(
+            target_path=Path(model_path), version="0.0.1", device="cpu"
+        ).model
 
-    criterion = frozen_model.criterion
-    
-    return frozen_model, criterion
+        criterion = frozen_model.criterion
+        
+        return frozen_model
+    return ft_pfn

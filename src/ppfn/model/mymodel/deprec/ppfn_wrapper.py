@@ -7,7 +7,7 @@ from pathlib import Path
 import torch.nn as nn
 
 
-from ppfn.model.mymodel.interleavedmodel import InterleavedModel
+from ppfn.model.mymodel.deprec.interleavedmodel import InterleavedModel
 
 
 def load_frozen_model() -> nn.Module:
