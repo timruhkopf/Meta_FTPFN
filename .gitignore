@@ -239,3 +239,4 @@ models/
 .vscode/
 resources/
 outputs/
+bnn_prior_ecdf.npy
