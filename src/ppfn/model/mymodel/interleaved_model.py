@@ -99,7 +99,7 @@ class HierarchicalPFN(nn.Module):
 
 
 if __name__ == "__main__":
-    from ppfn.model.ppfn.ft_ppfn import load_frozen_model
+    from ppfn.model.mymodel.ft_ppfn import load_frozen_model
     from ppfn.model.mymodel.cross_fusion import CrossFusion
 
     frozen_model = load_frozen_model()
@@ -154,10 +154,10 @@ if __name__ == "__main__":
     y_related_eval = y[:, 1:]
 
     # concat in batch dimension
-    # target task, unconditional related tasks, conditional related tasks
+    # unconditional target task, unconditional related tasks, target tasks to be conditioned on the related tasks
     # q, k, v
-    x_eval = torch.cat([x_target_eval, x_related_eval, x_related_eval], dim=1)
-    y_eval = torch.cat([y_target_eval, y_related_eval, y_related_eval], dim=1)
+    x_eval = torch.cat([x_target_eval, x_related_eval, x_target_eval.expand(-1, n_related + 1, -1)], dim=1)
+    y_eval = torch.cat([y_target_eval, y_related_eval, y_target_eval.expand(-1, n_related + 1)], dim=1)
 
     model.eval()
     with torch.no_grad():

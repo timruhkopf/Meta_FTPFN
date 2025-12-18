@@ -1,13 +1,12 @@
 
 from typing import Mapping
 import os
-import sys
 from pathlib import Path
 
 import torch.nn as nn
 
 
-from ppfn.model.mymodel.deprec.interleavedmodel import InterleavedModel
+from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
 
 
 def load_frozen_model() -> nn.Module:
@@ -27,7 +26,7 @@ def load_frozen_model() -> nn.Module:
     return frozen_model
 
 
-class PPFN(InterleavedModel):
+class FT_PPFN(HierarchicalPFN):
     """
     Pre-conditioned Prior fitted Network (PPFN)
 
@@ -42,12 +41,10 @@ class PPFN(InterleavedModel):
         self,
         frozen_model: nn.Module,
         interleaved_layers: Mapping[str, nn.Module],
-        pre_hook: bool = True,
     ):
         super().__init__(
             frozen_model=frozen_model,
             interleaved_layers=interleaved_layers,
-            pre_hook=pre_hook,
         )
 
     @property
@@ -55,3 +52,8 @@ class PPFN(InterleavedModel):
         return self.frozen_model.criterion 
 
 
+if __name__ == "__main__":
+    # Example usage
+    frozen_model = load_frozen_model()
+    ppfn_model = FT_PPFN(frozen_model=frozen_model, interleaved_layers={})
+    print(ppfn_model)
