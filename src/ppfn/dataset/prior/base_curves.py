@@ -131,21 +131,16 @@ def weighted_curve_model(
 class ECDFParameterLinker:
     """Helper Class to map BNN outputs to parameter supports of the base curves / weights via PIT."""
     
-    _ecdf_samples = None  # Class-level storage for the sorted BNN outputs
+    y_samples = None  # Class-level storage for the sorted BNN outputs
     eps = None
 
-    @classmethod
-    def is_fitted(cls):
-        return cls._ecdf_samples is not None
 
-    @classmethod
-    def fit(cls, sorted_samples):
-        """Sets the global reference distribution for the PIT."""
-        cls._ecdf_samples = sorted_samples
-        cls.eps = 0.5 / len(sorted_samples)  # to avoid infinite samples
-
-    def __init__(self):
+    def __init__(self, BNNPrior):
         self.counter = 0  # To track which parameter we are processing
+
+        # To communicate this to any instantiation
+        ECDFParameterLinker.y_samples = BNNPrior.output_samples
+        ECDFParameterLinker.eps = 0.5 / len(BNNPrior.output_samples)
        
     def __call__(self, bnn_outputs, y0, ymax, n_curves=4):
         """
@@ -196,18 +191,15 @@ class ECDFParameterLinker:
         # transformations to the specific columns (via fancy indexing) at once, when we have the self.u_values ,
         # which is way more efficient!
 
-        if not self.is_fitted():
-            raise RuntimeError("ECDFParameterLinker must be fitted with ECDF samples before instantiation.")
-
-
+    
         # Transform raw values to [0, 1] quantiles using the ECDF
         # We search where the BNN outputs fall within the global distribution
-        indices = np.searchsorted(self._ecdf_samples, bnn_outputs, side="left")
+        indices = np.searchsorted(self.y_samples, bnn_outputs, side="left")
         
         # Store as quantiles (u-values)
         # Transpose to allow sequential access: self.u_values[counter] 
         # gives the u-vector for all items in the batch for that specific parameter index.
-        self.u_values = indices.T / len(self._ecdf_samples)
+        self.u_values = indices.T / len(self.y_samples)
 
         Y0 = y0
 

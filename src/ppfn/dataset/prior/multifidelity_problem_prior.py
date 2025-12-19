@@ -7,166 +7,52 @@ The functionallity and code are basically unchanged, except for more cleaner org
 into dedicated classes and methods. This will allow to make modifications more easily accessible.
 """
 
-from pathlib import Path
 import torch
 import math
 import numpy as np
 
-from pfns4hpo.encoders import Normalize
+from typing import Union
+
+
 
 from ppfn.dataset.prior.base_curves import ECDFParameterLinker
-from pfns4hpo.priors.hpo_lc_pfn_bopfn_broken import MLP as RelationPrior
+from ppfn.dataset.prior.bnn_prior import BNNPrior
 
 
 
 
-
-class MultiFidelityProblemPrior: # formerly known as DatasetPrior
-   
-    CACHE_FILE = Path('.') / "bnn_prior_ecdf.npy"
-   
-    def __init__(self, num_params, num_outputs, N_datasets = 10000, N_per_dataset = 1, force_recalculate=False):
-        """
-        Initialize the dataset prior for a Bayesian Neural Network (BNN).
-
-        Parameters:
-            num_params (int): The dimension of the hyperparameter space, representing the number of hyperparameters.
-            num_outputs (int): The dimension of the BNN's output, indicating how many curve and weight parameters are needed to specify the learning curve surrogate.
-
-            # ECDF approximation quality parameters: 
-            # i.e. the number of samples out of the BNN prior to approximate the priors' implied y CDF
-            N_datasets (int, optional): The number of datasets to generate. Defaults to 10000.
-            N_per_dataset (int, optional): The number of samples per dataset. Defaults to 1.
-
-        This constructor normalizes the BNN inputs using the formula (x - m) / sigma, where 'm' is the mean and 'sigma' is the standard deviation. 
-
-        It also checks if the output of the dataset prior is sorted and, if not, computes the BNN's output CDF approximation using the specified number of datasets and outputs.
-        """
-        self.num_features = num_params
+class MultiFidelityTask:
+    """Container for a single MLP-based synthetic problem."""
+    def __init__(self, num_inputs, num_outputs):
+        self.num_inputs = num_inputs
         self.num_outputs = num_outputs
-        self.num_inputs = num_params
+        self.y0 = None
+        self.ymax = None
 
-        # (x - m) / sigma to normalize BNN inputs
-        self.normalizer = Normalize(0.5, math.sqrt(1 / 12))
+        self.bnn_prior = BNNPrior(num_inputs, num_outputs)
 
-        # Initialize the ECDF link function for parameter mapping
-        self.linker = ECDFParameterLinker()
-        self._initialize_ecdf_linkfunction(N_datasets, N_per_dataset, num_outputs, force_recalculate=force_recalculate)
-        
-        
-        self.new_dataset()
+        self.model = self.bnn_prior.sample_mlp(num_inputs, num_outputs)
+        self.linker = ECDFParameterLinker(self.bnn_prior)
+       
 
-    def _initialize_ecdf_linkfunction(self, N_datasets, N_per_dataset, num_outputs, force_recalculate=False):
-        # Handle ECDF Initialization
-        if not ECDFParameterLinker.is_fitted() or force_recalculate:
-            if self.CACHE_FILE.exists() and not force_recalculate:
-                print(f"Loading cached CDF from {self.CACHE_FILE}...")
-                ECDFParameterLinker.fit(np.load(self.CACHE_FILE))
-            else:
-                print("Calculating BNN output CDF approximation...")
-                raw_samples = self._generate_ecdf_samples(N_datasets, N_per_dataset, num_outputs)
-                sorted_samples = np.sort(raw_samples)
-                
-                ECDFParameterLinker.fit(sorted_samples)
-                np.save(self.CACHE_FILE, sorted_samples)
-                print(f"CDF approximation saved to {self.CACHE_FILE}")
-
-
-    def _generate_ecdf_samples(self, N_datasets, N_per_dataset, num_outputs):
+    def __call__(self, hyperparams, fidelities):
         """
-        Generate and cache a ECDF on the BNN output over the BNN prior.
-
-        This method generates samples from a Bayesian Neural Network (BNN) to approximate 
-        the Empirical Cumulative Distribution Function (ECDF) of its output distribution. The samples 
-        are collected across multiple datasets and stored globally for subsequent use.
-
-        It is done once during init of training and serves for any subsequent BNN instantiation as y-quantile function.
+        Evaluate the learning curve at given fidelities for the provided hyperparameter configurations.
+        # just a convenience method
 
         Args:
-            N_datasets (int): Number of datasets to sample from.
-            N_per_dataset (int): Number of samples to generate per dataset.
-            num_outputs (int): Dimensionality of the BNN output space.
+            hyperparams (torch.Tensor): Hyperparameter configurations of shape (num_configs, num_params).
+            fidelities (torch.Tensor): Fidelity levels at which to evaluate the curves of shape (num_fidelities,).
 
-        Returns:
-            None: The method stores the sorted output samples in the class variable 
-            `DatasetPrior.output_sorted` for later retrieval.
-
-        Notes:
-            - This method is called only once to initialize the CDF approximation cache.
-            - A total of N_datasets times N_per_dataset samples are generated (default 1M).
-            - Each sample is generated by:
-                1. Sampling random uniform input vectors.
-                2. Generating a new dataset via `self.new_dataset()`.
-                3. Computing BNN output via `self._sample_curve_params()`.
-            - The outputs are flattened and sorted to create an empirical CDF.
-            - Progress is printed every 100 datasets.
-            - The cached CDF is used for quantile estimation and prior sampling.
         """
-        output = torch.zeros((N_datasets, N_per_dataset, num_outputs))
-        inputs = torch.from_numpy(
-            np.random.uniform(size=(N_datasets, N_per_dataset, self.num_inputs))
-        ).to(torch.float32)
-        
-        with torch.no_grad():
-            for i in range(N_datasets):
-                if i % 100 == 99: print(f"{i+1}/{N_datasets}")
-                self.new_dataset() # Sample a new BNN state # notice, how this depends on mlp, y0, ymax
-                for j in range(N_per_dataset):
-                    output[i, j, :] = self._map_hp_to_unbounded_curve_params(inputs[i, j])
-                    
-        return torch.flatten(output).numpy()
-
-    # (Sample surrogate model) ------------------
-    def new_dataset(self):
-        """
-        Reinitialize dataset specific random variables: 
-
-        1. Sample a new BNN surrogate model that defines the mapping from hyperparameters to curve parameters.
-        2. Sample initial performance y0 and maximum performance ymax for the curves in this dataset.
-        
-        :param self: Description
-        """
-     
-        # reinit the parameters of the BNN
-        self.model = self._sample_mlp_surrogate()
-
-        # sample the performance range
-        self._sample_surrogate_range()
-
-    def _sample_surrogate_range(self):
-        # the dataset performance range
-        # initial performance (after init) & max performance
-        u1 = np.random.uniform()
-        u2 = np.random.uniform()
-        self.y0 = min(u1, u2)
-        self.ymax = max(u1, u2) if np.random.uniform() < 0.25 else 1.0
-
-    def _sample_mlp_surrogate(self):
-        return RelationPrior(self.num_inputs, self.num_outputs).to("cpu")
-
-    # (query the surrogate model for an hp's curve parameters) ------------------
-    # FIXME: these two methods should be refactored into one method!
-    def get_unbounded_curve_params(self, hyperparameters, noise=True):
-        # add aleatoric noise & bias
-        hyperparameters = torch.from_numpy(hyperparameters)
-        output = self._map_hp_to_unbounded_curve_params(hyperparameters)
-        return output.numpy()
-    
-    def _map_hp_to_unbounded_curve_params(self, hyperparams):
-        with torch.no_grad():
-            # normalize the inputs
-            hyperparams = self.normalizer(hyperparams)
-            # reweight the inputs for parameter importance
-            # hyperparams = hyperparams*self.input_weights  # TODO: consider adding this again
-            # apply the model produce the output
-            output = self.model(hyperparams.float())
-            # rescale and shift outputs to account for parameter sensitivity
-            # This output scaling causes issues with
-            # output = output * self.output_sensitivity + self.output_offset
-            return output
+        curve_model = self.get_marginal_curve(hyperparams)
+        results = []
+        for t in fidelities:
+            results.append(curve_model(t))
+        return torch.stack(results, dim=1)  # Shape: (num_configs, num_fidelities)
     
 
-    def curve_factory(self, configs, noise=True):
+    def get_marginal_curve(self, hyperparams, noise=True):
         """
         Maps hyperparameter configurations to functional learning curve evaluators.
 
@@ -177,16 +63,36 @@ class MultiFidelityProblemPrior: # formerly known as DatasetPrior
         Returns:
             Callable: specific_curve_model(t, config_idx) 
                 -> clipped [0, 1] performance prediction at fidelity t.
-        """
-
-        
+        """        
         # Get the unbounded BNN outputs [-inf, +inf]
-        bnn_outputs = self.get_unbounded_curve_params(configs, noise=noise)
+        with torch.no_grad():
+            bnn_outputs = self.model(hyperparams)  # unbounded Bnn outputs are need to be bounded to the parameter ranges (and looked up in the y ecdf)
+  
         specific_curve_model = self.linker.curve_factory(
-            bnn_outputs, self.y0, self.ymax, noise=noise
+            bnn_outputs.numpy(), self.y0, self.ymax, noise=noise
         )
 
        
         return specific_curve_model
+
+                
+    def sample_task(self):
+        """
+        Reinitialize dataset specific random variables: 
+
+        1. Sample a new BNN surrogate model that defines the mapping from hyperparameters to curve parameters.
+        2. Sample initial performance y0 and maximum performance ymax for the curves in this dataset.
+        
+        :param self: Description
+        """
+     
+        # reinit the parameters of the BNN
+        self.model = self.bnn_prior.sample_mlp(self.num_inputs, self.num_outputs)
+
+        # sample the performance range
+        u1 = np.random.uniform()
+        u2 = np.random.uniform()
+        self.y0 = min(u1, u2)
+        self.ymax = max(u1, u2) if np.random.uniform() < 0.25 else 1.0
 
 

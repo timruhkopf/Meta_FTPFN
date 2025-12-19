@@ -1,3 +1,8 @@
+"""
+This Script is the original FT-PFN get_batch function, but adapted to the new structure.
+"""
+
+
 import torch
 import numpy as np
 
@@ -6,9 +11,9 @@ from pfns4hpo.priors.utils import Batch
 
 from ppfn.dataset.prior.other import DimensionPrior, FidelityPrior
 from ppfn.dataset.prior.allocation_prior import AllocationPrior
-from ppfn.dataset.prior.multifidelity_problem_prior import MultiFidelityProblemPrior
+from ppfn.dataset.prior.multifidelity_problem_prior import MultiFidelityTask
 
-# function producing batches for PFN training
+
 @torch.no_grad()
 def get_batch(
     batch_size,
@@ -22,7 +27,7 @@ def get_batch(
  
     num_params = DimensionPrior(num_features).sample()
 
-    dataset_prior = MultiFidelityProblemPrior(num_params, 23)
+    dataset_prior = MultiFidelityTask(num_params, 23)
 
     x = []
     y = []
@@ -40,7 +45,7 @@ def get_batch(
         
         # fix dataset specific random variables
         # i.e. get a new relation prior
-        dataset_prior.new_dataset()
+        dataset_prior.sample_task()
 
         # determine config, x, y for every curve -----
         # (1) sample "available" hyperparameter configurations, these will later be subselected and
@@ -49,7 +54,7 @@ def get_batch(
         curve_configs = np.random.uniform(size=(seq_len, num_params)) 
 
         # (2) get the curves for these configurations
-        curves = dataset_prior.curve_factory(curve_configs)  # get callable to evaluate (hp, t) --> y
+        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  # get callable to evaluate (hp, t) --> y
 
         # (3) map the allocation to actual (x,y) values
         x_i, y_i = allocation_prior.map_(curve_configs, curves, num_params, single_eval_pos)

@@ -1,0 +1,191 @@
+import torch 
+import torch.nn as nn
+from pathlib import Path
+import numpy as np
+
+import math
+
+from pfns4hpo.encoders import Normalize
+
+class MLP(nn.Module):
+    def __init__(
+            self, num_inputs, num_outputs, num_layers,
+            num_hidden, preactivation_noise_std, 
+            output_noise, init_std, sparseness, 
+            ):
+        super(MLP, self).__init__()
+
+        self.num_inputs = num_inputs
+        self.num_outputs = num_outputs
+        self.num_layers = num_layers
+        self.num_hidden = num_hidden
+        self.preactivation_noise_std = preactivation_noise_std
+        self.output_noise = output_noise
+        self.init_std = init_std
+        self.sparseness = sparseness
+
+        activation = "tanh"
+
+                # (x - m) / sigma to normalize BNN inputs
+        self.normalizer = Normalize(0.5, math.sqrt(1 / 12))
+
+        self.linears = torch.nn.ModuleList(
+            [torch.nn.Linear(num_inputs, num_hidden)]
+            + [torch.nn.Linear(num_hidden, num_hidden) for _ in range(num_layers - 2)]
+            + [torch.nn.Linear(num_hidden, num_outputs)]
+        )
+
+        self.reset_parameters()
+
+        self.activation = {
+            "tanh": torch.nn.Tanh(),
+            "relu": torch.nn.ReLU(),
+            "elu": torch.nn.ELU(),
+            "identity": torch.nn.Identity(),
+        }[activation]
+
+    
+    def reset_parameters(self, init_std=None, sparseness=None):
+        init_std = init_std if init_std is not None else self.init_std
+        sparseness = sparseness if sparseness is not None else self.sparseness
+        for linear in self.linears:
+            linear.reset_parameters()
+
+        with torch.no_grad():
+            if init_std is not None:
+                for linear in self.linears:
+                    linear.weight.normal_(0, init_std)
+                    linear.bias.normal_(0, init_std)
+
+            if sparseness > 0.0:
+                for linear in self.linears[1:-1]:
+                    linear.weight /= (1.0 - sparseness) ** (1 / 2)
+                    linear.weight *= torch.bernoulli(
+                        torch.ones_like(linear.weight) * (1.0 - sparseness)
+                    )
+
+    def forward(self, x):
+        self.normalizer(x)
+        for linear in self.linears[:-1]:
+            x = linear(x)
+            x = x + torch.randn_like(x) * self.preactivation_noise_std
+            x = torch.tanh(x)
+        x = self.linears[-1](x)
+        return  x + torch.randn_like(x) * self.output_noise
+
+
+
+
+class BNNPrior(torch.nn.Module):
+    output_samples = None  # Global cache for BNN output samples for ECDF fitting
+    CACHE_FILE = Path('.') / "bnn_prior_ecdf.npy"
+
+    N_datasets = 10000  # Number of datasets to sample for ECDF approximation
+    N_per_dataset = 1
+
+    def __init__(self, num_inputs, num_outputs, nn_cls=MLP):
+        super(BNNPrior, self).__init__()
+
+        self.num_inputs = num_inputs
+        self.num_outputs = num_outputs
+        self.nn_cls = nn_cls
+
+        self.load_ecdf_cache()
+
+    
+    def load_ecdf_cache(self):
+        if BNNPrior.CACHE_FILE.exists():
+            print(f"Loading BNN prior ECDF cache from {BNNPrior.CACHE_FILE}")
+            BNNPrior.output_samples = np.load(BNNPrior.CACHE_FILE)
+            
+        else:
+            print("Generating BNN prior ECDF samples...")
+            raw_samples = self._generate_ecdf_samples(self.N_datasets, self.N_per_dataset, self.num_outputs)
+            sorted_samples = np.sort(raw_samples.numpy())
+            np.save(self.CACHE_FILE, sorted_samples)
+            print(f"CDF approximation saved to {self.CACHE_FILE}")
+
+   
+    def sample_mlp(self, num_inputs, num_outputs):
+        
+        num_layers = np.random.randint(8, 16)
+        num_hidden = np.random.randint(36, 150)
+        init_std = np.random.uniform(0.089, 0.193)
+        sparseness = 0.145
+        preactivation_noise_std = np.random.uniform(
+            0.0003, 0.0014
+        )  # TODO: check value for this!
+        output_noise = np.random.uniform(0.0004, 0.0013)
+
+        return self.nn_cls(
+            num_inputs,
+            num_outputs,
+            num_layers,
+            num_hidden,
+            preactivation_noise_std,
+            output_noise,
+            init_std,
+            sparseness,
+        )    
+    
+    
+            
+    # FIXME: use class attributes?
+    def _generate_ecdf_samples(self, N_datasets, N_per_dataset, num_outputs):
+        """
+        Generate and cache a ECDF on the BNN output over the BNN prior.
+
+        This method generates samples from a Bayesian Neural Network (BNN) to approximate 
+        the Empirical Cumulative Distribution Function (ECDF) of its output distribution. The samples 
+        are collected across multiple datasets and stored globally for subsequent use.
+
+        It is done once during init of training and serves for any subsequent BNN instantiation as y-quantile function.
+
+        Args:
+            N_datasets (int): Number of datasets to sample from.
+            N_per_dataset (int): Number of samples to generate per dataset.
+            num_outputs (int): Dimensionality of the BNN output space.
+
+        Returns:
+            None: The method stores the sorted output samples in the class variable 
+            `DatasetPrior.output_sorted` for later retrieval.
+
+        Notes:
+            - This method is called only once to initialize the CDF approximation cache.
+            - A total of N_datasets times N_per_dataset samples are generated (default 1M).
+            - Each sample is generated by:
+                1. Sampling random uniform input vectors.
+                2. Generating a new dataset via `self.new_dataset()`.
+                3. Computing BNN output via `self._sample_curve_params()`.
+            - The outputs are flattened and sorted to create an empirical CDF.
+            - Progress is printed every 100 datasets.
+            - The cached CDF is used for quantile estimation and prior sampling.
+        """
+        output = torch.zeros((N_datasets, N_per_dataset, num_outputs))
+        inputs = torch.from_numpy(
+            np.random.uniform(size=(N_datasets, N_per_dataset, self.num_inputs))
+        ).to(torch.float32)
+        
+        with torch.no_grad():
+            for i in range(N_datasets):
+                if i % 100 == 99: print(f"{i+1}/{N_datasets}")
+                mlp = self.sample_mlp(self.num_inputs, self.num_outputs)  # Sample a new BNN state 
+                for j in range(N_per_dataset):
+                    output[i, j, :] = mlp(inputs[i, j])
+                    
+        return torch.flatten(output)
+
+    # FIXME: the Link function still has the uniform method, which is basically just looking at the quantile of the cached samples!
+    # def y_quantile(self, u):
+    #     """Get the quantile function value for given uniform samples u in [0,1]."""
+    #         if BNNPrior.output_samples is None:
+    #             self.load_ecdf_cache()
+            
+    #     n_samples = BNNPrior.output_samples.shape[0]
+    #     indices = (u * (n_samples - 1)).astype(int)
+    #     return BNNPrior.output_samples[indices]
+
+    #  def uniform(self, a=0.0, b=1.0): # FIXME: during the call, we could just once apply this to all outputs and store the u_values matrix!. Then we just need to apply the respective ppfs for the respective parameters!
+        # u = (b - a) * self.u_values[self.counter] + a
+        # self.counter += 1
+        # return u
