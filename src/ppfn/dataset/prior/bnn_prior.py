@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 import math
+import threading
 
 from pfns4hpo.encoders import Normalize
 
@@ -74,14 +75,40 @@ class MLP(nn.Module):
         return  x + torch.randn_like(x) * self.output_noise
 
 
-
-
 class BNNPrior(torch.nn.Module):
     output_samples = None  # Global cache for BNN output samples for ECDF fitting
-    CACHE_FILE = Path('.') / "bnn_prior_ecdf.npy"
+    CACHE_DIR = Path(__file__).parent / "prior_ecdf" 
+
+    _lock = threading.Lock() # Prevents race conditions during generation
 
     N_datasets = 10000  # Number of datasets to sample for ECDF approximation
     N_per_dataset = 1
+
+    @classmethod
+    def ensure_ecdf_loaded(cls, num_inputs, num_outputs=23):
+        """
+        Thread-safe method to ensure data is loaded/generated exactly once.
+        """
+        # Double-checked locking pattern for efficiency
+        # FIXME: move to datadir!
+        cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        file = Path(cls.CACHE_DIR / "bnn_prior_ecdf.npy")
+        if cls.output_samples is None:
+            with cls._lock:
+                if cls.output_samples is None:
+                    if file.exists():
+                        print(f"Loading BNN prior ECDF cache from {file}")
+                        cls.output_samples = np.load(file)
+                    else:
+                        print(f"Generating BNN prior ECDF samples for inputs of size {num_inputs}...")
+                        # Note: We call a class-level generator here
+                        raw_samples = cls._generate_ecdf_samples(
+                            cls.N_datasets, cls.N_per_dataset,
+                            num_inputs, num_outputs
+                        )
+                        cls.output_samples = np.sort(raw_samples.numpy())
+                        np.save(file, cls.output_samples)
+                        print(f"CDF approximation saved to {file}")
 
     def __init__(self, num_inputs, num_outputs, nn_cls=MLP):
         super(BNNPrior, self).__init__()
@@ -90,23 +117,26 @@ class BNNPrior(torch.nn.Module):
         self.num_outputs = num_outputs
         self.nn_cls = nn_cls
 
-        self.load_ecdf_cache()
+        self.ensure_ecdf_loaded(num_inputs, num_outputs)
 
     
-    def load_ecdf_cache(self):
-        if BNNPrior.CACHE_FILE.exists():
-            print(f"Loading BNN prior ECDF cache from {BNNPrior.CACHE_FILE}")
-            BNNPrior.output_samples = np.load(BNNPrior.CACHE_FILE)
+    # def load_ecdf_cache(self):
+    #     if BNNPrior.CACHE_FILE.exists():
+    #         print(f"Loading BNN prior ECDF cache from {BNNPrior.CACHE_FILE}")
+    #         BNNPrior.output_samples = np.load(BNNPrior.CACHE_FILE)
             
-        else:
-            print("Generating BNN prior ECDF samples...")
-            raw_samples = self._generate_ecdf_samples(self.N_datasets, self.N_per_dataset, self.num_outputs)
-            sorted_samples = np.sort(raw_samples.numpy())
-            np.save(self.CACHE_FILE, sorted_samples)
-            print(f"CDF approximation saved to {self.CACHE_FILE}")
+    #     else:
+    #         print("Generating BNN prior ECDF samples...")
+    #         raw_samples = self._generate_ecdf_samples(self.N_datasets, self.N_per_dataset, self.num_outputs)
+    #         sorted_samples = np.sort(raw_samples.numpy())
+    #         np.save(self.CACHE_FILE, sorted_samples)
+    #         print(f"CDF approximation saved to {self.CACHE_FILE}")
 
-   
-    def sample_mlp(self, num_inputs, num_outputs):
+    def sample(self):
+        return BNNPrior.sample_mlp(self.num_inputs, self.num_outputs, self.nn_cls)
+
+    @classmethod
+    def sample_mlp(cls, num_inputs, num_outputs, nn_cls=MLP):
         
         num_layers = np.random.randint(8, 16)
         num_hidden = np.random.randint(36, 150)
@@ -117,7 +147,7 @@ class BNNPrior(torch.nn.Module):
         )  # TODO: check value for this!
         output_noise = np.random.uniform(0.0004, 0.0013)
 
-        return self.nn_cls(
+        return nn_cls(
             num_inputs,
             num_outputs,
             num_layers,
@@ -131,7 +161,8 @@ class BNNPrior(torch.nn.Module):
     
             
     # FIXME: use class attributes?
-    def _generate_ecdf_samples(self, N_datasets, N_per_dataset, num_outputs):
+    @classmethod
+    def _generate_ecdf_samples(cls, N_datasets, N_per_dataset, num_inputs, num_outputs, nn_cls=MLP):
         """
         Generate and cache a ECDF on the BNN output over the BNN prior.
 
@@ -163,13 +194,15 @@ class BNNPrior(torch.nn.Module):
         """
         output = torch.zeros((N_datasets, N_per_dataset, num_outputs))
         inputs = torch.from_numpy(
-            np.random.uniform(size=(N_datasets, N_per_dataset, self.num_inputs))
+            np.random.uniform(size=(N_datasets, N_per_dataset, num_inputs))
         ).to(torch.float32)
         
         with torch.no_grad():
             for i in range(N_datasets):
+                
                 if i % 100 == 99: print(f"{i+1}/{N_datasets}")
-                mlp = self.sample_mlp(self.num_inputs, self.num_outputs)  # Sample a new BNN state 
+
+                mlp = cls.sample_mlp(num_inputs, num_outputs, nn_cls)  # Sample a new BNN state 
                 for j in range(N_per_dataset):
                     output[i, j, :] = mlp(inputs[i, j])
                     

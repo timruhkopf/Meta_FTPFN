@@ -8,17 +8,10 @@ into dedicated classes and methods. This will allow to make modifications more e
 """
 
 import torch
-import math
 import numpy as np
-
-from typing import Union
-
-
 
 from ppfn.dataset.prior.base_curves import ECDFParameterLinker
 from ppfn.dataset.prior.bnn_prior import BNNPrior
-
-
 
 
 class MultiFidelityTask:
@@ -31,7 +24,7 @@ class MultiFidelityTask:
 
         self.bnn_prior = BNNPrior(num_inputs, num_outputs)
 
-        self.model = self.bnn_prior.sample_mlp(num_inputs, num_outputs)
+        self.model = self.bnn_prior.sample()
         self.linker = ECDFParameterLinker(self.bnn_prior)
        
 
@@ -88,7 +81,10 @@ class MultiFidelityTask:
      
         # reinit the parameters of the BNN
         self.model = self.bnn_prior.sample_mlp(self.num_inputs, self.num_outputs)
+        # sample the performance range
+        self.sample_y0_ymax()
 
+    def sample_y0_ymax(self):
         # sample the performance range
         u1 = np.random.uniform()
         u2 = np.random.uniform()

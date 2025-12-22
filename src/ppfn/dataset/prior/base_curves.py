@@ -328,7 +328,7 @@ class ECDFParameterLinker:
     def uniform(self, a=0.0, b=1.0): # FIXME: during the call, we could just once apply this to all outputs and store the u_values matrix!. Then we just need to apply the respective ppfs for the respective parameters!
         u = (b - a) * self.u_values[self.counter] + a
         self.counter += 1
-        return u
+        return u # FIXME: this method should actually be moved to the BNNPrior class!
 
     def normal(self, loc=0, scale=1):
         u = self.uniform(a=self.eps, b=1 - self.eps)
