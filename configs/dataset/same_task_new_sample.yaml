@@ -1,0 +1,33 @@
+dataloader: 
+  _target_: pfns4hpo.priors.utils.PriorDataLoader
+  load_path: ${oc.env:DATADIR}priors/same_task_new_sample_prior
+  n_chunks: 20 
+  subsample: 1
+  store: True # FIXME: once we have stored the prior, set this to false and kill the store_prior call
+
+# method call
+store_prior:  
+  prior:
+    _target_: ppfn.dataset.get_batch.same_task.Prior
+    get_batch_fn: 
+      _target_: ppfn.dataset.get_batch.same_task.get_batch
+      _partial_: True
+
+  chunk_size: 90
+  batch_size: 9
+  seq_len: 1000
+  n_features: 5
+  partition: True
+  local: True # FIXME: for testing purposes only
+  # eval_pos_sampler: # optional. there is a default exp sampler.
+  #   _target_: pfns4hpo.priors.utils.get_expon_sep_sampler
+  #   seq_len: 1000
+  #   base: 2.0
+  #   min_eval_pos: 1
+
+
+  
+
+  
+    
+

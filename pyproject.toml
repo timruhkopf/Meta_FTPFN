@@ -10,6 +10,7 @@ dependencies = [
 	"grakel>=0.1.10",
 	"ifbo @ git+https://github.com/automl/ifBO.git@421ff96986c8efbe92bd2ab64a4bab49b0dd46fb#egg=ifBO",
 	"matplotlib>=3.10.8",
+	"mlflow>=3.8.0",
 	"nltk>=3.9.2",
 	"numpy==1.26.4",
 	"pandas>=2.3.3",

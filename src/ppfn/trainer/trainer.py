@@ -19,7 +19,7 @@ from tqdm import tqdm
 import mlflow
 from omegaconf import OmegaConf
 
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
+from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
 
 
 
@@ -90,6 +90,7 @@ class PPFNTrainer:
         self.grad_clip = grad_clip
         self.aggregate_k_gradients = aggregate_k_gradients
         self.callbacks = callbacks or []
+        self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
         self.verbose = verbose
 
         # MLflow setup
@@ -108,34 +109,103 @@ class PPFNTrainer:
         self.global_step = 0
         self.best_loss = float("inf")
 
-    def _forward_pass(self, batch: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, Dict[str, float]]:
-        """Perform a single forward pass and compute loss."""
-        # Unpack batch; adapt based on your batch structure
-        if isinstance(batch, (tuple, list)):
-            batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
-        else:
-            batch = batch.to(self.device)
+    
+    def fit(
+        self,
+        epochs: int,
+        steps: int
+    ):
+        """
+        Train the model for a given number of epochs.
 
-        metrics = {}
+        Args:
+            epochs: Number of epochs to train
+        """
+        try:
+            for epoch in range(epochs):
+                self.current_epoch = epoch
 
-        with autocast(enabled=self.use_amp):
-            # Forward pass
-            output = self.model(batch)
+                # Epoch start callbacks
+                self.callback_handler.on_event("on_epoch_start", epoch=epoch)
 
-            # Handle different output types
-            if isinstance(output, tuple):
-                output = output[0]  # e.g., (predictions, aux)
+                # Train
+                epoch_metrics = self.train_epoch(steps)
 
-            # Compute loss
-            # Adapt target extraction based on your data structure
-            if isinstance(batch, tuple) and len(batch) > 1:
-                target = batch[-1]  # Last element is typically the target
-            else:
-                raise ValueError("Batch structure unclear; adapt _forward_pass")
+                # Epoch end callbacks
+                self.callback_handler.on_event("on_epoch_end", epoch=epoch, metrics=epoch_metrics)
 
-            loss = self.criterion(output, target)
+                # Log to MLflow
+                mlflow.log_metrics(epoch_metrics, step=epoch)
 
-        return loss, metrics
+                # Track best loss
+                if epoch_metrics["loss"] < self.best_loss:
+                    self.best_loss = epoch_metrics["loss"]
+                    self._save_checkpoint(f"best_model_epoch{epoch}.pt")
+
+                if self.verbose:
+                    print(
+                        f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
+                        f"Time: {epoch_metrics['time']:6.2f}s | "
+                        f"LR: {epoch_metrics.get('lr', 0):.6f}"
+                    )
+
+        except KeyboardInterrupt:
+            print("Training interrupted by user")
+        finally:
+            # Train end callbacks
+            self.callback_handler.on_event("on_train_end", best_loss=self.best_loss, epochs=self.current_epoch)
+
+            # Log final model
+            self._save_checkpoint("final_model.pt")
+
+
+    def train_epoch(self, n_steps) -> Dict[str, float]:
+        """Train for one epoch."""
+        self.model.train()
+        epoch_metrics = {
+            "loss": 0.0,
+            "num_batches": 0,
+            "time": 0.0,
+        }
+
+        epoch_start = time.time()
+
+        for step in range(n_steps):
+            batch = self.train_loader.get_batch(device=self.device)
+            step_metrics = self._train_step(batch)
+
+            # Accumulate metrics
+            for key, value in step_metrics.items():
+                if key not in epoch_metrics:
+                    epoch_metrics[key] = 0.0
+                epoch_metrics[key] += value
+
+            epoch_metrics["num_batches"] += 1
+
+            # Call step callbacks
+            self.callback_handler.on_event(
+                "on_step_end",
+                  epoch=self.current_epoch, 
+                  step=step, 
+                  metrics={k: v / epoch_metrics["num_batches"] for k, v in step_metrics.items()}
+                  )
+
+
+            self.global_step += 1
+
+           
+        # Average metrics
+        num_batches = epoch_metrics.pop("num_batches")
+        for key in epoch_metrics:
+            if key != "time":
+                epoch_metrics[key] /= num_batches
+
+        epoch_metrics["time"] = time.time() - epoch_start
+        self.scheduler.step()
+
+        return epoch_metrics
+
+
 
     def _train_step(self, batch: tuple[torch.Tensor, ...]) -> Dict[str, float]:
         """Execute a single training step."""
@@ -169,134 +239,27 @@ class PPFNTrainer:
         step_metrics["lr"] = self.scheduler.get_last_lr()[0]
 
         return step_metrics
+    
 
-    def train_epoch(self) -> Dict[str, float]:
-        """Train for one epoch."""
-        self.model.train()
-        epoch_metrics = {
-            "loss": 0.0,
-            "num_batches": 0,
-            "time": 0.0,
-        }
-
-        epoch_start = time.time()
-        progress_bar = (
-            tqdm(enumerate(self.train_loader), total=len(self.train_loader))
-            if self.verbose
-            else enumerate(self.train_loader)
-        )
-
-        for batch_idx, batch in progress_bar:
-            step_metrics = self._train_step(batch)
-
-            # Accumulate metrics
-            for key, value in step_metrics.items():
-                if key not in epoch_metrics:
-                    epoch_metrics[key] = 0.0
-                epoch_metrics[key] += value
-
-            epoch_metrics["num_batches"] += 1
-
-            # Call step callbacks
-            for callback in self.callbacks:
-                callback.on_step_end(
-                    epoch=self.current_epoch,
-                    step=batch_idx,
-                    metrics={k: v / epoch_metrics["num_batches"] for k, v in step_metrics.items()},
-                )
-
-            self.global_step += 1
-
-            if self.verbose and isinstance(progress_bar, tqdm):
-                progress_bar.set_postfix({"loss": epoch_metrics["loss"] / epoch_metrics["num_batches"]})
-
-        # Average metrics
-        num_batches = epoch_metrics.pop("num_batches")
-        for key in epoch_metrics:
-            if key != "time":
-                epoch_metrics[key] /= num_batches
-
-        epoch_metrics["time"] = time.time() - epoch_start
-        self.scheduler.step()
-
-        return epoch_metrics
-
-    @torch.no_grad()
-    def validate(self, val_loader) -> Dict[str, float]:
-        """
-        Validate the model on a validation set.
+    def _forward_pass(self, batch: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, Dict[str, float]]:
+        """Perform a single forward pass and compute loss."""
+        # Unpack batch; adapt based on your batch structure
         
-        Optional: override or provide val_loader with __len__ and iteration.
-        """
-        self.model.eval()
-        val_metrics = {"loss": 0.0, "num_batches": 0}
+        if isinstance(batch, (tuple, list)):
+            batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
+        
+        metrics = {}
 
-        for batch in val_loader:
-            loss, step_metrics = self._forward_pass(batch)
-            val_metrics["loss"] += loss.item()
-            val_metrics["num_batches"] += 1
+        with autocast(enabled=self.use_amp):
+            # Forward pass
+            output = self.model(batch)
 
-        val_metrics["loss"] /= val_metrics.pop("num_batches")
-        return val_metrics
+           
+            loss = self.criterion(output, target)
 
-    def fit(
-        self,
-        epochs: int,
-        val_loader=None,
-        val_frequency: int = 10,
-    ):
-        """
-        Train the model for a given number of epochs.
+        metrics.update({})
 
-        Args:
-            epochs: Number of epochs to train
-            val_loader: Validation dataloader (optional)
-            val_frequency: Validate every N epochs
-        """
-        try:
-            for epoch in range(epochs):
-                self.current_epoch = epoch
-
-                # Epoch start callbacks
-                for callback in self.callbacks:
-                    callback.on_epoch_start(epoch=epoch)
-
-                # Train
-                epoch_metrics = self.train_epoch()
-
-                # Validation
-                if val_loader is not None and (epoch + 1) % val_frequency == 0:
-                    val_metrics = self.validate(val_loader)
-                    epoch_metrics.update({f"val_{k}": v for k, v in val_metrics.items()})
-
-                # Epoch end callbacks
-                for callback in self.callbacks:
-                    callback.on_epoch_end(epoch=epoch, metrics=epoch_metrics)
-
-                # Log to MLflow
-                mlflow.log_metrics(epoch_metrics, step=epoch)
-
-                # Track best loss
-                if epoch_metrics["loss"] < self.best_loss:
-                    self.best_loss = epoch_metrics["loss"]
-                    self._save_checkpoint(f"best_model_epoch{epoch}.pt")
-
-                if self.verbose:
-                    print(
-                        f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
-                        f"Time: {epoch_metrics['time']:6.2f}s | "
-                        f"LR: {epoch_metrics.get('lr', 0):.6f}"
-                    )
-
-        except KeyboardInterrupt:
-            print("Training interrupted by user")
-        finally:
-            # Train end callbacks
-            for callback in self.callbacks:
-                callback.on_train_end(best_loss=self.best_loss, epochs=self.current_epoch)
-
-            # Log final model
-            self._save_checkpoint("final_model.pt")
+        return loss, metrics
 
     def _save_checkpoint(self, filename: str = "checkpoint.pt"):
         """Save model checkpoint."""

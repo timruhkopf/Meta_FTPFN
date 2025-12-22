@@ -1,8 +1,0 @@
-# @package _global_
-# Experiment: Quick test run with dummy data and minimal epochs
-defaults:
-  - override /model: single_layer
-  - override /dataset: dummy
-  - override /trainer: quick
-
-experiment_name: "ppfn_test"

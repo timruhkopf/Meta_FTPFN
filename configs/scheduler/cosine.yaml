@@ -1,3 +1,4 @@
-# Cosine annealing scheduler
-type: "cosine"
+_target_: torch.optim.lr_scheduler.CosineAnnealingLR
+_partial_: true
+T_max: ${trainer.epochs}
 eta_min: 1e-6

@@ -27,6 +27,8 @@ class CrossFusion(nn.Module):
         if self.training:
             # we expect that we get pairs of tasks, i.e. A (target task tensor untainted),
             # B (related tasks untainted), C (related tasks conditional predictions to be updated)
+            assert B % 3 == 0, "In training mode, batch size must be multiple of 3 (A,B,C task triplets)"
+            assert single_eval_pos is not None, "single_eval_pos must be provided during training"
             R = B // 3  # number related tasks
             Q = x[ :, :R, : ]  # (stream A) key: target task marginal predictions (untainted)
             K = x[ :, R : 2 * R, : ]  # (stream B) value: related tasks' marginal predictions (untainted)

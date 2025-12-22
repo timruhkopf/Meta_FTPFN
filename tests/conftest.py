@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import shutil
 
+from ppfn.model.baselines.ft_pfn import ft_pfn
+
 @pytest.fixture
 def device():
     """Device for testing."""
@@ -113,21 +115,5 @@ def ft_batch_factory():
 
 @pytest.fixture
 def get_ft_pfn():
-    def ft_pfn():
-        import os
-        from pathlib import Path
-
-        from dotenv import load_dotenv
-        from ifbo.surrogate import FTPFN
-
-        load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
-
-        model_path = os.getenv("MODELDIR") + "pfn_ckpt"
-        frozen_model = FTPFN(
-            target_path=Path(model_path), version="0.0.1", device="cpu"
-        ).model
-
-        criterion = frozen_model.criterion
-        
-        return frozen_model
-    return ft_pfn
+    
+    return ft_pfn()

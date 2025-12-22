@@ -2,8 +2,8 @@
 # Override with specific experiments via configs/experiment/
 
 defaults:
-  - model: default
-  - dataset: paired_extrapolation
+  - model: ppfn
+  - dataset: same_task_new_sample
   - optimizer: adamw
   - scheduler: cosine
   - trainer: default

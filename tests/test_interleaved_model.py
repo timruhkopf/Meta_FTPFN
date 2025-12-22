@@ -13,7 +13,7 @@ def model_wrapped(get_ft_pfn):
     Fixture that wraps the real frozen model with CrossFusion layers.
     Note: 'ft_pfn' is assumed to be provided by your existing test suite.
     """
-    ft_pfn = get_ft_pfn()
+    ft_pfn = get_ft_pfn
     interleaved_layers = {
         "transformer_encoder.layers.0.linear1": CrossFusion(d_model=512, num_heads=8),
         "transformer_encoder.layers.2.linear1": CrossFusion(d_model=512, num_heads=8),
@@ -31,7 +31,7 @@ def test_integration_constancy_eval(model_wrapped,get_ft_pfn, ft_batch_factory):
     # Stream A: [:, 0, :]
     # Stream B: [:, 1:5, :]
     # Stream C: [:, 5:, :]
-    ft_pfn = get_ft_pfn()
+    ft_pfn = get_ft_pfn
     ft_pfn.eval()
     with torch.no_grad():
         frozen_out = ft_pfn((x, y), single_eval_pos=single_eval_pos)
@@ -70,7 +70,7 @@ def test_integration_constancy_train(model_wrapped, get_ft_pfn, ft_batch_factory
     # Batch is 9, so R=3 for training [A:3, B:3, C:3]
     R = x.shape[1] // 3
 
-    ft_pfn = get_ft_pfn()
+    ft_pfn = get_ft_pfn
     ft_pfn.train()
     output_frozen = ft_pfn((x, y), single_eval_pos=single_eval_pos)
     

@@ -1,7 +1,9 @@
-from typing import Mapping
+from typing import List, Mapping, Union
 
 import torch
 import torch.nn as nn
+
+from pfns4hpo.priors.prior import Batch
 
 
 class MyModuleList(nn.Module):
@@ -17,7 +19,7 @@ class MyModuleList(nn.Module):
 
 class HierarchicalPFN(nn.Module):
     def __init__(
-        self, frozen_model: nn.Module, interleaved_layers: Mapping[str, nn.Module]
+        self, frozen_model: nn.Module, interleaved_layers: Union[Mapping[str, nn.Module], List]
     ):
         """Initialize the InterleavedModel with a frozen model and interleaved layers.
 
@@ -34,10 +36,21 @@ class HierarchicalPFN(nn.Module):
         for param in self.frozen_model.parameters():
             param.requires_grad = False  # Freeze the pre-trained model
 
-        self.interleaved_layers = interleaved_layers
+        # avoiding an OmegaConf instantiation / naming issue, we allow to pass a list of dicts
+        if isinstance(interleaved_layers, list):
+            self.interleaved_layers = dict()
+            # convert to dict with layer names as keys
+            for item in interleaved_layers:
+                name = item["name"]
+                layer = item["layer"]
+                self.interleaved_layers[name] = layer
+        else:
+            self.interleaved_layers = interleaved_layers
+
+
 
         # verify that all target modules exist in the frozen model
-        for name in interleaved_layers.keys():
+        for name in self.interleaved_layers.keys():
             if name not in dict(self.frozen_model.named_modules()):
                 raise ValueError(
                     f"Target module '{name}' not found in the frozen model."
@@ -80,10 +93,13 @@ class HierarchicalPFN(nn.Module):
             parent = getattr(parent, part)
         return parent
 
-    def forward(self, x, **kwargs):
-        self.single_eval_pos = kwargs[
-            "single_eval_pos"
-        ]  # communicate to interleaved layers (should the pfn not pass the argument to the layer explicitly! (e.g. intercepting a linear))
+    def forward(self, x, single_eval_pos=None, **kwargs):
+        if isinstance(x, Batch): 
+            x, single_eval_pos = (x.x, x.y), x.single_eval_pos
+    
+        self.single_eval_pos = single_eval_pos # propagate to interleaved layers
+        
+        kwargs['single_eval_pos'] = single_eval_pos
         value = self.frozen_model(x, **kwargs)
         self.single_eval_pos = None  # reset after forward
         return value

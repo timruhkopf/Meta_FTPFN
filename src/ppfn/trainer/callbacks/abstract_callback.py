@@ -5,6 +5,9 @@ from typing import Dict
 class AbstractCallback:
     """Base class for training callbacks."""
 
+    def set_trainer(self, trainer):
+        self.trainer = trainer
+
     def on_epoch_start(self, epoch: int, **kwargs):
         pass
 
@@ -16,3 +19,19 @@ class AbstractCallback:
 
     def on_train_end(self, **kwargs):
         pass
+
+
+class CallbackHandler:
+    """On event occurence, call all registered callbacks."""
+
+    def __init__(self, callbacks, trainer):
+        self.callbacks = callbacks
+        self.trainer = trainer
+        for callback in self.callbacks:
+            callback.set_trainer(trainer)
+
+    def on_event(self, event_name: str, *args, **kwargs):
+        for callback in self.callbacks:
+            method = getattr(callback, event_name, None)
+            if callable(method):
+                method(*args, **kwargs)

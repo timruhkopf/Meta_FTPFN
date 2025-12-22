@@ -240,3 +240,4 @@ models/
 resources/
 outputs/
 bnn_prior_ecdf.npy
+data/
