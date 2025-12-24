@@ -1,78 +1,77 @@
 # from ifbo.priors.prior_bag import get_batch
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
-import mlflow
-import torch
 from typing import Dict
 
+import logging
 
-class MLflowCallback(AbstractCallback):
-    """Log metrics to MLflow."""
-
-    def __init__(self, log_frequency: int = 10):
-        self.log_frequency = log_frequency
-
-    def on_step_end(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs):
-        if step % self.log_frequency == 0:
-            for key, value in metrics.items():
-                mlflow.log_metric(key, value, step=epoch * 1000 + step)
-
-    def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
-        for key, value in metrics.items():
-            mlflow.log_metric(f"epoch_{key}", value, step=epoch)
+logger = logging.getLogger(__name__)
 
 
-class MLflowValidationCallback:
-    def __init__(self, val_config, get_batch, n,  frequency=1, mlflow_run_id=None):
+
+class EarlyStopping(AbstractCallback):
+    CKPT_WARMUP_EPOCHS = 100
+    def __init__(
+        self, 
+        monitor: str = "val_loss", 
+        patience: int = 5, 
+        min_delta: float = 0.0, 
+        mode: str = "min",
+        checkpoint_name: str = "best_model.pt"
+    ):
         """
-        :param val_config: Dictionary containing arguments for get_batch 
-                           (batch_size, seq_len, num_features, single_eval_pos, etc.)
-        :param mlflow_run_id: Optional existing run ID to log to
+        Args:
+            monitor: The metric name to track (stored in trainer.metrics or similar).
+            patience: How many epochs to wait after last time the monitor improved.
+            min_delta: Minimum change in the monitored quantity to qualify as an improvement.
+            mode: One of {"min", "max"}. In "min" mode, training stops when the quantity
+                  monitored has stopped decreasing.
+            checkpoint_name: Filename for the saved checkpoint.
         """
-        self.val_config = val_config
-        self.run_id = mlflow_run_id
-        self.frequency = frequency
-        self.get_batch = get_batch
-        self.n = n
-
-    @torch.no_grad()
-    def on_epoch_end(self, model, step, prefix="val"):
-        """
-        Executes validation and logs to MLflow.
-        :param model: The torch model being trained
-        :param step: The current training step or epoch
-        :param prefix: Prefix for the MLflow metric key (e.g., 'val' or 'test')
-        """
-        if step % self.frequency != 0:
-            avg_loss = self.evaluation_loop(model)
-
-            if mlflow.active_run():
-                mlflow.log_metric(f"{prefix}_nll", avg_loss, step=step)
+        self.monitor = monitor
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.checkpoint_name = checkpoint_name
         
-            
-    def evaluation_loop(self, model):
-        model.eval()
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
 
-        losses = []
-        for _ in range(self.n):
+    def on_epoch_end(self, epoch: int, metrics: dict = None) -> Dict:
         
-            # 1. Generate synthetic batch using your function
-            batch = self.get_batch(**self.val_config)
-            
-            # 2. Forward pass
-            # Adjusting inputs based on typical Transformer/PFN architectures
-            # Usually: model((x, y), single_eval_pos=...)
-            output = model((batch.x, batch.y), single_eval_pos=self.val_config['single_eval_pos'])
-            
-            # 3. Calculate NLL using the model's internal criterion
-            # Based on your note: model.criterion.__call__ gives the NLL score
-            # Note: target_y is usually indexed at single_eval_pos for PFNs
-            target = batch.target_y[self.val_config['single_eval_pos']:]
-            nll_loss = model.criterion(output, target)
-            
-            val_loss = nll_loss.item()
-            losses.append(val_loss)
+        # 1. Retrieve the current metric value
+        # Assuming your trainer stores current epoch metrics in a 'logs' dict or similar
+        current_score = metrics.get(self.monitor)
+        
+        if current_score is None:
+            logger.warning(f"EarlyStopping monitored metric '{self.monitor}' not found.")
+            return {}
 
-        avg_loss = sum(losses) / len(losses)
+        # 2. Check if the score has improved
+        if self.best_score is None and epoch > self.CKPT_WARMUP_EPOCHS:
+            self._save_and_update(current_score)
+        else:
+            if self.mode == "min":
+                improved = current_score < (self.best_score - self.min_delta)
+            else:
+                improved = current_score > (self.best_score + self.min_delta)
+
+            if improved and epoch > self.CKPT_WARMUP_EPOCHS:
+                self._save_and_update(current_score)
+                self.counter = 0  # Reset counter
+            else:
+                self.counter += 1
+                logger.info(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+
+                if self.counter >= self.patience:
+                    logger.info("Early stopping triggered. Terminating training.")
+                    # We set a flag on the trainer that the training loop should check
+                    return {'stop_training': True}
+
+    def _save_and_update(self, score):
+        """Helper to update best score and trigger trainer's checkpointing."""
+        self.best_score = score
+        logger.info(f"Metric {self.monitor} improved. Saving checkpoint: {self.checkpoint_name}")
         
-        model.train()
-        return avg_loss
+        # Calling the specific method you mentioned
+        self.trainer._save_checkpoint(filename=self.checkpoint_name)

@@ -3,10 +3,13 @@ from typing import Mapping
 import os
 from pathlib import Path
 
+import torch
 import torch.nn as nn
 
 
 from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
+
+from pfns4hpo.priors import Batch 
 
 
 def load_frozen_model() -> nn.Module:
@@ -46,6 +49,54 @@ class FT_PPFN(HierarchicalPFN):
             frozen_model=frozen_model,
             interleaved_layers=interleaved_layers,
         )
+
+    @staticmethod
+    def parse_batch(training, batch: Batch) -> Batch:
+        if training: 
+            x = torch.cat([batch.x, batch.x.roll(1, dims=1), batch.x], dim=1)
+            y = torch.cat([batch.y, batch.y.roll(1, dims=1), batch.y], dim=1)
+
+        if not training: 
+            # first batch item is target task marginal predictions
+            # next batch items are related tasks' marginal predictions
+            # last batch items are related tasks' conditional predictions to be updated
+            B = batch.x.shape[1]
+            R = (B - 1) 
+
+            target_marginal = batch.x[:, :1, :].expand(-1, R, -1)
+            related_marginal = batch.x[:, 1:, :]
+            related_conditional = batch.x[:, :1, :].expand(-1, R, -1)
+            x = torch.cat([
+                        target_marginal,
+                        related_marginal,
+                        related_conditional,
+                    ],dim=1)
+            
+            y = torch.cat([
+                batch.y[:, :1].expand(-1, R, -1),
+                batch.y[:, 1:],
+                batch.y[:, :1].expand(-1, R, -1),
+            ], dim=1)
+
+          
+            # FIXME: during eval we need to aggregate the conditional predictions
+            # for now, we just return them as is 
+            raise NotImplementedError("Aggregation of conditional predictions during eval not implemented yet.")
+        
+        return Batch(
+                x=x, y=y, target_y=y,
+                single_eval_pos=batch.single_eval_pos,
+        )
+    
+    def forward(self, batch, **kwargs):
+        # for the CrossFusion layers, we need to modify the batch: 
+        # the first third is the unconditional marginal predictions of the target task
+        # the second third is the unconditional marginal predictions of the related tasks
+        # the last third is the conditional predictions of the related tasks to be updated
+        
+        batch = self.parse_batch(self.training, batch)
+        output = super().forward(batch, **kwargs)
+        return output
 
     @property
     def criterion(self):

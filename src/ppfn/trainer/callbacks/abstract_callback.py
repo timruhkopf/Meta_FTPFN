@@ -14,6 +14,9 @@ class AbstractCallback:
     def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
         pass
 
+    def on_forward_end(self, batch, output, targets) -> Dict:
+        pass
+
     def on_step_end(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs):
         pass
 
@@ -31,7 +34,13 @@ class CallbackHandler:
             callback.set_trainer(trainer)
 
     def on_event(self, event_name: str, *args, **kwargs):
+        feedback = {}
         for callback in self.callbacks:
+            
             method = getattr(callback, event_name, None)
             if callable(method):
-                method(*args, **kwargs)
+                D = method(*args, **kwargs)
+                if D is not None:
+                    feedback.update(D)
+
+        return feedback

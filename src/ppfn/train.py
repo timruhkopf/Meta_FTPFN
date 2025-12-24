@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader, TensorDataset
 import hydra
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
-import mlflow
 
 import logging
 
@@ -45,6 +44,7 @@ def main(cfg: DictConfig) -> None:
     # Create dataloaders
     logger.info("Creating dataloaders...")
     loader = instantiate(cfg.dataset.dataloader)
+    # FIXME: move these two lines into a getter for PriorDataLoader
     loader.store_prior(**instantiate(cfg.dataset.store_prior))
     loader._load_chunk(0)
     
@@ -53,12 +53,6 @@ def main(cfg: DictConfig) -> None:
     logger.info("Setting up optimizer and scheduler...")
     optimizer_partial = instantiate(cfg.optimizer)
     scheduler_partial = instantiate(cfg.scheduler)
-    
-    # Create callbacks using Hydra instantiate
-    # callbacks = []
-    # if hasattr(cfg.trainer, 'callbacks'):
-    #     for callback_cfg in cfg.trainer.callbacks:
-    #         callbacks.append(instantiate(callback_cfg))
     
     # Create trainer using Hydra instantiate
     logger.info("Initializing trainer...")
@@ -70,18 +64,13 @@ def main(cfg: DictConfig) -> None:
         scheduler=scheduler_partial,
         criterion=criterion,
         device=device,
-        # callbacks=callbacks,
+        # mycfg=cfg, # dictconfig cannot be passed directly 
         experiment_name=cfg.experiment_name,
         run_name=cfg.get("run_name", None),
     )
+
+    trainer.log_config(cfg)
     
-    # Set MLflow config logging if applicable
-    # if hasattr(trainer, 'mlflow_run') and trainer.mlflow_run:
-    #     config_dict = OmegaConf.to_container(cfg, resolve=True)
-    #     if isinstance(config_dict, dict):
-    #         mlflow.log_params({str(k): str(v) for k, v in config_dict.items()})
-    
-    # Train
     logger.info(f"Starting training for {cfg.trainer.epochs} epochs...")
     trainer.fit( epochs=cfg.trainer.epochs, steps=cfg.trainer.steps )
     

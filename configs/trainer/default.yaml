@@ -1,6 +1,6 @@
 # Default trainer configuration
-epochs: 2
-steps: 10
+epochs: 300
+steps: 63
 trainer_class:
   _target_: ppfn.trainer.PPFNTrainer
   use_amp: false
@@ -8,8 +8,7 @@ trainer_class:
   aggregate_k_gradients: 1
   verbose: true
   callbacks:
-    - _target_: ppfn.trainer.callbacks.MLflowCallback
-      log_frequency: 10
+    - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
 
   experiment_name: ${experiment_name}
 

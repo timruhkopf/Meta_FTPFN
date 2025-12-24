@@ -10,5 +10,5 @@ defaults:
   - _self_
 
 device: "cuda"
-experiment_name: "ppfn_training"
+experiment_name: "ppfn:same_task_new_sample"
 run_name: null

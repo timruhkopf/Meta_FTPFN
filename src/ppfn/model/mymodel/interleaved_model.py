@@ -93,9 +93,10 @@ class HierarchicalPFN(nn.Module):
             parent = getattr(parent, part)
         return parent
 
-    def forward(self, x, single_eval_pos=None, **kwargs):
-        if isinstance(x, Batch): 
-            x, single_eval_pos = (x.x, x.y), x.single_eval_pos
+    def forward(self, batch: Batch, single_eval_pos=None, **kwargs):
+
+        # parse input to meet ft_pfn format
+        x, single_eval_pos = (batch.x, batch.y), batch.single_eval_pos
     
         self.single_eval_pos = single_eval_pos # propagate to interleaved layers
         

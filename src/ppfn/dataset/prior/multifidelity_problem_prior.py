@@ -65,7 +65,6 @@ class MultiFidelityTask:
             bnn_outputs.numpy(), self.y0, self.ymax, noise=noise
         )
 
-       
         return specific_curve_model
 
                 
@@ -80,7 +79,7 @@ class MultiFidelityTask:
         """
      
         # reinit the parameters of the BNN
-        self.model = self.bnn_prior.sample_mlp(self.num_inputs, self.num_outputs)
+        self.model = self.bnn_prior.sample()
         # sample the performance range
         self.sample_y0_ymax()
 
