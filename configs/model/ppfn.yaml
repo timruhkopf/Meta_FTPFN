@@ -19,36 +19,36 @@ model_class:
   
     - name: "transformer_encoder.layers.0"
       layer:
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
         d_model: ${model.config.d_model}
         num_heads: ${model.config.nhead}
         dropout: 0.1
     - name: "transformer_encoder.layers.1"
       layer:
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
         d_model: ${model.config.d_model}
         num_heads: ${model.config.nhead}
         dropout: 0.1
     - name: "transformer_encoder.layers.2"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
         num_heads: ${model.config.nhead}
         dropout: 0.1
     - name: "transformer_encoder.layers.3"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
         num_heads: ${model.config.nhead}
         dropout: 0.1
     - name: "transformer_encoder.layers.4"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
         num_heads: ${model.config.nhead}
         dropout: 0.1
     - name: "transformer_encoder.layers.5"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
         num_heads: ${model.config.nhead}
