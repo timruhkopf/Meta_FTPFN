@@ -63,11 +63,11 @@ class CrossFusion(nn.Module):
                 "single_eval_pos must be provided during training"
             )
             R = B // 3  # number related tasks
-            Q = x[ :, :R, : ]  
+            Q = x[ :, :R, : ]
             # (stream A) key: target task marginal predictions (untainted)
-            K = x[ :, R : 2 * R, : ]  
+            K = x[ :, R : 2 * R, : ]
             # (stream B) value: related tasks' marginal predictions (untainted)
-            V = x[ :, 2 * R :, : ]  
+            V = x[ :, 2 * R :, : ]
             # (stream C) query: related tasks' conditional predictions (to be updated)
 
         else:
@@ -77,9 +77,9 @@ class CrossFusion(nn.Module):
             # (stream A) key: target task marginal predictions (untainted)
             Q = x[:, :1, :].expand( -1, R, -1)
             # (stream B) value: related tasks' marginal predictions (untainted)
-            K = x[ :, 1 : R + 1, : ]  
+            K = x[ :, 1 : R + 1, : ]
             # (stream C) query: related tasks' conditional predictions (to be updated)
-            V = x[ :, R + 1 :, : ]  
+            V = x[ :, R + 1 :, : ]
 
         # Handle the train/test split
         # we only want to attend to the train set of the target task
@@ -134,12 +134,19 @@ class CrossFusionLossCallback(AbstractCallback):
 
         """
         B = output.shape[1]
-        R = B // 3 if self.trainer.model.training else (B - 1) // 2
-
+        
         # we need to repeat the target
-        b = self.trainer.model.parse_batch(
-            batch
-        )  # to ensure the batch is in the right format
+        if self.trainer.model.training:
+            R = B // 3
+            b = self.trainer.model.parse_train_batch(
+                batch
+            )  # to ensure the batch is in the right format
+
+        else: 
+            R = (B - 1) // 2
+            b = self.trainer.model.parse_eval_batch(
+                batch
+            )  # to ensure the batch is in the right format
 
         return {"targets": b.y[batch.single_eval_pos :, ...]}  # loss on Stream C only
 

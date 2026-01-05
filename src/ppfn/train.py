@@ -43,10 +43,14 @@ def main(cfg: DictConfig) -> None:
     
     # Create dataloaders
     logger.info("Creating dataloaders...")
-    loader = instantiate(cfg.dataset.dataloader)
-    # FIXME: move these two lines into a getter for PriorDataLoader
-    loader.store_prior(**instantiate(cfg.dataset.store_prior))
-    loader._load_chunk(0)
+    loader = instantiate(cfg.dataset.dataloader) # PriorDataLoader / DistributedPriorDataLoader
+    # Sampling the prior and storing it if required. 
+    # This is only needed once and is the entry point to the get_batch functions
+    if cfg.dataset.dataloader.get("store", True):
+        loader.store_prior(**instantiate(cfg.dataset.store_prior))
+        loader._load_chunk(0)
+
+        return  # exit after storing prior
     
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
@@ -78,6 +82,8 @@ def main(cfg: DictConfig) -> None:
     trainer.end_run()
     
     logger.info("Training completed!")
+
+    return 0 
 
 
 

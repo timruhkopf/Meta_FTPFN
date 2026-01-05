@@ -1,9 +1,9 @@
 dataloader: 
   _target_: pfns4hpo.priors.utils.PriorDataLoader
-  load_path: ${oc.env:DATADIR}priors/same_task_new_sample_prior
+  load_path: ${oc.env:DATADIR}priors/same_task_new_sample_prior_test # fixme: remove _test for final
   n_chunks: 300
   subsample: 1
-  store: True # FIXME: once we have stored the prior, set this to false and kill the store_prior call
+  store: True # FIXME: once the prior is stored, set to False to stop sampling and just load from disk for efficiency
 
 # method call
 store_prior:  

@@ -61,11 +61,11 @@ class MultiFidelityTask:
         with torch.no_grad():
             bnn_outputs = self.model(hyperparams)  # unbounded Bnn outputs are need to be bounded to the parameter ranges (and looked up in the y ecdf)
   
-        specific_curve_model = self.linker.curve_factory(
+        parametrized_curve_model = self.linker.curve_factory(
             bnn_outputs.numpy(), self.y0, self.ymax, noise=noise
         )
 
-        return specific_curve_model
+        return parametrized_curve_model
 
                 
     def sample_task(self):
