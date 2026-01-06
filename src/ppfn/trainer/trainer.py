@@ -290,6 +290,7 @@ class PPFNTrainer:
 
             targets = batch.y[batch.single_eval_pos :, ...]
 
+            # allow callback to modify the outputs (temporary fix)
             feedback = self.callback_handler.on_event(
                 "on_forward_end", batch=batch, output=output, targets=targets
             )
