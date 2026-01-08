@@ -47,10 +47,13 @@ def main(cfg: DictConfig) -> None:
     # Sampling the prior and storing it if required. 
     # This is only needed once and is the entry point to the get_batch functions
     if cfg.dataset.dataloader.get("store", True):
+        logger.info("Storing prior samples...")
+
+        (Path(cfg.dataset.dataloader.load_path) / 'partition_0').mkdir(parents=True, exist_ok=True)
         loader.store_prior(**instantiate(cfg.dataset.store_prior))
         loader._load_chunk(0)
 
-        return  # exit after storing prior
+        return 0 # exit after storing prior
     
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
@@ -95,4 +98,6 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     
     load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env")
+
+    OmegaConf.register_new_resolver("eval", eval)
     main()

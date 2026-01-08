@@ -185,7 +185,7 @@ class CrossFusionLossCallback(AbstractCallback):
         B = output.shape[1]
         R = B // 3
 
-        parser = self.trainer.model.parse_train_batch if self.trainer.model.training else self.trainer.model.parse_eval_batch
+        parser = self.trainer.model.parse_batch
 
         b = parser(batch)
         

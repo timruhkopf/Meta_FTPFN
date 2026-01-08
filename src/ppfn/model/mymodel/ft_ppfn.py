@@ -131,9 +131,15 @@ class FT_PPFN(HierarchicalPFN):
         Forward pass with batch parsing for cross-fusion.
         """
         
-        batch = self.parse_train_batch(batch) if self.training else self.parse_eval_batch(batch)
+        batch = self.parse_batch(batch)
         output = super().forward(batch, **kwargs)
         return output
+
+    def parse_batch(self, batch: Batch) -> Batch:
+        """
+        Override parse_batch to handle both train and eval parsing.
+        """
+        return self.parse_train_batch(batch) if self.training else self.parse_eval_batch(batch)
 
     @property
     def criterion(self):
