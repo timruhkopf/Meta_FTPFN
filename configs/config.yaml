@@ -5,13 +5,13 @@ defaults:
   - model: ppfn
   - dataset: same_task_new_sample
   - optimizer: adamw
-  - scheduler: cosine
+  - scheduler: cosine_with_warmup
   - trainer: default
   - _self_
 
 device: "cuda"
 experiment_name: "ppfn:same_task_new_sample"
-run_name: null
+run_name: cosine_warmup_adamw
 
 hydra:
   run:
