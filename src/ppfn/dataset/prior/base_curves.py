@@ -1,4 +1,5 @@
 
+from typing import Callable
 import numpy as np
 
 from scipy.stats import norm, beta, gamma, expon
@@ -251,7 +252,7 @@ class ECDFParameterLinker:
 
         return Y0, Yinf, w, alpha, Xsat, PREC, Rpsat, sigma
 
-    def curve_factory(self, bnn_outputs, y0, ymax, noise=True):
+    def curve_factory(self, bnn_outputs, y0, ymax, noise=True)-> Callable:
         """
         Maps hyperparameter configurations to functional learning curve evaluators.
 
@@ -295,12 +296,13 @@ class ECDFParameterLinker:
         # more efficient batch-wise
         NCURVES = 4 # the number of basis curves to combine is fixed here!
 
+        # Get ECDF normalized parameters from unnormalized/unbounded BNN outputs
         Y0, Yinf, w, alpha, Xsat, PREC, Rpsat, sigma = self(
             bnn_outputs, y0, ymax, n_curves=NCURVES
         )
 
 
-        def specific_curve_model(x_, cid=0):
+        def parametrized_curve_model(x_, cid=0):
             y_ = weighted_curve_model(
                 x_,
                 Y0=Y0,
@@ -319,7 +321,7 @@ class ECDFParameterLinker:
             # y_noise *= np.minimum(y_,1.0-y_)/4*sigma_y_scaler[cid]
             return np.clip(y_ + y_noise, 0.0, 1.0)
 
-        return specific_curve_model
+        return parametrized_curve_model
 
 
     def reset(self):

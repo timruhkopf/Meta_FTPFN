@@ -73,12 +73,13 @@ def get_batch(
 
         # (2) get the curves for these configurations
         allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  # get callable to evaluate (hp, t) --> y
+        # get callable to evaluate (hp, t) --> y
+        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  
 
         # (3) map the allocation to actual (x,y) values
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
             curve_configs, curves, num_params, single_eval_pos, allocation
-            )
+        )
         x.append(x_i)
         y.append(y_i)
 
@@ -126,17 +127,7 @@ class Prior:
 
 
 if __name__ == "__main__":  
-
-    sampler = SameTaskNewSampleBatchPrior()
-
-    # create plot with multiple curves based on the get_batch 
-    batch = sampler.get_batch(
-        batch_size=4,
-        seq_len=32,
-        num_features=5,
-        single_eval_pos=16,
-        device="cpu",
-    )
+   
 
     import os
     import time

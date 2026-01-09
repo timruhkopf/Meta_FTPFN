@@ -29,10 +29,11 @@ class AllocationPrior:
         Returns:
             tuple: A tuple containing:
                 - cutoff_per_curve (np.ndarray): Integer array of shape (seq_len,) indicating the number
-                  of observations allocated to each curve. Values are cumulative counts of positions
-                  before single_eval_pos.
+                  of (visibile/training context)observations allocated to each curve. 
+                  Values are cumulative counts of positions before single_eval_pos.
                 - epochs_per_curve (np.ndarray): Integer array of shape (seq_len,) indicating the total
-                  number of epochs (observations + queries) allocated to each curve.
+                  number of epochs (observations + queries) allocated to each curve (including budget tokens 
+                  after the cutoff -- i.e. the queries).
                 - ordering (np.ndarray): Integer array of shape (seq_len,) representing the sampled
                   ordering of curve indices for each position in the sequence. Will be used to map positions
                   to curves.
@@ -78,7 +79,7 @@ class AllocationPrior:
 
         Args:
             curve_configs (np.ndarray): Array of shape (self.seq_len, num_params) containing hyperparameter
-                configurations for each curve in the sequence.
+                configurations for each token in the sequence.
             curves (callable): A function that takes x values and a curve index, returning y values.
             single_eval_pos (int, optional): The cutoff position separating observations from queries.
                 Defaults to 0.
@@ -92,22 +93,45 @@ class AllocationPrior:
         # FIXME: THIS ENTIRE FUNCTION IS SUPER INEFFICIENT, because we loop over every single token 
         cutoff_per_curve, epochs_per_curve, ordering = allocation # self.sample_abstract_allocation(single_eval_pos)
 
+        # NOTES: 
+        # **curve_configs**: unit cube sampled hyperparameter configurations for every token in the sequence. Theses are 
+        # candidate configs, from which we can draw observations and queries (repeatedly if more epochs are allocated
+        # or none if cutoff is zero for this curve)
+        # **cutoff_per_curve**: a mostly empty tensor, which is in reference to the sequence length curve_configs tensor.
+        # It tells us (=0) that we don't use this config at all, or (=k) that this particular config will have k epochs
+        # visible in the context (observations)
+        # **epochs_per_curve**: similar to cutoff_per_curve, but tells us how many total epochs (observations + queries) 
+        # are allocated to this curve/config in the sequence; i.e. their difference will tell us how many query tokens 
+        # will be in the future of this curve/config in the sequence.
+        # **curves**: callable that maps (x, curve_id) --> y values, where x are fidelity levels in [0, 1] and curve_id 
+        # is the size of seq_len; i.e. each of the curve_configs has a corresponding curve mapping x --> y (even if not used)
+        # **ordering**: a tensor of shape (seq_len,) that tells us which token id is used at every token position in 
+        # the sequence. To doing a count over the id from left to right tells us which epoch that token corresponds to.
+        # Notice, that len(np.unique(ordering)) is the number of unique configs in the sequence (incl. queries)
+
+        
         epoch = torch.zeros(self.seq_len)
         id_curve = torch.zeros(self.seq_len)
         curve_val = torch.zeros(self.seq_len)
-        config = np.zeros((self.seq_len, num_params))
         
+        # Based on the abstract allocation, which merely tells us how many epochs there are for an abstract unique 
+        # hyperparameter index (which we can look up in curve_configs), we will now collect the fidelity array
         curve_xs = []
         curve_ys = []
-        for cid in range(self.seq_len):  # loop over every curve
+        for cid in range(self.seq_len):  # loop over every token
             if epochs_per_curve[cid] > 0:
-                # determine x (observations + query)
+                # create empty tensor that will hold the fidelity levels at which we want to evaluate a particular 
+                # curve (hyperparameter config  ) 
                 x_ = np.zeros((epochs_per_curve[cid],))
                 if cutoff_per_curve[cid] > 0:  # observations (if any)
+                    # given the allocated budget create the fidelity level tensor for the observations we want to evaluate
                     x_[: cutoff_per_curve[cid]] = (
                         np.arange(1, cutoff_per_curve[cid] + 1) / self.n_levels
                     )
+
                 if cutoff_per_curve[cid] < epochs_per_curve[cid]:  # queries (if any)
+                    # beyond the cutoff of this particular curve, we sample future fidelity levels 
+                    # that we want to use as query points -- and evaluate with the curves callable
                     x_[cutoff_per_curve[cid] :] = (
                         np.random.choice(
                             np.arange(cutoff_per_curve[cid] + 1, self.n_levels + 1),
@@ -116,16 +140,23 @@ class AllocationPrior:
                         )
                         / self.n_levels
                     )
+
                 curve_xs.append(x_)
-                # determine y's
+
+                # determine y's, by evaluating this curve at the fidelity levels x_
                 y_ = curves(x_, cid)
                 curve_ys.append(y_)
+            
+            # an unused curve/config
             else:
                 curve_xs.append(None)
                 curve_ys.append(None)
 
-        # construct the batch data element
+        # construct the sequence tensors x and y based on the sampled ordering
+        # read the note on ordering above for details!
+        config = np.zeros((self.seq_len, num_params))
         curve_counters = torch.zeros(self.seq_len).type(torch.int64)
+
         for i in range(self.seq_len):
             cid = ordering[i]
             if i < single_eval_pos or curve_counters[cid] > 0:
