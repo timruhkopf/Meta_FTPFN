@@ -1,7 +1,7 @@
 
 _target_: trainer.scheduler.get_cosine_schedule_with_warmup
 _partial_: true
-warmup_epochs: 30
+warmup_epochs: 2
 max_epochs: ${trainer.epochs}
 eta_min: 2e-6
 start_factor: 0.0001

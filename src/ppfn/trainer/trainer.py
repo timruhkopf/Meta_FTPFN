@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import os
 import time
-from typing import Dict
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
@@ -122,9 +122,16 @@ class PPFNTrainer:
         self.mlflow_run = mlflow.start_run(run_name=run_name)
 
         # 1. Track Git Hash as a Tag
+        mlflow.set_tag("mlflow.folder", os.getcwd())
         mlflow.set_tag("mlflow.source.git.commit", get_git_hash())
+        try:
+            from hydra.core.hydra_config import HydraConfig
+            overrides = HydraConfig.get().overrides.task
+            mlflow.log_params(dict([(k, v) for k, v in [ o.split('=') for o in overrides if '=' in o]]))
+        except Exception:
+            logger.warning("Could not log Hydra overrides to MLflow.")
 
-        # Mixed precision
+
         # Mixed precision
         self.scaler = amp.GradScaler(device=self.device) if use_amp else None
         # Training state
@@ -170,15 +177,17 @@ class PPFNTrainer:
                     mlflow.log_metric(key, value, step=epoch)
 
                 # Track best loss
-                # FIXME: obsolte with working EarlyStopping callback
+                # FIXME: obsolete with working EarlyStopping callback
                 if epoch_metrics["loss"] < self.best_loss and epoch > 100:
                     self.best_loss = epoch_metrics["loss"]
                     self._save_checkpoint(f"best_model.pt")
 
                 if self.verbose:
                     # update tqdm description
+
                     iterator.set_description(
                         f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
+                        f"NLL_diff: {epoch_metrics.get('nll_diff_uncond_cond', 0):7.4f} | "
                         f"Time: {epoch_metrics['time']:6.2f}s | "
                         f"LR: {epoch_metrics.get('lr', 0):.6f}"
                     )

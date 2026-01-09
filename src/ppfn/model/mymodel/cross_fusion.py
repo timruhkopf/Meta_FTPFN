@@ -10,35 +10,44 @@ from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 
 
 class CrossFusion(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.0, use_gain=False):
+    def __init__(self, d_model, num_heads, dropout=0.0, use_gain=False, use_prenorm=True):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.dropout = dropout
         self.use_gain = use_gain
+        self.use_prenorm = use_prenorm
 
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
         self.cross_test = MultiheadAttention(d_model, num_heads, dropout)
-        self.norm = nn.LayerNorm(d_model)  # optional but recommended
 
+        # PRE-NORM: Normalize inputs, not the output delta
+        if self.use_prenorm:
+            self.norm_Q = nn.LayerNorm(d_model)
+            self.norm_K = nn.LayerNorm(d_model)  # Shared for V usually if K=V
+
+        self.norm = nn.LayerNorm(d_model)  # optional but recommended
 
         # Fading in this layer either using gain parameter or identity init
         if use_gain:
-            self.gain = nn.Parameter(torch.tensor(-6.0))
-        else: 
-           
-            self.initialize_as_identity()
+            self.gain = nn.Parameter(torch.zeros(1))
 
+        self.initialize_as_identity()
         self.single_eval_pos = None  # placeholder
 
     def initialize_as_identity(self):
         # 1. Zero out the output projection weights and biases
         # This makes the output of the attention mechanism 0 before the residual connection
-        nn.init.constant_(self.cross_train.out_proj.weight, 0.0001)
-        nn.init.constant_(self.cross_train.out_proj.bias, 0.0001)
-        
-        nn.init.constant_(self.cross_test.out_proj.weight, 0.0001)
-        nn.init.constant_(self.cross_test.out_proj.bias, 0.0001)
+        # nn.init.constant_(self.cross_train.out_proj.weight, 0.0001)
+        # nn.init.constant_(self.cross_train.out_proj.bias, 0.0001)
+        #
+        # nn.init.constant_(self.cross_test.out_proj.weight, 0.0001)
+        # nn.init.constant_(self.cross_test.out_proj.bias, 0.0001)
+
+        nn.init.zeros_(self.cross_train.out_proj.weight)
+        nn.init.zeros_(self.cross_train.out_proj.bias)
+        nn.init.zeros_(self.cross_test.out_proj.weight)
+        nn.init.zeros_(self.cross_test.out_proj.bias)
 
         # 2. Ensure LayerNorm starts as identity (weight=1, bias=0)
         # PyTorch does this by default, but it's good to be explicit
@@ -136,7 +145,12 @@ class CrossFusionV2(CrossFusion):
         V = x[ :, R: 2 * R , : ] # Key Difference to CrossFusion: 
 
         # Stream (C): last' layer's conditional predictions (to be updated)
-        C = x[ :, 2 * R :, : ]  
+        C = x[ :, 2 * R :, : ]
+
+        if self.use_prenorm:
+            Q = self.norm_Q(Q)
+            K = self.norm_K(K)
+            # V needs no norm, as we want the raw values from the related tasks
 
         # Handle the train/test split
         Q_train, Q_test = Q[:sep, :, :], Q[sep:, :, :]
@@ -144,18 +158,26 @@ class CrossFusionV2(CrossFusion):
         V_train = V[:sep, :, :]#, V[sep:, :, :] 
         C_train, C_test = C[:sep, :, :], C[sep:, :, :]
 
-        # already includes the skip connection from the original "C" Stream component
-        train_update = self.norm(self.cross_train(Q_train, K_train, V_train)[0]) + C_train
-        test_update = self.norm(self.cross_test(Q_test, K_train, V_train)[0]) + C_test
+        # only the learned delta
+        train_delta = self.cross_train(Q_train, K_train, V_train)[0]
+        test_delta = self.cross_test(Q_test, K_train, V_train)[0]
+
+        if not self.use_prenorm:
+            train_delta = self.norm(train_delta)
+            test_delta = self.norm(test_delta)
 
         if self.use_gain:
             gain = torch.sigmoid(self.gain)
-            train_update = train_update * gain
-            test_update = test_update * gain
+            train_delta = train_delta * gain
+            test_delta = test_delta * gain
+
+        train_update = train_delta + C_train
+        test_update = test_delta + C_test
 
         conditional = torch.cat(
             [train_update, test_update], dim=0
         )  # train + test updated conditionals
+
 
         # combine the untainted streams A, B with the updated conditional stream C
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)
@@ -211,14 +233,28 @@ class CrossFusionLossCallback(AbstractCallback):
         nll_diff = nll_diff.detach().mean().cpu().item()
 
         #  KL divergence between unconditional and conditional predictions?
-        kl = F.kl_div(
-            F.softmax(output[:, -R:, :], dim=-1),
-            F.softmax(output[:, :R, :], dim=-1),
-            reduction="batchmean",
-        ).detach().mean().cpu().item()
+        # 1. Target (Stream A/Unconditional): Needs to be PROBABILITIES
+        target_probs = F.softmax(output[:, :R, :], dim=-1)
+
+        # 2. Input (Stream C/Conditional): Needs to be LOG-PROBABILITIES
+        input_log_probs = F.log_softmax(output[:, -R:, :], dim=-1)
+
+        # 3. Compute KL
+        #    We use reduction='none' followed by sum(dim=-1) to properly sum over
+        #    the bins (D=1000) first, ensuring we get the KL per token.
+        kl_tensor = F.kl_div(
+            input_log_probs,
+            target_probs,
+            reduction="none"
+        ).sum(dim=-1)  # Sum over the last dim (classes/bins)
+
+        # Average over Time (T) and Batch (B) dimensions
+        kl = kl_tensor.mean().detach().cpu().item()
 
         return {
             "kl_div_uncond_cond": kl,
+            "nll_uncond": unconditional_loss.detach().mean().cpu().item(),
+            "nll_cond": conditional_loss.detach().mean().cpu().item(),
             "nll_diff_uncond_cond": nll_diff,  # loss on Stream C only
             "loss": loss[ :, -R: ], 
               # loss on Stream C only (the others are frozen anyways!)
