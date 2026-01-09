@@ -1,6 +1,7 @@
-dataloader: 
+dataset_name: same_task_new_sample_prior
+dataloader:
   _target_: pfns4hpo.priors.utils.PriorDataLoader
-  load_path: ${oc.env:DATADIR}priors/same_task_new_sample_prior # fixme: remove _test for final
+  load_path: ${oc.env:DATADIR}priors/${dataset.dataset_name} # fixme: remove _test for final
   n_chunks: 300
   subsample: 1
   store: False # FIXME: once the prior is stored, set to False to stop sampling and just load from disk for efficiency
