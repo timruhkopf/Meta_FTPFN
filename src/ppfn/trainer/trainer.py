@@ -116,8 +116,7 @@ class PPFNTrainer:
 
         # MLflow 
         logger.info("Setting up MLflow tracking...")
-        db_path = os.getenv("MLFLOW_DB_PATH", "mlflow.db")
-        mlflow.set_tracking_uri(f"sqlite:///{db_path}")
+        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
         mlflow.set_experiment(experiment_name)
         self.mlflow_run = mlflow.start_run(run_name=run_name)
 
@@ -170,7 +169,7 @@ class PPFNTrainer:
                     mlflow.log_metric(key, value, step=epoch)
 
                 # Track best loss
-                # FIXME: obsolte with working EarlyStopping callback
+                # FIXME: obsolete with working EarlyStopping callback
                 if epoch_metrics["loss"] < self.best_loss and epoch > 100:
                     self.best_loss = epoch_metrics["loss"]
                     self._save_checkpoint(f"best_model.pt")
@@ -178,7 +177,9 @@ class PPFNTrainer:
                 if self.verbose:
                     # update tqdm description
                     iterator.set_description(
-                        f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
+                        f"Epoch {epoch:3d} | "
+                        f"Loss: {epoch_metrics['loss']:7.4f} | "
+                        f"NLL: {epoch_metrics.get('nll_diff_uncond_cond', 0):7.4f} | "
                         f"Time: {epoch_metrics['time']:6.2f}s | "
                         f"LR: {epoch_metrics.get('lr', 0):.6f}"
                     )
