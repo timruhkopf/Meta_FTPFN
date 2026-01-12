@@ -130,37 +130,48 @@ class CrossFusion(nn.Module):
     
 class CrossFusionV2(CrossFusion):
     def forward(self, x, *args, **kwargs):
+        """
+        Core Motivation:
+        Since the PFN has already learned useful representations for the marginal predictions,
+        we want to learn a kernel that asserts the similarity between the target task marginal predictions
+        and the related tasks marginal predictions, and use that to extract useful information from the related tasks
+        marginal predictions to update the target tasks conditional predictions.
+
+        """
+
         B, sep = self.validate_forward_args(x, *args, **kwargs)
         
         R = B // 3  # number related tasks
 
         # Stream (A) query target task marginal predictions (untainted)
-        Q = x[ :, : R , : ]
+        A = x[ :, : R , : ]
         
-        # Stream (B) key related tasks' marginal predictions (untainted)
-        K = x[ :, R : 2 * R, : ]
+        # Stream (B.1) key related tasks' marginal predictions (untainted)
+        B = x[ :, R : 2 * R, : ]
 
-        # Stream (B) Value: what we want to extract from the related tasks based on 
+        # Stream (B.2) Value: what we want to extract from the related tasks based on
         # the learned kernel(A, B) * B, which will give us \Delta C, that we can add to C.
-        V = x[ :, R: 2 * R , : ] # Key Difference to CrossFusion: 
+        B = x[ :, R: 2 * R , : ] # Key Difference to CrossFusion
 
         # Stream (C): last' layer's conditional predictions (to be updated)
         C = x[ :, 2 * R :, : ]
 
         if self.use_prenorm:
-            Q = self.norm_Q(Q)
-            K = self.norm_K(K)
+            A = self.norm_Q(A)
+            B = self.norm_K(B)
             # V needs no norm, as we want the raw values from the related tasks
 
         # Handle the train/test split
-        Q_train, Q_test = Q[:sep, :, :], Q[sep:, :, :]
-        K_train = K[:sep, :, :]#, K[sep:, :, :] for the test part (that we don't use)
-        V_train = V[:sep, :, :]#, V[sep:, :, :] 
+        A_train, A_test = A[:sep, :, :], A[sep:, :, :]
+        B_train, B_test = B[:sep, :, :], B[sep:, :, :]
+        # B_train, B_test = B[:sep, :, :], B[sep:, :, :]
         C_train, C_test = C[:sep, :, :], C[sep:, :, :]
 
         # only the learned delta
-        train_delta = self.cross_train(Q_train, K_train, V_train)[0]
-        test_delta = self.cross_test(Q_test, K_train, V_train)[0]
+        train_delta = self.cross_train(A_train, B_train, B_train)[0]
+        test_delta = self.cross_test(A_test, B_train, B_train)[0]
+
+        # FIXME: V_test should probably be altered and added?
 
         if not self.use_prenorm:
             train_delta = self.norm(train_delta)
