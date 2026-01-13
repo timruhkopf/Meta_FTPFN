@@ -241,7 +241,7 @@ class CrossFusionLossCallback(AbstractCallback):
         # their difference)
 
         nll_diff = (unconditional_loss - conditional_loss)
-        nll_diff = nll_diff.detach().mean().cpu().item()
+
 
         #  KL divergence between unconditional and conditional predictions?
         # 1. Target (Stream A/Unconditional): Needs to be PROBABILITIES
@@ -259,14 +259,32 @@ class CrossFusionLossCallback(AbstractCallback):
             reduction="none"
         ).sum(dim=-1)  # Sum over the last dim (classes/bins)
 
-        # Average over Time (T) and Batch (B) dimensions
-        kl = kl_tensor.mean().detach().cpu().item()
-
-        return {
-            "kl_div_uncond_cond": kl,
+        nll = {
+            'nll_diff_uncond_cond': nll_diff.detach().mean().cpu().item(),  # loss on Stream C only
             "nll_uncond": unconditional_loss.detach().mean().cpu().item(),
             "nll_cond": conditional_loss.detach().mean().cpu().item(),
-            "nll_diff_uncond_cond": nll_diff,  # loss on Stream C only
+        }
+
+        kl = {
+            # Average over Time (T) and Batch (B) dimensions
+            "kl_div_uncond_cond": kl_tensor.mean().detach().cpu().item()
+        }
+
+        if hasattr(batch, 'style'):
+            style = batch.style
+            nll.update({
+                'same_task_nll': nll_diff[:, style == 0],
+                'unrelated_task_nll': nll_diff[:, style == 1]
+            })
+
+            kl.update({
+                'same_task_kl': kl_tensor[:, style == 0].mean().detach().cpu().item(),
+                'unrelated_task_kl': kl_tensor[:, style == 1].mean().detach().cpu().item()
+            })
+
+        return {
+            **nll,
+            **kl,
             "loss": loss[ :, -R: ], 
               # loss on Stream C only (the others are frozen anyways!)
         }

@@ -49,6 +49,10 @@ def main(cfg: DictConfig) -> None:
     if cfg.dataset.dataloader.get("store", True):
         logger.info("Storing prior samples...")
 
+        # store the generating yaml config alongside the prior samples
+        with open( os.path.join(cfg.dataset.dataloader.load_path, 'generating_config.yaml'), 'w') as f:
+            OmegaConf.save(config=cfg.dataset, f=f)
+
         (Path(cfg.dataset.dataloader.load_path) / 'partition_0').mkdir(parents=True, exist_ok=True)
         loader.store_prior(**instantiate(cfg.dataset.store_prior))
         loader._load_chunk(0)

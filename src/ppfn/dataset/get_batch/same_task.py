@@ -52,6 +52,7 @@ def get_batch(
 
     x = []
     y = []
+    indicator = []
 
     # FIXME: (low-prio) efficincy: since all is the same task, we could just do one single fwd (get_marginal curve)
     #  and collect all sequences at once. No looping requried.
@@ -82,14 +83,13 @@ def get_batch(
         )
         x.append(x_i)
         y.append(y_i)
+        indicator.append(0)  # same task indicator
 
 
     # sample the unrelated tasks!
     for i in range(int(batch_size * share_unrelated_tasks)):
 
         dataset_prior.sample_task()
-
-        # determine # observations/queries per curve
 
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing
@@ -111,12 +111,13 @@ def get_batch(
             )
         x.append(x_i)
         y.append(y_i)
-
+        indicator.append(1)  # different task indicator
 
     x = torch.stack(x, dim=1).to(device).float()
     y = torch.stack(y, dim=1).to(device).float()
+    indicator = torch.tensor(indicator, device=device).long()
 
-    return Batch(x=x, y=y, target_y=y, single_eval_pos=single_eval_pos)
+    return Batch(x=x, y=y, target_y=y, single_eval_pos=single_eval_pos, style=indicator)
 
 
 class Prior: 

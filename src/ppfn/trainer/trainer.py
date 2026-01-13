@@ -27,8 +27,10 @@ import pfns4hpo.utils as utils
 from pfns4hpo.priors import Batch
 
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 def get_git_hash():
     try:
@@ -36,6 +38,7 @@ def get_git_hash():
     except Exception as e:
         logger.warning("Could not retrieve git hash.")
         return "not-a-git-repo"
+
 
 def flatten_dict(d, parent_key='', sep='.'):
     """Recursively flattens a nested dictionary."""
@@ -47,7 +50,8 @@ def flatten_dict(d, parent_key='', sep='.'):
         else:
             items.append((new_key, v))
     return dict(items)
-    
+
+
 class PPFNTrainer:
     """
     Trainer for PPFN models with MLflow integration.
@@ -57,20 +61,20 @@ class PPFNTrainer:
     """
 
     def __init__(
-        self,
-        model: nn.Module,
-        train_loader,
-        criterion: nn.Module,
-        device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
-        use_amp: bool = False,
-        grad_clip: float = 1.0,
-        aggregate_k_gradients: int = 1,
-        callbacks: list[AbstractCallback] | None = None,
-        experiment_name: str = "ppfn_training",
-        run_name: str | None = None,
-        verbose: bool = True,
-        optimizer=None,
-        scheduler=None,
+            self,
+            model: nn.Module,
+            train_loader,
+            criterion: nn.Module,
+            device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
+            use_amp: bool = False,
+            grad_clip: float = 1.0,
+            aggregate_k_gradients: int = 1,
+            callbacks: list[AbstractCallback] | None = None,
+            experiment_name: str = "ppfn_training",
+            run_name: str | None = None,
+            verbose: bool = True,
+            optimizer=None,
+            scheduler=None,
     ):
         """
         Initialize the trainer.
@@ -126,10 +130,13 @@ class PPFNTrainer:
         try:
             from hydra.core.hydra_config import HydraConfig
             overrides = HydraConfig.get().overrides.task
-            mlflow.log_params(dict([(k, v) for k, v in [ o.split('=') for o in overrides if '=' in o]]))
-        except Exception:
+            mlflow.log_params(dict(
+                [(k, v) for k, v in
+                 [o.strip('+').split('=') for o in overrides if '=' in o]]
+                # cmd overrides with + are unacceptable keys for mlflow params
+            ))
+        except Exception as e:
             logger.warning("Could not log Hydra overrides to MLflow.")
-
 
         # Mixed precision
         self.scaler = amp.GradScaler(device=self.device) if use_amp else None
@@ -139,7 +146,7 @@ class PPFNTrainer:
         self.best_loss = float("inf")
 
     def log_config(self, cfg):
-         
+
         # Convert to container and resolve interpolations (e.g. ${model.lr})
         config_dict = OmegaConf.to_container(cfg, resolve=True)
         mlflow.log_dict(config_dict, "config.yaml")
@@ -296,7 +303,7 @@ class PPFNTrainer:
         with amp.autocast(device_type="cuda", enabled=self.use_amp):
             output = self.model(batch, single_eval_pos=batch.single_eval_pos)
 
-            targets = batch.y[batch.single_eval_pos :, ...]
+            targets = batch.y[batch.single_eval_pos:, ...]
 
             # allow callback to modify the outputs (temporary fix)
             feedback = self.callback_handler.on_event(
@@ -366,4 +373,3 @@ class DistributedTrainer(PPFNTrainer):
         """Log only from rank 0."""
         if self.rank == 0:
             print(message)
-
