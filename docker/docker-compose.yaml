@@ -40,6 +40,7 @@ services:
       mlflow server
       --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       --host 0.0.0.0
+#      --port 5000
 #               --default-artifact-root /shared/path/to/mlruns
 
 # Important for data persistence

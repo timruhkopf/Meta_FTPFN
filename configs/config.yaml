@@ -18,3 +18,6 @@ hydra:
     dir: ${oc.env:ROOT}/outputs/${experiment_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}_${run_name}
   sweep:
     dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}_${run_name}
+
+
+hash: ${githash:''}
