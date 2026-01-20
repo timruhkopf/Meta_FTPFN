@@ -96,7 +96,11 @@ class HierarchicalPFN(nn.Module):
     def forward(self, batch: Batch, single_eval_pos=None, **kwargs):
 
         # parse input to meet ft_pfn format
-        x, single_eval_pos = (batch.x, batch.y), batch.single_eval_pos
+        x = (batch.x, batch.y)
+        single_eval_pos = batch.single_eval_pos if single_eval_pos is None else single_eval_pos
+
+        if single_eval_pos is None:
+            raise ValueError("single_eval_pos must be provided in the batch or as an argument.")
     
         self.single_eval_pos = single_eval_pos # propagate to interleaved layers
         

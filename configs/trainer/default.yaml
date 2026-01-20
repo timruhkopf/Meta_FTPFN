@@ -10,6 +10,13 @@ trainer_class:
   callbacks:
     - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
 
+    - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
+      benchmark_name: lcbench_tabular
+      data_path: ${oc.env:DATADIR}/validation
+      single_eval_pos: 64
+      n_folds: 3
+      device: ${device}
+
   experiment_name: ${experiment_name}
 
 

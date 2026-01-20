@@ -52,7 +52,7 @@ class FT_PPFN(HierarchicalPFN):
         )
         self.force_same_query = force_same_query
 
-    def parse_train_batch(self, batch: Batch) -> Batch:
+    def parse_train_batch(self, batch: Batch, single_eval_pos) -> Batch:
         """
         Modify the batch for cross-fusion training.
         In training mode, we expect triplets of tasks in the batch:
@@ -60,7 +60,8 @@ class FT_PPFN(HierarchicalPFN):
         where (A) & (B) are untainted predictions, and (C) is to be updated.
         """
 
-        sep = batch.single_eval_pos
+        sep = single_eval_pos
+        device = batch.x.device
   
         # add related tasks by rolling the batch
         target_marginal_x = batch.x
@@ -81,11 +82,11 @@ class FT_PPFN(HierarchicalPFN):
         y = torch.cat([target_marginal_y, related_marginal_y, target_conditional_y], dim=1)
 
         return Batch(
-                x=x, y=y, target_y=y,
+                x=x.to(device), y=y.to(device), target_y=y.to(device),
                 single_eval_pos=sep,
         )
 
-    def parse_eval_batch(self, batch: Batch) -> Batch:
+    def parse_eval_batch(self, batch: Batch, single_eval_pos) -> Batch:
         """
         Modify the batch for cross-fusion evaluation.
         In evaluation mode, we expect:
@@ -97,9 +98,10 @@ class FT_PPFN(HierarchicalPFN):
         """
     
         B = batch.x.shape[1]
-        R = (B - 1) 
+        R = (B - 1)
+        device = batch.x.device
 
-        sep = batch.single_eval_pos
+        sep = single_eval_pos
 
         # prepare the three streams (X tensors)
         target_marginal_x = batch.x[:, :1, :].expand(-1, R, -1)
@@ -122,7 +124,7 @@ class FT_PPFN(HierarchicalPFN):
         y = torch.cat([ target_marginal_y, related_marginal_y, target_conditional_y], dim=1)
 
         return Batch(
-                x=x, y=y, target_y=y,
+                x=x.to(device), y=y.to(device), target_y=y.to(device),
                 single_eval_pos=sep,
         )
     
@@ -130,16 +132,24 @@ class FT_PPFN(HierarchicalPFN):
         """
         Forward pass with batch parsing for cross-fusion.
         """
+
+        if 'single_eval_pos' in kwargs.keys():
+            # kwargs has precedence over batch attribute
+            single_eval_pos = kwargs['single_eval_pos']
+            del kwargs['single_eval_pos']
+        else:
+            single_eval_pos = batch.single_eval_pos
         
-        batch = self.parse_batch(batch)
-        output = super().forward(batch, **kwargs)
+        batch = self.parse_batch(batch, single_eval_pos)
+        output = super().forward(batch, single_eval_pos, **kwargs)
         return output
 
-    def parse_batch(self, batch: Batch) -> Batch:
+    def parse_batch(self, batch: Batch, single_eval_pos) -> Batch:
         """
         Override parse_batch to handle both train and eval parsing.
         """
-        return self.parse_train_batch(batch) if self.training else self.parse_eval_batch(batch)
+        return self.parse_train_batch(batch, single_eval_pos) if self.training \
+            else self.parse_eval_batch(batch, single_eval_pos)
 
     @property
     def criterion(self):

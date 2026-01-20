@@ -14,7 +14,7 @@ class AbstractCallback:
     def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
         pass
 
-    def on_forward_end(self, batch, output, targets) -> Dict:
+    def on_forward_end(self, batch, single_eval_pos, output, targets) -> Dict:
         pass
 
     def on_step_end(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs):

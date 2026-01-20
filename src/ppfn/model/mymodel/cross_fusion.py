@@ -200,7 +200,7 @@ class CrossFusionLossCallback(AbstractCallback):
     # FIXME: move to callbacks dir once fix is no longer needed
     """A callback to compute loss only on the workspace (Stream C) outputs."""
 
-    def on_forward_end(self, batch, output, targets) -> Dict:
+    def on_forward_end(self, batch, single_eval_pos, output, targets) -> Dict:
         """
         Modify the loss to only consider the workspace (Stream C) outputs.
 
@@ -220,11 +220,11 @@ class CrossFusionLossCallback(AbstractCallback):
 
         parser = self.trainer.model.parse_batch
 
-        b = parser(batch)
+        b = parser(batch, single_eval_pos)
         
-        return {"targets": b.y[batch.single_eval_pos :, ...]}  
+        return {"targets": b.y[single_eval_pos :, ...]}
 
-    def on_loss_end(self, batch, output, targets, loss) -> Dict:
+    def on_loss_end(self, batch, single_eval_pos, output, targets, loss) -> Dict:
         """
         Modify the loss, since we only care about the conditional (Stream C) outputs.
         We do however want to track the difference between the unconditional (A) and conditional (C) outputs.
@@ -270,15 +270,17 @@ class CrossFusionLossCallback(AbstractCallback):
             "kl_div_uncond_cond": kl_tensor.mean().detach().cpu().item()
         }
 
-        if hasattr(batch, 'style'):
+        if batch.style is not None:
             style = batch.style
+
+            style = style if style.shape[0] == nll_diff.shape[1] else style[1:]
             nll.update({
-                'same_task_nll': nll_diff[:, style == 0],
-                'unrelated_task_nll': nll_diff[:, style == 1]
+                'same_task_nll': nll_diff[:, style != 1].mean().detach().cpu(),
+                'unrelated_task_nll': nll_diff[:, style == 1].mean().detach().cpu()
             })
 
             kl.update({
-                'same_task_kl': kl_tensor[:, style == 0].mean().detach().cpu().item(),
+                'same_task_kl': kl_tensor[:, style != 1].mean().detach().cpu().item(),
                 'unrelated_task_kl': kl_tensor[:, style == 1].mean().detach().cpu().item()
             })
 
@@ -289,10 +291,10 @@ class CrossFusionLossCallback(AbstractCallback):
               # loss on Stream C only (the others are frozen anyways!)
         }
 
-    def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
-        for i, layer in enumerate(self.trainer.model.interleaved_layers.values()):
-            if isinstance(layer, CrossFusion):
-                if layer.use_gain:
-                    mlflow.log_metric(
-                        f"cross_fusion_gain_{i}", layer.gain.item(), epoch
-                    )
+    # def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
+    #     for i, layer in enumerate(self.trainer.model.interleaved_layers.values()):
+    #         if isinstance(layer, CrossFusion):
+    #             if layer.use_gain:
+    #                 mlflow.log_metric(
+    #                     f"cross_fusion_gain_{i}", layer.gain.item(), epoch
+    #                 )

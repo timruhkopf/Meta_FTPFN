@@ -25,7 +25,17 @@ def apply_saturation_and_tail(x, y_func, Y0):
     )
 
 class CurveModels:
-    """Namespace for the specific learning curve functional forms."""
+    """
+    Namespace for the specific learning curve functional forms.
+
+    Power Law: Captures typical "diminishing returns" learning.
+
+    Exponential: Captures rapid early gains that plateau quickly.
+
+    Logarithmic: Captures slow, steady improvement.
+
+    Hill: Captures S-shaped curves (slow start, rapid mid-phase, saturation).
+    """
     
     @staticmethod
     def power_law(x, Y0, Yinf, prec, xsat, alpha):
@@ -59,6 +69,8 @@ def weighted_curve_model(
     w=[1 / 4] * 4,
 ):
     """
+    The learning curve is not a single equation but a weighted ensemble of four distinct growth behaviors:
+
     Combines multiple curve models with weighted averaging and saturation transformation.
     This function implements a ensemble approach that blends four different mathematical
     models (power law, exponential, logarithmic, and Hill) to create a flexible composite
@@ -87,14 +99,20 @@ def weighted_curve_model(
             Saturation thresholds for each model (default: [1.0, 1.0, 1.0, 1.0]).
             Input values below Xsat[i] are passed unchanged; values above trigger saturation.
             Indices correspond to the 4 models in order.
+            $X_{sat}$ The Elbow. Determines the fidelity coordinate where the model stops learning
+            and starts "saturating."
         alpha : list of float, optional
             Scaling/rate parameters for each model (default: [e, 1/e, 1+e^-4, 1]).
             Indices: [0]=power_law, [1]=exponential, [2]=logarithmic, [3]=hill.
             Controls the rate or intensity of response in each model.
+            The Curvature	Log-normal transformations.
+            It defines if the learning is "front-loaded" or "back-loaded."
         Rpsat : list of float, optional
             Saturation response slopes for each model (default: [1.0, 1.0, 1.0, 1.0]).
             Controls how the output changes beyond the saturation threshold Xsat[i].
             Indices correspond to the 4 models in order.
+            Post-saturation rate. If $< 1.0$, the curve might actually degrade
+             or converge to a flat line after the saturation point.
         w : list of float, optional
             Weights for combining the four models (default: [0.25, 0.25, 0.25, 0.25]).
             Must sum to 1.0 for normalized combination. Indices: [0]=power_law, 

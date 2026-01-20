@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import os
 import time
+import warnings
 from typing import Dict, List
 
 import torch
@@ -102,12 +103,7 @@ class PPFNTrainer:
         self.use_amp = use_amp
 
         # Get trainable parameters from the model
-
-        # FIXME: trainable parameters!
-        if hasattr(model, "trainable_parameters"):
-            trainable_params = model.trainable_parameters()
-        else:
-            trainable_params = [p for p in model.parameters() if p.requires_grad]
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
 
         self.optimizer = optimizer(trainable_params)
         self.scheduler = scheduler(self.optimizer)
@@ -158,6 +154,7 @@ class PPFNTrainer:
         Args:
             epochs: Number of epochs to train
         """
+        logger.info("Starting training...")
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
             for epoch in iterator:
@@ -206,8 +203,10 @@ class PPFNTrainer:
                 "on_train_end", best_loss=self.best_loss, epochs=self.current_epoch
             )
 
-            # Log final model
-            # self._save_checkpoint("final_model.pt")
+        logger.info("Training complete.")
+
+        # Log final model
+        # self._save_checkpoint("final_model.pt")
 
     def train_epoch(self, n_steps) -> Dict[str, float]:
         """Train for one epoch."""
@@ -222,7 +221,18 @@ class PPFNTrainer:
 
         for step in range(n_steps):
             batch = self.train_loader.get_batch(device=self.device)
-            step_metrics = self._train_step(batch)
+
+            if batch.single_eval_pos is None:
+                seq_len = torch.tensor(batch.x.shape[1])
+                # sample according to the PriorDataLoader default
+                single_eval_pos = int(torch.floor(
+                    torch.exp(torch.rand(1) * torch.log(seq_len + 1))
+                ) - 1)
+                warnings.warn("single_eval_pos not set in batch; using random value.")
+            else:
+                single_eval_pos = batch.single_eval_pos
+
+            step_metrics = self._train_step(batch, single_eval_pos)
 
             # Accumulate metrics
             for key, value in step_metrics.items():
@@ -250,10 +260,10 @@ class PPFNTrainer:
 
         return epoch_metrics
 
-    def _train_step(self, batch: Batch) -> Dict[str, float]:
+    def _train_step(self, batch: Batch, single_eval_pos) -> Dict[str, float]:
         """Execute a single training step."""
         device_type = self.device.type if hasattr(self, "device") else "cuda"
-        losses, step_metrics = self._forward_pass(batch)
+        losses, step_metrics = self._forward_pass(batch, single_eval_pos=single_eval_pos)
 
         loss, nan_share = utils.torch_nanmean(losses.mean(0), return_nanshare=True)
 
@@ -286,28 +296,29 @@ class PPFNTrainer:
                 "loss": loss.detach().cpu().item(),
                 "lr": self.scheduler.get_last_lr()[0],
                 "nan_share": nan_share,
-                "single_eval_pos": batch.single_eval_pos
-                if hasattr(batch, "single_eval_pos")
-                else -1,
+                "single_eval_pos": single_eval_pos
             }
         )
 
         return step_metrics
 
-    def _forward_pass(self, batch: Batch) -> tuple[torch.Tensor, Dict[str, float]]:
+    def _forward_pass(self, batch: Batch, single_eval_pos) -> tuple[torch.Tensor, Dict[str, float]]:
         """Perform a single forward pass and compute loss."""
         # Unpack batch; adapt based on your batch structure
         # if isinstance(batch, (tuple, list)):
         # batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
 
-        with amp.autocast(device_type="cuda", enabled=self.use_amp):
-            output = self.model(batch, single_eval_pos=batch.single_eval_pos)
-
-            targets = batch.y[batch.single_eval_pos:, ...]
+        with (amp.autocast(device_type="cuda", enabled=self.use_amp)):
+            output = self.model(batch, single_eval_pos=single_eval_pos)
+            targets = batch.y[single_eval_pos:, ...]
 
             # allow callback to modify the outputs (temporary fix)
             feedback = self.callback_handler.on_event(
-                "on_forward_end", batch=batch, output=output, targets=targets
+                "on_forward_end",
+                batch=batch,
+                single_eval_pos=single_eval_pos,
+                output=output,
+                targets=targets
             )
 
             output = feedback.get("output", output)
@@ -316,7 +327,10 @@ class PPFNTrainer:
             loss = self.criterion(output, targets)
 
             feedback = self.callback_handler.on_event(
-                "on_loss_end", batch=batch, output=output, targets=targets, loss=loss
+                "on_loss_end", batch=batch,
+                single_eval_pos=single_eval_pos,
+                output=output, targets=targets,
+                loss=loss
             )
 
             loss = feedback.get("loss", loss)
