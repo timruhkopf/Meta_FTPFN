@@ -60,6 +60,10 @@ the local port 5002  to the remote server's port 5001 and keep the session runni
 ssh -J ruhkopf@ssh1.ai.uni-hannover.de -L 5002:localhost:5001 ruhkopf@130.75.145.188
 ```
 
+Notice, that when the docker container is still running after a connection loss, we can just reconnect 
+with the same command again, loging in with the password during the cmd verification step. 
+check with `docker ps` on ulysses, that the container is still running in advance.
+
 Open your browser and navigate to `http://localhost:5002` to access the MLflow UI.
 
 

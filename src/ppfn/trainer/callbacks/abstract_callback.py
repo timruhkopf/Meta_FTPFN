@@ -4,6 +4,10 @@ from typing import Dict
 
 class AbstractCallback:
     """Base class for training callbacks."""
+    def __init__(self, verbose:bool= False):
+        self.verbose = verbose
+        self.trainer = None
+
 
     def set_trainer(self, trainer):
         self.trainer = trainer
@@ -21,6 +25,9 @@ class AbstractCallback:
         pass
 
     def on_train_end(self, **kwargs):
+        pass
+
+    def on_clipping(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs) -> Dict:
         pass
 
 

@@ -55,7 +55,7 @@ class MetaTestBenchmarkCallback(AbstractCallback):
 
             aggregated_metrics = {}
             for key in results[0].keys():
-                newkey = f'{self.benchmark_name}/{key}'
+                newkey = f'{key}:{self.benchmark_name}'
                 aggregated_metrics[newkey] = sum(r[key] for r in results) / len(results)
 
             self.trainer.model.train()

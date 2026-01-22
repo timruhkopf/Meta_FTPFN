@@ -1,5 +1,7 @@
 # FIXME: remove this
 import sys
+from typing import Union
+
 
 # Define the path to the 'src' folder
 mfpbench_path = "/home/ruhkopf/VSCode/Meta_FTPFN/external/ifbo_icml2024/src/mf-prior-bench/src"
@@ -18,6 +20,8 @@ except ImportError as e:
 
 # ------------------------------------------------------------------------------
 import mfpbench
+
+from src.mfpbench.taskset_tabular.benchmark import TaskSetTabularConfig_8p
 
 import os
 import torch
@@ -160,6 +164,41 @@ def generate_tasks(
 
         allocations.append([id_curve, epoch])
 
+    if benchmark_name == "taskset_tabular":
+        from copy import deepcopy
+        from ConfigSpace.hyperparameters import UniformFloatHyperparameter
+
+        default_space = deepcopy(benchmark.space)
+        hp_dims = {
+            'l1':UniformFloatHyperparameter(
+                "l1",
+                lower=1e-9,
+                upper=10,
+                log=True,
+            ),
+            'l2': UniformFloatHyperparameter(
+                "l2",
+                lower=1e-9,
+                upper=10,
+                log=True,
+            ),
+            'linear_decay': UniformFloatHyperparameter(
+                "linear_decay",
+                lower=1e-8,
+                upper=0.0001,
+                log=True,
+            ),
+            'exponential_decay': UniformFloatHyperparameter(
+                "exponential_decay",
+                lower=1e-6,
+                upper=1e-3,
+                log=True,
+            ),
+        }
+        default_space.add_hyperparameters(
+            [v for k, v in hp_dims.items() if k not in space._hyperparameters.keys()],
+        )
+
     all_tasks = []
     for id_curve, epoch in allocations:
         np.random.shuffle(original_id)
@@ -173,10 +212,34 @@ def generate_tasks(
                 _config_id = str(config_id + offset)
                 tmp = []
                 tmp = tmp + [ordering, fidelity]
-                tmp = tmp + _get_normalized_values(
-                    config=benchmark.configs[_config_id], configuration_space=space
-                )
-                tmp = tmp + [benchmark.query(config=_config_id, at=fidelity).error]
+
+                if  benchmark_name == "taskset_tabular"  and 'adam4p' in benchmark.name:
+                    # adam4p is a subspace of adam8p, so some hp are set to their defaults
+                    # implicitly.
+                    # we need to figure out, what the missing hyperparameters are set to
+                    # after normalization in the hierarchical definition of taskset_tabular
+                    # so that we can fill them in the correct spaces of the input vector for the pfn
+                    conf = benchmark.configs[_config_id].as_dict()
+                    conf.update({
+                        'l1': 1e-7,
+                        'l2': 1e-7,
+                        'linear_decay': 1e-8,
+                        'exponential_decay': 1e-6,
+                        'id': _config_id
+                    })
+
+                    normalized_config = _get_normalized_values(
+                        config=TaskSetTabularConfig_8p(**conf), configuration_space=default_space
+                    )
+
+                else:
+                    # collect the actual config and translate it to PFN bounded space
+                    normalized_config = _get_normalized_values(
+                        config=benchmark.configs[_config_id], configuration_space=space
+                    )
+
+                tmp = tmp + normalized_config
+                tmp = tmp + [benchmark.query(config=_config_id, at=fidelity).error] # add y
             task_data.append(tmp)
         all_tasks.append(task_data)
 
@@ -185,15 +248,26 @@ def generate_tasks(
     return all_tasks.permute(1, 0, 2)  # [seq_len, nallocations_per_dataset, num_features]
 
 
-def save_task_batch(benchmark_name, task_id, ntasks_per_tensor, single_eval_pos, data_path,
-                    target_path,
-                    seq_len, rep_idx):
+def save_task_batch(
+        benchmark_name,
+        task_id: Union[str, dict],
+        ntasks_per_tensor,
+        single_eval_pos,
+        data_path,
+        target_path,
+        seq_len, rep_idx
+):
     """
     Calls the original generate_tasks existing function and saves the result to a specific
     sub-directory.
     """
+    if isinstance(task_id, dict):
+        task_name = "_".join([f"{v}" for  v in task_id.values()])
+    else:
+        task_name = str(task_id)
+
     # Create the specific directory for this configuration
-    target_dir = Path(target_path) / benchmark_name / f"task_{task_id}" / f"sep_{single_eval_pos}"
+    target_dir = Path(target_path) / benchmark_name / f"task_{task_name}" / f"sep_{single_eval_pos}"
     target_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = target_dir / f"rep_{rep_idx}.pt"
@@ -211,7 +285,7 @@ def save_task_batch(benchmark_name, task_id, ntasks_per_tensor, single_eval_pos,
 
 def orchestrate_generation(
         benchmarks,
-        task_ids,
+        task_ids:Union[list, dict],
         single_eval_positions,
         num_repetitions,
         ntasks_per_dataset,
@@ -241,8 +315,11 @@ def orchestrate_generation(
 if __name__ == '__main__':
     from ppfn.dataset.mfpbench.tasks import LCBENCH_IDS, PD1_IDS, TASKSET_IDS
 
-    datasets = {'lcbench_tabular': LCBENCH_IDS}  # , 'pd1_tabular':PD1_IDS,
-    # 'taskset_tabular':TASKSET_IDS}
+    datasets = {
+        'taskset_tabular': TASKSET_IDS,
+        'pd1_tabular': PD1_IDS,
+        'lcbench_tabular': LCBENCH_IDS
+    }
 
     for benchmark_name, task_ids in datasets.items():
         print(f"Generating tasks for benchmark: {benchmark_name}")

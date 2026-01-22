@@ -73,7 +73,7 @@ class PPFNTrainer:
             callbacks: list[AbstractCallback] | None = None,
             experiment_name: str = "ppfn_training",
             run_name: str | None = None,
-            verbose: bool = True,
+            verbose: bool = False,
             optimizer=None,
             scheduler=None,
     ):
@@ -171,6 +171,8 @@ class PPFNTrainer:
                     "on_epoch_end", epoch=epoch, metrics=epoch_metrics
                 )
 
+                epoch_metrics.update(feedback)
+
                 if feedback.get('stop_training', False):
                     print("Early stopping triggered. Terminating training.")
                     break
@@ -190,7 +192,7 @@ class PPFNTrainer:
 
                     iterator.set_description(
                         f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
-                        f"NLL_diff: {epoch_metrics.get('nll_diff_uncond_cond', 999):7.4f} | "
+                        # f"NLL_diff: {epoch_metrics.get('nll_diff_uncond_cond', 999):7.4f} | "
                         f"Time: {epoch_metrics['time']:6.2f}s | "
                         f"LR: {epoch_metrics.get('lr', 0):.6f}"
                     )
@@ -232,7 +234,7 @@ class PPFNTrainer:
             else:
                 single_eval_pos = batch.single_eval_pos
 
-            step_metrics = self._train_step(batch, single_eval_pos)
+            step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
 
             # Accumulate metrics
             for key, value in step_metrics.items():
@@ -260,7 +262,7 @@ class PPFNTrainer:
 
         return epoch_metrics
 
-    def _train_step(self, batch: Batch, single_eval_pos) -> Dict[str, float]:
+    def _train_step(self, step, batch: Batch, single_eval_pos) -> Dict[str, float]:
         """Execute a single training step."""
         device_type = self.device.type if hasattr(self, "device") else "cuda"
         losses, step_metrics = self._forward_pass(batch, single_eval_pos=single_eval_pos)
@@ -281,6 +283,12 @@ class PPFNTrainer:
                 self.scaler.unscale_(self.optimizer)
 
             if self.grad_clip:
+
+                feedack = self.callback_handler.on_event(
+                    "on_clipping", epoch=self.current_epoch, step=step, metrics=step_metrics
+                )
+                step_metrics.update(feedack)
+
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
 
             if self.scaler and device_type == "cuda":
@@ -293,12 +301,17 @@ class PPFNTrainer:
 
         step_metrics.update(
             {
-                "loss": loss.detach().cpu().item(),
-                "lr": self.scheduler.get_last_lr()[0],
-                "nan_share": nan_share,
-                "single_eval_pos": single_eval_pos
+                "nll/batch_loss": loss.detach().mean().cpu().item(),
+                "train/lr": self.scheduler.get_last_lr()[0],
+
             }
         )
+        if self.verbose:
+            step_metrics.update({
+                "train/nan_share": nan_share,
+                "train/single_eval_pos": single_eval_pos
+            })
+        del step_metrics['loss']  # remove unscaled loss to avoid it from tracking
 
         return step_metrics
 

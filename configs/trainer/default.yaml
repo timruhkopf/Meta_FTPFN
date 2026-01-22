@@ -13,10 +13,24 @@ trainer_class:
     - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
       benchmark_name: lcbench_tabular
       data_path: ${oc.env:DATADIR}/validation
-      single_eval_pos: 64
+      single_eval_pos: 128
+      n_folds: 3
+      device: ${device}
+    - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
+      benchmark_name: taskset_tabular
+      data_path: ${oc.env:DATADIR}/validation
+      single_eval_pos: 128
+      n_folds: 3
+      device: ${device}
+    - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
+      benchmark_name: pd1_tabular
+      data_path: ${oc.env:DATADIR}/validation
+      single_eval_pos: 128
       n_folds: 3
       device: ${device}
 
+    - _target_: ppfn.trainer.callbacks.callbacks.GradientClippingCallback
+      frequency: 1
   experiment_name: ${experiment_name}
 
 

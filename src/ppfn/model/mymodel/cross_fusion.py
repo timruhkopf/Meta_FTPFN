@@ -10,12 +10,12 @@ from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 
 
 class CrossFusion(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.0, use_gain=False, use_prenorm=True):
+    def __init__(self, d_model, num_heads, dropout=0.0, use_prenorm=True):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.dropout = dropout
-        self.use_gain = use_gain
+        # self.use_gain = use_gain
         self.use_prenorm = use_prenorm
 
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
@@ -29,8 +29,8 @@ class CrossFusion(nn.Module):
         self.norm = nn.LayerNorm(d_model)  # optional but recommended
 
         # Fading in this layer either using gain parameter or identity init
-        if use_gain:
-            self.gain = nn.Parameter(torch.zeros(1))
+      #  if use_gain:
+      #       self.gain = nn.Parameter(torch.zeros(1))
 
         self.initialize_as_identity()
         self.single_eval_pos = None  # placeholder
@@ -177,10 +177,10 @@ class CrossFusionV2(CrossFusion):
             train_delta = self.norm(train_delta)
             test_delta = self.norm(test_delta)
 
-        if self.use_gain:
-            gain = torch.sigmoid(self.gain)
-            train_delta = train_delta * gain
-            test_delta = test_delta * gain
+        # if self.use_gain:
+        #     gain = torch.sigmoid(self.gain)
+        #     train_delta = train_delta * gain
+        #     test_delta = test_delta * gain
 
         train_update = train_delta + C_train
         test_update = test_delta + C_test
@@ -239,52 +239,63 @@ class CrossFusionLossCallback(AbstractCallback):
         # compute auxiliary metric: difference between unconditional and conditional outputs
         # we compute the nll loss difference (the loss is calculated already, so we just need to compute
         # their difference)
-
-        nll_diff = (unconditional_loss - conditional_loss)
-
+        nll_diff = (conditional_loss- unconditional_loss)
 
         #  KL divergence between unconditional and conditional predictions?
         # 1. Target (Stream A/Unconditional): Needs to be PROBABILITIES
-        target_probs = F.softmax(output[:, :R, :], dim=-1)
+        A_probs = F.softmax(output[:, :R, :], dim=-1)
 
         # 2. Input (Stream C/Conditional): Needs to be LOG-PROBABILITIES
-        input_log_probs = F.log_softmax(output[:, -R:, :], dim=-1)
+        C_log_probs = F.log_softmax(output[:, -R:, :], dim=-1)
 
         # 3. Compute KL
         #    We use reduction='none' followed by sum(dim=-1) to properly sum over
         #    the bins (D=1000) first, ensuring we get the KL per token.
         kl_tensor = F.kl_div(
-            input_log_probs,
-            target_probs,
+            C_log_probs,
+            A_probs,
             reduction="none"
         ).sum(dim=-1)  # Sum over the last dim (classes/bins)
 
-        nll = {
-            'nll_diff_uncond_cond': nll_diff.detach().mean().cpu().item(),  # loss on Stream C only
-            "nll_uncond": unconditional_loss.detach().mean().cpu().item(),
-            "nll_cond": conditional_loss.detach().mean().cpu().item(),
-        }
+        # Average over Time (T) and Batch (B) dimensions
+        kl = {"kl/A-C": kl_tensor.mean().detach().cpu().item()}
+        nll = {'nll/C-A': nll_diff.detach().mean().cpu().item(),}
 
-        kl = {
-            # Average over Time (T) and Batch (B) dimensions
-            "kl_div_uncond_cond": kl_tensor.mean().detach().cpu().item()
-        }
+        if self.verbose:
+            nll.update({
+                "nll/A": unconditional_loss.detach().mean().cpu().item(),
+                "nll/C": conditional_loss.detach().mean().cpu().item(),
+            })
 
+
+        # Let's compute the variance difference for output  C vs A
+        # A, C = output[:, :R, :], output[:, -R:, :]
+        # # TODO use Bardistribution estimate for variance!
+        # var_A = torch.var(F.softmax(A, dim=-1), dim=-1)
+        # var_C = torch.var(F.softmax(C, dim=-1), dim=-1)
+        # distrib_properties = {
+        #     # we want this to increase! -- because the condition should be informative
+        #     'dist/var:A-C': (var_A - var_C).mean().detach().cpu().item(),
+        # }
+
+        # The style vector is added to the batch to communicate the degree of unrelatedness
+        # 0: same task, 1: unrelated task, anything inbetween indicates partial relatedness
         if batch.style is not None:
             style = batch.style
 
             style = style if style.shape[0] == nll_diff.shape[1] else style[1:]
             nll.update({
-                'same_task_nll': nll_diff[:, style != 1].mean().detach().cpu(),
-                'unrelated_task_nll': nll_diff[:, style == 1].mean().detach().cpu()
+                'nll/same_task': nll_diff[:, style != 1].mean().detach().cpu(),
+                'nll/unrelated_task': nll_diff[:, style == 1].mean().detach().cpu()
             })
 
-            kl.update({
-                'same_task_kl': kl_tensor[:, style != 1].mean().detach().cpu().item(),
-                'unrelated_task_kl': kl_tensor[:, style == 1].mean().detach().cpu().item()
-            })
+            # kl.update({
+            #     'kl/same_task': kl_tensor[:, style != 1].mean().detach().cpu().item(),
+            #     'kl/unrelated_task': kl_tensor[:, style == 1].mean().detach().cpu().item()
+            # })
 
         return {
+            # **distrib_properties,
             **nll,
             **kl,
             "loss": loss[ :, -R: ], 
