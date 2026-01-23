@@ -24,8 +24,10 @@ def get_batch(
     hyperparameters=None,
     **kwargs,
 ):
- 
-    num_params = DimensionPrior(num_features).sample()
+    if 'num_params' in kwargs and kwargs['num_params'] is not None:
+        num_params = kwargs['num_params']
+    else:
+        num_params = DimensionPrior(num_features).sample()
 
     dataset_prior = MultiFidelityTask(num_params, 23)
 
@@ -36,8 +38,10 @@ def get_batch(
         
 
         # determine the number of fidelity levels (ranging from 1: BB, up to seq_len)
-        n_levels = FidelityPrior().sample()
-        # print(f"n_levels: {n_levels}")
+        if 'hp_n_levels' in kwargs and kwargs['hp_n_levels'] is not None:
+            n_levels = kwargs['hp_n_levels']
+        else:
+            n_levels = FidelityPrior().sample()
 
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing

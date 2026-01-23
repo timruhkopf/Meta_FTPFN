@@ -183,15 +183,18 @@ class PPFNTrainer:
 
                 # Track best loss
                 # FIXME: obsolete with working EarlyStopping callback
-                if epoch_metrics["loss"] < self.best_loss and epoch > 100:
-                    self.best_loss = epoch_metrics["loss"]
-                    self._save_checkpoint(f"best_model.pt")
+                # fixme: activate again
+                # if epoch_metrics["nll/batch_loss"] < self.best_loss and epoch > 100:
+                #     self.best_loss = epoch_metrics["nll/batch_loss"]
+                #     self._save_checkpoint(f"best_model.pt")
 
                 if self.verbose:
                     # update tqdm description
-
+                    # FIXME: make this a template string (overrideable by user) to be filled
+                    #  dynamically based on epoch_metrics keys
                     iterator.set_description(
-                        f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
+                        f"Epoch {epoch:3d} | "
+                        # f"Loss: {epoch_metrics['loss']:7.4f} | " # fixme: activate again!
                         # f"NLL_diff: {epoch_metrics.get('nll_diff_uncond_cond', 999):7.4f} | "
                         f"Time: {epoch_metrics['time']:6.2f}s | "
                         f"LR: {epoch_metrics.get('lr', 0):.6f}"
@@ -214,7 +217,6 @@ class PPFNTrainer:
         """Train for one epoch."""
         self.model.train()
         epoch_metrics = {
-            "loss": 0.0,
             "num_batches": 0,
             "time": 0.0,
         }
@@ -303,7 +305,6 @@ class PPFNTrainer:
             {
                 "nll/batch_loss": loss.detach().mean().cpu().item(),
                 "train/lr": self.scheduler.get_last_lr()[0],
-
             }
         )
         if self.verbose:

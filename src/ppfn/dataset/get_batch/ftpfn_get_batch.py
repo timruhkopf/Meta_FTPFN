@@ -21,11 +21,13 @@ def get_batch(
     num_features,
     single_eval_pos,
     device=default_device,
+    num_params=None,
+    n_levels=None,
     hyperparameters=None,
     **kwargs,
 ):
- 
-    num_params = DimensionPrior(num_features).sample()
+    if num_params is None:
+        num_params = DimensionPrior(num_features).sample()
 
     dataset_prior = MultiFidelityTask(num_params, 23)
 
@@ -36,7 +38,8 @@ def get_batch(
         
 
         # determine the number of fidelity levels (ranging from 1: BB, up to seq_len)
-        n_levels = FidelityPrior().sample()
+        if n_levels is None:
+            n_levels = FidelityPrior().sample()
         # print(f"n_levels: {n_levels}")
 
         # determine # observations/queries per curve

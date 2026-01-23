@@ -11,7 +11,6 @@ from ppfn.dataset.prior import  AllocationPrior, DimensionPrior, FidelityPrior, 
 
 
 
-   
 
 
 @torch.no_grad()
@@ -33,13 +32,12 @@ def get_batch(
     For every batch, we sample a new dataset, that is the same for all tasks in the batch.
     Main difference: The sampled Trajectory (hp and budget allocation) differs across tasks
     
-    :param batch_size: Description
-    :param seq_len: Description
-    :param num_features: Description
-    :param single_eval_pos: Description
-    :param device: Description
-    :param hyperparameters: Description
-    :param kwargs: Description
+    :param batch_size: Number of tasks in the batch
+    :param seq_len: Number of total datapoints per task
+    :param num_features: Number of hyperparameters
+    :param single_eval_pos: Position of the train test split in the sequence
+    :param share_unrelated_tasks: Fraction of tasks in the batch that should come from different datasets
+    :param device: Device to put the tensors on
     """
 
     num_params = DimensionPrior(num_features).sample()
@@ -54,13 +52,10 @@ def get_batch(
     y = []
     indicator = []
 
-    # FIXME: (low-prio) efficincy: since all is the same task, we could just do one single fwd (get_marginal curve)
+    # FIXME: (low-prio) efficiency: since all is the same task, we could just do one single fwd (get_marginal curve)
     #  and collect all sequences at once. No looping requried.
 
     for i in range(int(batch_size * (1 - share_unrelated_tasks))):
-
-        
-        # print(f"n_levels: {n_levels}")
 
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing
@@ -84,34 +79,6 @@ def get_batch(
         x.append(x_i)
         y.append(y_i)
         indicator.append(0)  # same task indicator
-
-
-    # sample the unrelated tasks!
-    for i in range(int(batch_size * share_unrelated_tasks)):
-
-        dataset_prior.sample_task()
-
-        # determine # observations/queries per curve
-        # TODO: also make this a dirichlet thing
-        allocation_prior = AllocationPrior(seq_len, n_levels)
-
-        # determine config, x, y for every curve -----
-        # (1) sample "available" hyperparameter configurations, these will later be subselected and
-        # determined to be either observation or query points
-        # FIXME: move this into the allocation prior, since it is basically an internal representation!
-        curve_configs = np.random.uniform(size=(seq_len, num_params)) 
-
-        # (2) get the curves for these configurations
-        allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  # get callable to evaluate (hp, t) --> y
-
-        # (3) map the allocation to actual (x,y) values
-        x_i, y_i = allocation_prior.parse_allocation_into_sequence(
-            curve_configs, curves, num_params, single_eval_pos, allocation
-            )
-        x.append(x_i)
-        y.append(y_i)
-        indicator.append(1)  # different task indicator
 
     x = torch.stack(x, dim=1).to(device).float()
     y = torch.stack(y, dim=1).to(device).float()

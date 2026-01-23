@@ -7,30 +7,94 @@ trainer_class:
   grad_clip: 1.0
   aggregate_k_gradients: 1
   verbose: true
+  experiment_name: ${experiment_name}
+
   callbacks:
-    - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
-
-    - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
-      benchmark_name: lcbench_tabular
-      data_path: ${oc.env:DATADIR}/validation
-      single_eval_pos: 128
-      n_folds: 3
-      device: ${device}
-    - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
-      benchmark_name: taskset_tabular
-      data_path: ${oc.env:DATADIR}/validation
-      single_eval_pos: 128
-      n_folds: 3
-      device: ${device}
-    - _target_: ppfn.trainer.callbacks.mfpbench_callback.MetaTestBenchmarkCallback
-      benchmark_name: pd1_tabular
-      data_path: ${oc.env:DATADIR}/validation
-      single_eval_pos: 128
-      n_folds: 3
-      device: ${device}
-
+    # (GENERAL CALLBACKS)  ------------------------
     - _target_: ppfn.trainer.callbacks.callbacks.GradientClippingCallback
       frequency: 1
-  experiment_name: ${experiment_name}
+
+    # (TRAIN METRICS CALLBACK)  ------------------------
+    # collect NLL, KL, Distrib. properties during training
+    - _target_: ppfn.model.mymodel.cross_fusion.TrainMetricsCallback
+    # NOTICE, that this callback must appear before the CrossFusionLossCallback,
+    # because it relies on the entire loss and not the cropped one!
+
+    # (TRAINING CALLBACKS)  ------------------------
+    # CROP THE LOSS for training on STREAM C only
+    - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
+
+
+    # (SYNTHETIC BENCHMARK METRICS)  ------------------------
+    # SYNTHETIC SAME TASK
+    - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+      device: ${device}
+      switch_to_eval: False
+      dataset:
+        _target_: ppfn.dataset.synthetic_task_meta_test_dataset.SyntheticTaskMetaTestDataset
+        name: synthetic_same_task
+        get_batch_fn:
+          _target_:  ppfn.dataset.get_batch.same_task.get_batch
+          _partial_: True
+        data_path: ${oc.env:DATADIR}/validation
+        single_eval_pos: 128
+        device: ${device}
+        # kwargs for generating the dataset:
+        n_chunks: 1
+        chunk_size: 10
+        batch_size: 20 # 100 # half this number is number of pairs of items (bnn) per batch
+
+    # SYNTHETIC UNRELATED TASK
+    - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+      device: ${device}
+      switch_to_eval: False
+      dataset:
+        _target_: ppfn.dataset.synthetic_task_meta_test_dataset.SyntheticTaskMetaTestDataset
+        name: synthetic_unrelated_task
+        get_batch_fn:
+          _target_: ppfn.dataset.get_batch.ftpfn.get_batch
+          _partial_: True
+        data_path: ${oc.env:DATADIR}/validation
+        single_eval_pos: 128
+        device: ${device}
+        # kwargs for generating the dataset:
+        n_chunks: 1 # number of files
+        chunk_size: 10 # number of batches per file!
+        batch_size: 20  # number of unrelated tasks (bnn) items in batch (half them to get the n-pairs)
+
+    # (REAL BENCHMARK METRICS)  ------------------------
+    # LCBench
+    - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+      device: ${device}
+      dataset:
+        _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+        benchmark_name: lcbench_tabular
+        data_path: ${oc.env:DATADIR}/validation
+        single_eval_pos: 128
+        n_folds: 3
+        device: ${device}
+
+
+    # TaskSet
+    - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+      device: ${device}
+      dataset:
+        _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+        benchmark_name: taskset_tabular
+        data_path: ${oc.env:DATADIR}/validation
+        single_eval_pos: 128
+        n_folds: 3
+        device: ${device}
+
+    # PD1
+    - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+      device: ${device}
+      dataset:
+        _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+        benchmark_name: pd1_tabular
+        data_path: ${oc.env:DATADIR}/validation
+        single_eval_pos: 128
+        n_folds: 3
+        device: ${device}
 
 

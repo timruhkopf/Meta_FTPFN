@@ -8,7 +8,7 @@ from typing import List, Tuple
 from sklearn.model_selection import KFold
 
 
-class MetaTestDataset(IterableDataset):
+class MFPBenchMetaTestDataset(IterableDataset):
     def __init__(
             self,
             data_path: str,
@@ -30,6 +30,7 @@ class MetaTestDataset(IterableDataset):
 
         assert n_folds <= available_repetitions
         self.benchmark_name = benchmark_name
+        self.name = f"{benchmark_name}_{single_eval_pos}"
         self.single_eval_pos = single_eval_pos
 
         self.task_ids = sorted(self.task_ids)
@@ -77,7 +78,7 @@ class MetaTestDataset(IterableDataset):
 
 
 if __name__ == '__main__':
-    dataset = MetaTestDataset(
+    dataset = MFPBenchMetaTestDataset(
         benchmark_name='lcbench_tabular',
         single_eval_pos=64,
         n_folds=2,
