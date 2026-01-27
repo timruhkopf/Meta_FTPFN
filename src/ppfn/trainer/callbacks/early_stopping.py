@@ -1,51 +1,21 @@
-# from ifbo.priors.prior_bag import get_batch
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 from typing import Dict
-import torch
 
 import logging
 
 logger = logging.getLogger(__name__)
 
-class GradientClippingCallback(AbstractCallback):
-    def __init__(self, frequency: int = 100):
-        self.frequency = frequency
-
-    def on_clipping(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs) -> Dict:
-        if (step + 1) % self.frequency == 0:
-            grads = []
-            for p in self.trainer.model.parameters():
-                if p.grad is not None:
-                    grads.append(p.grad.detach().flatten())
-
-            # Concatenate all gradients into one large vector
-            all_grads = torch.cat(grads)
-
-            # 1. Sparsity: percentage of near-zero gradients
-            sparsity = (all_grads.abs() < 1e-7).float().mean().item()
-
-            # 2. Statistics for SNR
-            mean_grad = all_grads.mean().item()
-            std_grad = all_grads.std().item()
-            # Adding a small epsilon to avoid division by zero
-            gsnr = (mean_grad ** 2) / (std_grad ** 2 + 1e-8)
-
-            return {
-                "train/grad/sparsity": sparsity,
-                "train/grad/gsnr": gsnr,
-                "train/grad/mean": mean_grad,
-                "train/grad/std": std_grad
-            }
 
 class EarlyStopping(AbstractCallback):
     CKPT_WARMUP_EPOCHS = 100
+
     def __init__(
-        self, 
-        monitor: str = "val_loss", 
-        patience: int = 5, 
-        min_delta: float = 0.0, 
-        mode: str = "min",
-        checkpoint_name: str = "best_model.pt"
+            self,
+            monitor: str = "val_loss",
+            patience: int = 5,
+            min_delta: float = 0.0,
+            mode: str = "min",
+            checkpoint_name: str = "best_model.pt"
     ):
         """
         Args:
@@ -61,17 +31,17 @@ class EarlyStopping(AbstractCallback):
         self.min_delta = min_delta
         self.mode = mode
         self.checkpoint_name = checkpoint_name
-        
+
         self.counter = 0
         self.best_score = None
         self.early_stop = False
 
     def on_epoch_end(self, epoch: int, metrics: dict = None) -> Dict:
-        
+
         # 1. Retrieve the current metric value
         # Assuming your trainer stores current epoch metrics in a 'logs' dict or similar
         current_score = metrics.get(self.monitor)
-        
+
         if current_score is None:
             logger.warning(f"EarlyStopping monitored metric '{self.monitor}' not found.")
             return {}
@@ -101,6 +71,6 @@ class EarlyStopping(AbstractCallback):
         """Helper to update best score and trigger trainer's checkpointing."""
         self.best_score = score
         logger.info(f"Metric {self.monitor} improved. Saving checkpoint: {self.checkpoint_name}")
-        
+
         # Calling the specific method you mentioned
         self.trainer._save_checkpoint(filename=self.checkpoint_name)

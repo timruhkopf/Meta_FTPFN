@@ -277,7 +277,8 @@ class PPFNTrainer:
             output = self.model(batch, single_eval_pos=single_eval_pos)
             targets = batch.y[single_eval_pos:, ...]
 
-            # allow callback to modify the outputs (temporary fix)
+            # allow callback to modify the outputs (temporary fix, while we experiment with the
+            # aggregation schemes)
             feedback = self.callback_handler.on_event(
                 "on_forward_end",
                 batch=batch,

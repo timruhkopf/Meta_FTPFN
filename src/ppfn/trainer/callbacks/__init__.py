@@ -2,5 +2,5 @@
 
 
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback 
-from ppfn.trainer.callbacks.callbacks import EarlyStopping
+from ppfn.trainer.callbacks.grad_clipping import EarlyStopping
 __all__ = ["AbstractCallback", "EarlyStopping"]

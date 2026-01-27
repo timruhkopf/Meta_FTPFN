@@ -1,13 +1,14 @@
 # Default trainer configuration
 epochs: 300
-steps: 63
+steps: 63 # number of batches assuming chunk_size=1008 and batch_size=16
+
 trainer_class:
   _target_: ppfn.trainer.PPFNTrainer
   use_amp: false
   grad_clip: 1.0
   aggregate_k_gradients: 1
   verbose: true
-  experiment_name: ${experiment_name}
+
 
   callbacks:
     # (GENERAL CALLBACKS)  ------------------------
@@ -15,7 +16,7 @@ trainer_class:
       experiment_name: ${experiment_name}
       run_name: ${run_name}
       mlflow_tracking_uri: Null
-    - _target_: ppfn.trainer.callbacks.callbacks.GradientClippingCallback
+    - _target_: ppfn.trainer.callbacks.grad_clipping.GradientClippingCallback
       frequency: 1
 
     # (TRAIN METRICS CALLBACK)  ------------------------
@@ -45,8 +46,8 @@ trainer_class:
         device: ${device}
         # kwargs for generating the dataset:
         n_chunks: 1
-        chunk_size: 10
-        batch_size: 20 # 100 # half this number is number of pairs of items (bnn) per batch
+        chunk_size: 100
+        batch_size: 10 # 100 # half this number is number of pairs of items (bnn) per batch
 
     # SYNTHETIC UNRELATED TASK
     - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
@@ -63,8 +64,8 @@ trainer_class:
         device: ${device}
         # kwargs for generating the dataset:
         n_chunks: 1 # number of files
-        chunk_size: 10 # number of batches per file!
-        batch_size: 20  # number of unrelated tasks (bnn) items in batch (half them to get the n-pairs)
+        chunk_size: 100 # number of items per file
+        batch_size: 10  # number of unrelated tasks (bnn) items in batch (half them to get the n-pairs)
 
     # (REAL BENCHMARK METRICS)  ------------------------
     # LCBench
