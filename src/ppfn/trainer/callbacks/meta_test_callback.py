@@ -1,8 +1,9 @@
+import warnings
+
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 from typing import Dict
 import torch
 
-from ppfn.dataset.mfpbench.meta_test_dataset import MFPBenchMetaTestDataset
 
 
 class MetaTestCallback(AbstractCallback):
@@ -52,13 +53,29 @@ class MetaTestCallback(AbstractCallback):
             collate_fn=lambda x: x[0],  # we need to collect only the single batch item
         )
         results = []
-        with torch.no_grad():
-            for batch in evaluation_dataloader:
-                losses, step_metrics = self.trainer._forward_pass(
-                    batch, self.dataset.single_eval_pos
-                )
-                del step_metrics['loss']  # we don't log loss here (only aggregated stats)
-                results.append(step_metrics)
+        with warnings.catch_warnings():
+            warnings.simplefilter("once")
+            with torch.no_grad():
+                for batch in evaluation_dataloader:
+                    # for convenience, we use the trainer's forward pass method
+                    # that includes the architectural modifications (if any) in
+                    # the callback.on_forward_end and callback.on_loss_end methods
+                    # from CrossFusionLossCallback
+                    # Currently the actual metrics are being computed by
+                    # TrainMetricsCallback.on_forwad_end, which we abuse here.
+                    # Future warning:
+                    warnings.warn(
+                        'MetaTestCallback relies on TrainMetricsCallback implicitly to compute the '
+                        'metrics during evaluation. This is likely subject to change with a '
+                        'fixed architecture. Any callback with on_forward_end or on_loss_end '
+                        'methods will be called during this evaluation.',
+                        UserWarning)
+
+                    losses, step_metrics = self.trainer._forward_pass(
+                        batch, self.dataset.single_eval_pos
+                    )
+                    del step_metrics['loss']  # we don't log loss here (only aggregated stats)
+                    results.append(step_metrics)
 
         aggregated_metrics = {}
         for key in results[0].keys():
