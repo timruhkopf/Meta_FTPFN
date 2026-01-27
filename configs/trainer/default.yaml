@@ -11,6 +11,10 @@ trainer_class:
 
   callbacks:
     # (GENERAL CALLBACKS)  ------------------------
+    - _target_: ppfn.trainer.callbacks.mlflow_callback.MLflowCallback
+      experiment_name: ${experiment_name}
+      run_name: ${run_name}
+      mlflow_tracking_uri: Null
     - _target_: ppfn.trainer.callbacks.callbacks.GradientClippingCallback
       frequency: 1
 

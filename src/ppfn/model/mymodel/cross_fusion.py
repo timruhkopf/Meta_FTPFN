@@ -231,7 +231,7 @@ class TrainMetricsCallback(AbstractCallback):
             style = batch.style[::2]
             # Ensure we only compute if indices are within bounds
             metrics.update({
-                'nll/same_task': nll_diff[:, style != 1].mean(),
+                'nll/similar_task': nll_diff[:, style != 1].mean(),
                 'nll/unrelated_task': nll_diff[:, style == 1].mean()
             })
 

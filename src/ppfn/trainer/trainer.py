@@ -7,8 +7,7 @@ PPFN (Pre-conditioned Prior Fitted Network) architecture.
 
 from __future__ import annotations
 
-import subprocess
-import os
+
 import time
 import warnings
 from typing import Dict, List
@@ -20,7 +19,6 @@ from torch import amp
 from tqdm import tqdm
 
 import mlflow
-from omegaconf import OmegaConf
 
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
 
@@ -31,26 +29,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-def get_git_hash():
-    try:
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
-    except Exception as e:
-        logger.warning("Could not retrieve git hash.")
-        return "not-a-git-repo"
-
-
-def flatten_dict(d, parent_key='', sep='.'):
-    """Recursively flattens a nested dictionary."""
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
 
 
 class PPFNTrainer:
@@ -71,11 +49,10 @@ class PPFNTrainer:
             grad_clip: float = 1.0,
             aggregate_k_gradients: int = 1,
             callbacks: list[AbstractCallback] | None = None,
-            experiment_name: str = "ppfn_training",
-            run_name: str | None = None,
             verbose: bool = False,
             optimizer=None,
             scheduler=None,
+            description_template: str | None = None,
     ):
         """
         Initialize the trainer.
@@ -89,12 +66,13 @@ class PPFNTrainer:
             grad_clip: Gradient clipping norm (None to disable)
             aggregate_k_gradients: Number of gradient accumulation steps
             callbacks: List of callback objects
-            experiment_name: MLflow experiment name
-            run_name: MLflow run name (auto-generated if None)
-            config: OmegaConf config dict to log
             verbose: Whether to print progress
             optimizer: Partial optimizer callable - will be called with trainable_params
             scheduler: Partial scheduler callable - will be called with optimizer
+            description_template: Template for epoch description in progress bar,
+                e.g. "Epoch {epoch} | Time: {time:.2f}s | LR: {lr:.6f}"
+                will allow keys provided in epoch metrics (which in turn are created by the
+                callbacks).
         """
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -108,44 +86,26 @@ class PPFNTrainer:
         self.optimizer = optimizer(trainable_params)
         self.scheduler = scheduler(self.optimizer)
 
-        self.grad_clip = grad_clip
-        self.aggregate_k_gradients = aggregate_k_gradients
+
         self.callbacks = callbacks or []
         self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
         self.verbose = verbose
+        self.config = None # Placeholder, we pass this from outside if needed
 
-        # MLflow 
-        logger.info("Setting up MLflow tracking...")
-        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
-        mlflow.set_experiment(experiment_name)
-        self.mlflow_run = mlflow.start_run(run_name=run_name, log_system_metrics=True)
-
-        # 1. Track Git Hash as a Tag
-        mlflow.set_tag("mlflow.folder", os.getcwd())
-        mlflow.set_tag("mlflow.source.git.commit", get_git_hash())
-        try:
-            from hydra.core.hydra_config import HydraConfig
-            overrides = HydraConfig.get().overrides.task
-            mlflow.log_params(dict(
-                [(k, v) for k, v in
-                 [o.strip('+').split('=') for o in overrides if '=' in o]]
-                # cmd overrides with + are unacceptable keys for mlflow params
-            ))
-        except Exception as e:
-            logger.warning("Could not log Hydra overrides to MLflow.")
-
-        # Mixed precision
+        # Mixed precision & gradient settings
         self.scaler = amp.GradScaler(device=self.device) if use_amp else None
+        self.grad_clip = grad_clip
+        self.aggregate_k_gradients = aggregate_k_gradients
+
         # Training state
         self.current_epoch = 0
         self.global_step = 0
         self.best_loss = float("inf")
 
-    def log_config(self, cfg):
+        self.description_template = description_template or (
+            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {lr:.6f}"
+        )
 
-        # Convert to container and resolve interpolations (e.g. ${model.lr})
-        config_dict = OmegaConf.to_container(cfg, resolve=True)
-        mlflow.log_dict(config_dict, "config.yaml")
 
     def fit(self, epochs: int, steps: int):
         """
@@ -155,18 +115,16 @@ class PPFNTrainer:
             epochs: Number of epochs to train
         """
         logger.info("Starting training...")
+        self.callback_handler.on_event("on_train_start")
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
             for epoch in iterator:
                 self.current_epoch = epoch
 
-                # Epoch start callbacks
                 self.callback_handler.on_event("on_epoch_start", epoch=epoch)
 
-                # Train
                 epoch_metrics = self.train_epoch(steps)
 
-                # Epoch end callbacks
                 feedback = self.callback_handler.on_event(
                     "on_epoch_end", epoch=epoch, metrics=epoch_metrics
                 )
@@ -177,28 +135,21 @@ class PPFNTrainer:
                     print("Early stopping triggered. Terminating training.")
                     break
 
-                # Log to MLflow
-                for key, value in epoch_metrics.items():
-                    mlflow.log_metric(key, value, step=epoch)
-
-                # Track best loss
-                # FIXME: obsolete with working EarlyStopping callback
-                # fixme: activate again
-                # if epoch_metrics["nll/batch_loss"] < self.best_loss and epoch > 100:
-                #     self.best_loss = epoch_metrics["nll/batch_loss"]
-                #     self._save_checkpoint(f"best_model.pt")
+                self.callback_handler.on_event(
+                    "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                )
 
                 if self.verbose:
-                    # update tqdm description
-                    # FIXME: make this a template string (overrideable by user) to be filled
-                    #  dynamically based on epoch_metrics keys
-                    iterator.set_description(
-                        f"Epoch {epoch:3d} | "
-                        # f"Loss: {epoch_metrics['loss']:7.4f} | " # fixme: activate again!
-                        # f"NLL_diff: {epoch_metrics.get('nll_diff_uncond_cond', 999):7.4f} | "
-                        f"Time: {epoch_metrics['time']:6.2f}s | "
-                        f"LR: {epoch_metrics.get('lr', 0):.6f}"
-                    )
+                    try:
+                        # We merge epoch into the metrics dict or pass it as a kwarg
+                        description = self.description_template.format(
+                            epoch=epoch,
+                            **epoch_metrics
+                        )
+                        iterator.set_description(description)
+                    except KeyError as e:
+                        # Fallback or warning if user provided a key that doesn't exist
+                        iterator.set_description(f"Epoch {epoch} (Template Error: Missing {e})")
 
         except KeyboardInterrupt:
             print("Training interrupted by user")
@@ -238,7 +189,7 @@ class PPFNTrainer:
 
             step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
 
-            # Accumulate metrics
+            # Accumulate metrics per step
             for key, value in step_metrics.items():
                 if key not in epoch_metrics:
                     epoch_metrics[key] = 0.0
@@ -253,7 +204,7 @@ class PPFNTrainer:
 
             self.global_step += 1
 
-        # Average metrics
+        # Average metrics for epoch (except time)
         num_batches = epoch_metrics.pop("num_batches")
         for key in epoch_metrics:
             if key != "time":
@@ -312,7 +263,7 @@ class PPFNTrainer:
                 "train/nan_share": nan_share,
                 "train/single_eval_pos": single_eval_pos
             })
-        del step_metrics['loss']  # remove unscaled loss to avoid it from tracking
+        del step_metrics['loss']  # remove unscaled loss to hide it from epoch tracking
 
         return step_metrics
 
@@ -376,9 +327,7 @@ class PPFNTrainer:
         self.current_epoch = checkpoint["epoch"]
         self.best_loss = checkpoint["best_loss"]
 
-    def end_run(self):
-        """End the MLflow run."""
-        mlflow.end_run()
+
 
 
 class DistributedTrainer(PPFNTrainer):

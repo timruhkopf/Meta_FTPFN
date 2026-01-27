@@ -76,18 +76,13 @@ def main(cfg: DictConfig) -> None:
         scheduler=scheduler_partial,
         criterion=criterion,
         device=device,
-        # mycfg=cfg, # dictconfig cannot be passed directly 
-        experiment_name=cfg.experiment_name,
-        run_name=cfg.get("run_name", None),
     )
+    # dictconfig cannot be passed directly; neither a dict with _target_ key
+    trainer.config = OmegaConf.to_container(cfg, resolve=True),
 
-    trainer.log_config(cfg)
-    
     logger.info(f"Starting training for {cfg.trainer.epochs} epochs...")
     trainer.fit( epochs=cfg.trainer.epochs, steps=cfg.trainer.steps )
-    
-    # End MLflow run
-    trainer.end_run()
+
     
     logger.info("Training completed!")
 
