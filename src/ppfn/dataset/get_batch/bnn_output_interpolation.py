@@ -239,19 +239,21 @@ def get_batch_mixed(
         num_params =num_params,
         n_levels = n_levels
     )
+    if n_unrelated == 0:
+        return related_batch
+    else:
+        unrelated_batch = ftpfn_get_batch(
+            batch_size=n_unrelated,
+            seq_len=seq_len,
+            num_features=num_features,
+            single_eval_pos=single_eval_pos,
+            device=device,
+            hyperparameters=hyperparameters,
+            num_params =num_params,
+            n_levels= n_levels,
+        )
 
-    unrelated_batch = ftpfn_get_batch(
-        batch_size=n_unrelated,
-        seq_len=seq_len,
-        num_features=num_features,
-        single_eval_pos=single_eval_pos,
-        device=device,
-        hyperparameters=hyperparameters,
-        num_params =num_params,
-        n_levels= n_levels,
-    )
-
-    return related_batch + unrelated_batch
+        return related_batch + unrelated_batch
 
 class Prior:
     def __init__(self, get_batch_fn: Callable):

@@ -1,0 +1,8 @@
+# conf/config.yaml
+experiment_name: "test_run"
+dataset_name: "dummy_data"
+device: "cpu"  # Default, script will override to 'cuda' if GPU found
+seed: 42       # Script will override with SLURM_ARRAY_TASK_ID
+
+mlflow:
+  tracking_uri: "file:///bigwork/nhwpruht/Meta_FTPFN/mlruns"

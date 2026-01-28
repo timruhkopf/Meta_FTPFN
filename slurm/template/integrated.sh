@@ -7,7 +7,7 @@
 #SBATCH --time=72:00:00 # TODO adjust time as needed
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
-#SBATCH --signal=B:TERM@240
+#SBATCH --signal=B:TERM@120
 #SBATCH --array=1-100%20 # TODO set array range as needed, limiting the concurrent jobs with %20
 
 
@@ -84,10 +84,11 @@ fi
 
 # --- 3. MLflow Local Scratch Setup ---
 # Using a specific subdirectory for this job/array index to avoid collisions
-LOCAL_MLRUNS="/tmp/$USER/mlruns/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-FINAL_MLRUNS="$BIGWORK/mlruns"
+#LOCAL_MLRUNS="/tmp/$USER/mlruns/${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+FINAL_MLRUNS="$BIGWORK/$REPO/mlruns"
 
-mkdir -p "$LOCAL_MLRUNS" "$FINAL_MLRUNS"
+#mkdir -p "$LOCAL_MLRUNS"
+mkdir -p  "$FINAL_MLRUNS"
 
 # --- 4. Logging the Call (The "Registry") ---
 LOG_DIR="$REPO_DIR/logs"
@@ -100,6 +101,8 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 # Capture all arguments for the log
 FULL_ARGS_STRING="$* $DEVICE_ARGS seed=$SLURM_ARRAY_TASK_ID"
 
+echo "FULL_ARGS_STRING: $FULL_ARGS_STRING"
+
 # Ensure CSV header
 if [[ ! -f "$LOG_FILE" ]]; then
     echo "timestamp,commit,job_id,array_id,device,args" >> "$LOG_FILE"
@@ -111,27 +114,27 @@ echo "\"$TIMESTAMP\",\"$COMMIT_HASH\",\"$SLURM_JOB_ID\",\"$SLURM_ARRAY_TASK_ID\"
 # --- 5.0 Robust Cleanup & Sync ---
 # Since we are using mlflow with a tmp file directory storage, we need to move the data back
 # regardless of how the job ends (normal or killed due to time limit)
-cleanup() {
-    echo "Terminating: Syncing MLflow data from $LOCAL_MLRUNS to $FINAL_MLRUNS"
-    # rsync is safer than cp for interrupted transfers
-    rsync -auq "$LOCAL_MLRUNS/" "$FINAL_MLRUNS/"
-    rm -rf "$LOCAL_MLRUNS"
-    exit 0
-}
-
-# Trap SIGTERM (Slurm walltime) and EXIT (Normal completion)
-trap 'cleanup' SIGTERM EXIT
+#cleanup() {
+#    echo "Terminating: Syncing MLflow data from $LOCAL_MLRUNS to $FINAL_MLRUNS"
+#    # rsync is safer than cp for interrupted transfers
+#    rsync -auq "$LOCAL_MLRUNS/" "$FINAL_MLRUNS/"
+#    rm -rf "$LOCAL_MLRUNS"
+#    exit 0
+#}
+#
+## Trap SIGTERM (Slurm walltime) and EXIT (Normal completion)
+#trap 'cleanup' SIGTERM EXIT
 
 # --- 5.1 OPTIONAL: Poke jobs to update status:
 # poking is done using :
 # scancel --signal=USR1 <JOB_ID>
 # Check your logs and destination folder:
 # Check logs/%j.out: It should say "Syncing MLflow data..."
-sync_only() {
-    echo "Manual sync triggered. Moving data to $FINAL_MLRUNS..."
-    rsync -auq "$LOCAL_MLRUNS/" "$FINAL_MLRUNS/"
-}
-trap 'sync_only' SIGUSR1
+#sync_only() {
+#    echo "Manual sync triggered. Moving data to $FINAL_MLRUNS..."
+#    rsync -auq "$LOCAL_MLRUNS/" "$FINAL_MLRUNS/"
+#}
+#trap 'sync_only' SIGUSR1
 
 # --- 6. Execution ---
 export HYDRA_FULL_ERROR=1
@@ -140,15 +143,20 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 echo "Starting Job: $SLURM_JOB_ID | Array Task: $SLURM_ARRAY_TASK_ID"
 
 # DEBUG print:
+# shellcheck disable=SC2145
 echo "Executing CMD: train.py $@ $DEVICE_ARGS"
 # Pass all script arguments ($@) to Hydra
-$PYTHON_EXEC train.py \
-    "$@" \
-    $DEVICE_ARGS \
-    seed=$SLURM_ARRAY_TASK_ID \
-    hydra.run.dir="$LOCAL_MLRUNS/hydra_logs" \
-    hydra.job.chdir=True \
-    mlflow.tracking_uri="file://$LOCAL_MLRUNS" &
+
+FINAL_CMD_ARGS=(
+    "$@"
+    "$DEVICE_ARGS"
+    "seed=$SLURM_ARRAY_TASK_ID"
+#    "hydra.run.dir=$LOCAL_MLRUNS/hydra_logs"
+    "hydra.job.chdir=True"
+    "mlflow.tracking_uri=file://$FINAL_MLRUNS"
+)
+echo "FINAL_CMD_ARGS: ${FINAL_CMD_ARGS[*]}"
+$PYTHON_EXEC train.py "${FINAL_CMD_ARGS[@]}" &
 
     # move the hydra run dir to the local tmp as well to avoid writes to file system
 

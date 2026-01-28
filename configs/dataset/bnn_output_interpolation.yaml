@@ -2,7 +2,7 @@ dataset_name: bnn_interpolation_and_unrelated
 dataloader:
   _target_: pfns4hpo.priors.utils.PriorDataLoader
   load_path: ${oc.env:DATADIR}priors/${dataset.dataset_name} # fixme: remove _test for final
-  n_chunks: 300
+  n_chunks: 400
   subsample: 1
   store: False # FIXME: once the prior is stored, set to False to stop sampling and just load from disk for efficiency
 
@@ -15,10 +15,10 @@ store_prior:
       _partial_: True
       share_unrelated_tasks: 0.33
 
-  chunk_size: 1008
-  batch_size: 16
+  chunk_size: 5000
+  batch_size: 25
   seq_len: 1000
-  n_features: 5
+  n_features: 12
   partition: True
   local: True # FIXME: for testing purposes only
   # eval_pos_sampler: # optional. there is a default exp sampler.

@@ -1,0 +1,30 @@
+dataset_name: dummy_dataset_homebrew
+
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 32
+  shuffle: False
+  num_workers: 4
+
+
+  dataset:
+    _target_: ppfn.dataset.priordataloader.StoredPriorDataset
+    storage_path: ${oc.env:DATADIR}priors/${dataset.dataset_name}
+    get_batch_fn:
+      _target_: ppfn.dataset.get_batch.bnn_output_interpolation.get_batch_mixed
+      _partial_: True
+
+    sample_on_init: False
+    sample_kwargs:
+      n_chunks: 2 # 400
+      chunk_size: 64 # 5000
+      batch_size: 32 # 25
+      seq_len: 1000
+      batch_kwargs:
+        share_unrelated_tasks: 0.33
+        num_features: 12
+
+
+      eval_pos_sampler: Null
+      local: True # FIXME: for testing purposes only

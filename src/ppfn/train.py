@@ -28,44 +28,51 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra config from configs/config.yaml and experiment override
     """
-    
+
     # Pretty print config
     logger.info("\n" + OmegaConf.to_yaml(cfg))
-    
+
     # Device
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-    
+
     # Load frozen model and get criterion from it
     logger.info("Loading frozen model...")
     model = instantiate(cfg.model.model_class).to(device)
     criterion = model.criterion
-    
+
     # Create dataloaders
     logger.info("Creating dataloaders...")
-    loader = instantiate(cfg.dataset.dataloader) # PriorDataLoader / DistributedPriorDataLoader
+
     # Sampling the prior and storing it if required. 
     # This is only needed once and is the entry point to the get_batch functions
-    if cfg.dataset.dataloader.get("store", True):
-        logger.info("Storing prior samples...")
+    loader = instantiate(cfg.dataset.dataloader_class, collate_fn=lambda x: x)
 
-        (Path(cfg.dataset.dataloader.load_path) / 'partition_0').mkdir(parents=True, exist_ok=True)
 
-        # store the generating yaml config alongside the prior samples
-        with open( os.path.join(cfg.dataset.dataloader.load_path, 'generating_config.yaml'), 'w') as f:
-            OmegaConf.save(config=cfg.dataset, f=f)
 
-        loader.store_prior(**instantiate(cfg.dataset.store_prior))
-        loader._load_chunk(0)
 
-        return 0 # exit after storing prior
-    
+    # FIXME: this is the old API for pfns4bo.utils.PriorDataLoader: remove
+    # loader = instantiate(cfg.dataset.dataloader)  # PriorDataLoader / DistributedPriorDataLoader
+    # if cfg.dataset.dataloader.get("store", True):
+    #     logger.info("Storing prior samples...")
+    #
+    #     (Path(cfg.dataset.dataloader.load_path) / 'partition_0').mkdir(parents=True, exist_ok=True)
+    #
+    #     # store the generating yaml config alongside the prior samples
+    #     with open( os.path.join(cfg.dataset.dataloader.load_path, 'generating_config.yaml'), 'w') as f:
+    #         OmegaConf.save(config=cfg.dataset, f=f)
+    #
+    #     loader.store_prior(**instantiate(cfg.dataset.store_prior))
+    #     loader._load_chunk(0)
+    #
+    #     return 0 # exit after storing prior
+
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
     logger.info("Setting up optimizer and scheduler...")
     optimizer_partial = instantiate(cfg.optimizer)
     scheduler_partial = instantiate(cfg.scheduler)
-    
+
     # Create trainer using Hydra instantiate
     logger.info("Initializing trainer...")
     trainer = instantiate(
@@ -83,10 +90,10 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Starting training for {cfg.trainer.epochs} epochs...")
     trainer.fit( epochs=cfg.trainer.epochs, steps=cfg.trainer.steps )
 
-    
+
     logger.info("Training completed!")
 
-    return 0 
+    return 0
 
 
 

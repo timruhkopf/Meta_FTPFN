@@ -23,11 +23,12 @@ def my_app(cfg: DictConfig) -> None:
 
         print("Training (simulated)...")
         for i in range(10):
-            mlflow.log_metric("accuracy", 0.1 * i)
-            time.sleep(2)  # Give you time to test 'scancel --signal=USR1'
+            mlflow.log_metric("accuracy", 0.1 * i, step=i)
+            time.sleep(100)  # Give you time to test 'scancel --signal=USR1'
 
         print("Done!")
 
 
 if __name__ == "__main__":
     my_app()
+    "/bigwork/nhwpruht/Meta_FTPFN/mlruns/156515304721359357/372e1c4d40c04c138c10673b00cbea5c/metrics"
