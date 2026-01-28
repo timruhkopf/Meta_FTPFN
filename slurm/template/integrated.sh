@@ -1,6 +1,6 @@
 #!/bin/bash
 ##SBATCH --job-name= # TODO set a job name here
-#SBATCH --partition=large
+#SBATCH --partition=amo
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -101,7 +101,7 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 # Capture all arguments for the log
 FULL_ARGS_STRING="$* $DEVICE_ARGS seed=$SLURM_ARRAY_TASK_ID"
 
-echo "FULL_ARGS_STRING: $FULL_ARGS_STRING"
+#echo "FULL_ARGS_STRING: $FULL_ARGS_STRING"
 
 # Ensure CSV header
 if [[ ! -f "$LOG_FILE" ]]; then
