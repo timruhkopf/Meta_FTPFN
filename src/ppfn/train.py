@@ -46,9 +46,18 @@ def main(cfg: DictConfig) -> None:
 
     # Sampling the prior and storing it if required. 
     # This is only needed once and is the entry point to the get_batch functions
-    loader = instantiate(cfg.dataset.dataloader_class, collate_fn=lambda x: x)
+    dataset = instantiate(cfg.dataset.dataset_class)
+    if cfg.dataset.get("sample_prior", False):
+        logger.info("Storing prior samples...")
+        dataset.store_prior(**instantiate(cfg.dataset.store_prior))
+        return 0 # exit after storing prior
 
-
+     # Create a simple DataLoader around the dataset
+    loader = instantiate(
+        cfg.dataset.dataloader_class,
+        dataset=dataset,
+        collate_fn=lambda x: x
+    )
 
 
     # FIXME: this is the old API for pfns4bo.utils.PriorDataLoader: remove
