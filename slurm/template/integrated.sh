@@ -156,11 +156,11 @@ FINAL_CMD_ARGS=(
     "$DEVICE_ARGS"
 #    "seed=$SLURM_ARRAY_TASK_ID"
 #    "hydra.run.dir=$LOCAL_MLRUNS/hydra_logs"
-    "hydra.job.chdir=True"
+#    "hydra.job.chdir=True"
     "mlflow.tracking_uri=file://$FINAL_MLRUNS"
 )
 echo "FINAL_CMD_ARGS: ${FINAL_CMD_ARGS[*]}"
-$PYTHON_EXEC train.py "${FINAL_CMD_ARGS[@]}" &
+$PYTHON_EXEC $REPO_DIR/src/ppfn/train.py "${FINAL_CMD_ARGS[@]}" &
 
     # move the hydra run dir to the local tmp as well to avoid writes to file system
 
