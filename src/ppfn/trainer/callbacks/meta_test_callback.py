@@ -72,7 +72,7 @@ class MetaTestCallback(AbstractCallback):
                 losses, step_metrics = self.trainer._forward_pass(
                     batch, self.dataset.single_eval_pos
                 )
-                del step_metrics['loss']  # we don't log loss here (only aggregated stats)
+
                 results.append(step_metrics)
 
         aggregated_metrics = {}

@@ -3,6 +3,9 @@ epochs: ${dataset.store_prior.n_chunks }
 steps: ${div:${dataset.store_prior.chunk_size },${dataset.store_prior.batch_size}}
 # number of batches assuming chunk_size=1008 and batch_size=16
 
+objective:
+  _target_: ppfn.model.mymodel.cross_fusion.MultiStreamObjective
+
 trainer_class:
   _target_: ppfn.trainer.PPFNTrainer
   use_amp: false
@@ -22,13 +25,13 @@ trainer_class:
 
     # (TRAIN METRICS CALLBACK)  ------------------------
     # collect NLL, KL, Distrib. properties during training
-    - _target_: ppfn.model.mymodel.cross_fusion.TrainMetricsCallback
+#    - _target_: ppfn.model.mymodel.cross_fusion.TrainMetricsCallback
     # NOTICE, that this callback must appear before the CrossFusionLossCallback,
     # because it relies on the entire loss and not the cropped one!
 
     # (TRAINING CALLBACKS)  ------------------------
     # CROP THE LOSS for training on STREAM C only
-    - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
+#    - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
 
 
     # (SYNTHETIC BENCHMARK METRICS)  ------------------------

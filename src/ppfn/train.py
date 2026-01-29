@@ -17,10 +17,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-
-
-
-
 @hydra.main(version_base='1.1', config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """
@@ -43,7 +39,6 @@ def main(cfg: DictConfig) -> None:
     if device.type == 'cuda':
         torch.cuda.manual_seed_all(cfg.seed)
 
-
     # Create dataloaders
     logger.info("Creating dataloaders...")
 
@@ -55,17 +50,17 @@ def main(cfg: DictConfig) -> None:
         dataset.store_prior(**instantiate(cfg.dataset.store_prior))
 
         # store the generating yaml config alongside the prior samples
-        with open(dataset.storage_path /  'generating_config.yaml', 'w') as f:
+        with open(dataset.storage_path / 'generating_config.yaml', 'w') as f:
             OmegaConf.save(config=cfg.dataset, f=f)
-        return 0 # exit after storing prior
+        return 0  # exit after storing prior
 
-     # Create a simple DataLoader around the dataset
+    # Create a simple DataLoader around the dataset
     loader = instantiate(
         cfg.dataset.dataloader_class,
         dataset=dataset,
         collate_fn=lambda x: x
     )
-
+    # next(iter(loader))  # sanity check
 
     # FIXME: this is the old API for pfns4bo.utils.PriorDataLoader: remove
     # loader = instantiate(cfg.dataset.dataloader)  # PriorDataLoader / DistributedPriorDataLoader
@@ -88,6 +83,15 @@ def main(cfg: DictConfig) -> None:
     model = instantiate(cfg.model.model_class).to(device)
     criterion = model.criterion
 
+    if hasattr(cfg.trainer, "objective"):
+        logger.info("Wrapping criterion with objective...")
+        # this is a wrapper objective around the model's criterion
+        criterion = instantiate(
+            cfg.trainer.objective,
+            criterion=criterion,
+            model=model
+        )
+
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
     logger.info("Setting up optimizer and scheduler...")
@@ -109,23 +113,20 @@ def main(cfg: DictConfig) -> None:
     trainer.config = OmegaConf.to_container(cfg, resolve=True),
 
     logger.info(f"Starting training for {cfg.trainer.epochs} epochs...")
-    trainer.fit( epochs=cfg.trainer.epochs, steps=cfg.trainer.steps )
-
+    trainer.fit(epochs=cfg.trainer.epochs, steps=cfg.trainer.steps)
 
     logger.info("Training completed!")
 
     return 0
 
 
-
-
-
 if __name__ == "__main__":
-    
+
     from pathlib import Path
     from dotenv import load_dotenv
-    
+
     load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env")
+
 
     def githash(*args, **kwargs) -> str:
         try:

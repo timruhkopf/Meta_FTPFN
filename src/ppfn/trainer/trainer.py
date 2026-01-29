@@ -270,7 +270,7 @@ class PPFNTrainer:
 
         step_metrics.update(
             {
-                "nll/batch_loss": loss.detach().mean().cpu().item(),
+                "nll/batch_loss": loss.detach().cpu().item(),
                 "train/lr": self.scheduler.get_last_lr()[0],
             }
         )
@@ -293,35 +293,39 @@ class PPFNTrainer:
             output = self.model(batch, single_eval_pos=single_eval_pos)
             targets = batch.y[single_eval_pos:, ...]
 
-            # allow callback to modify the outputs (temporary fix, while we experiment with the
-            # aggregation schemes)
-            feedback = self.callback_handler.on_event(
-                "on_forward_end",
-                batch=batch,
-                single_eval_pos=single_eval_pos,
-                output=output,
-                targets=targets
-            )
-
-            output = feedback.get("output", output)
-            targets = feedback.get("targets", targets)
-
-            loss = self.criterion(output, targets)
-
-            feedback = self.callback_handler.on_event(
-                "on_loss_end", batch=batch,
-                single_eval_pos=single_eval_pos,
-                output=output, targets=targets,
-                loss=loss
-            )
-
-            loss = feedback.get("loss", loss)
-
-        # 6. Metrics extraction (to satisfy the type hint)
-        # Often callbacks return extra metrics (accuracy, etc.)
-        metrics = feedback
+            loss, metrics = self.criterion(output, targets, batch=batch, single_eval_pos=single_eval_pos)
 
         return loss, metrics
+
+            # allow callback to modify the outputs (temporary fix, while we experiment with the
+            # aggregation schemes)
+            # feedback = self.callback_handler.on_event(
+            #     "on_forward_end",
+            #     batch=batch,
+            #     single_eval_pos=single_eval_pos,
+            #     output=output,
+            #     targets=targets
+            # )
+            #
+            # output = feedback.get("output", output)
+            # targets = feedback.get("targets", targets)
+            #
+            # loss = self.criterion(output, targets)
+            #
+            # feedback = self.callback_handler.on_event(
+            #     "on_loss_end", batch=batch,
+            #     single_eval_pos=single_eval_pos,
+            #     output=output, targets=targets,
+            #     loss=loss
+            # )
+            #
+            # loss = feedback.get("loss", loss)
+
+        # # 6. Metrics extraction (to satisfy the type hint)
+        # # Often callbacks return extra metrics (accuracy, etc.)
+        # metrics = feedback
+        #
+        # return loss, metrics
 
     def _save_checkpoint(self, filename: str = "checkpoint.pt"):
         """Save model checkpoint."""

@@ -36,5 +36,5 @@ dataloader_class:
   _target_: torch.utils.data.DataLoader
   batch_size: 1 # number of batches -- because the dataset yields batches already!
   shuffle: False
-  num_workers: 1
+#  num_workers: 1
   collate_fn: null

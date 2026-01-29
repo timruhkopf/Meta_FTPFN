@@ -120,6 +120,10 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                     **get_batch_kwargs,
                 )
                 chunks.append(batch)
+                # todo on USR1 signal of process (--signal=B:TERM@120) break and dump the current
+                # progress
+
+
 
             chunk_file = pathlib.Path(path) / f"chunk_{chunk_id}.pkl"
             with open(chunk_file, 'wb') as file:
