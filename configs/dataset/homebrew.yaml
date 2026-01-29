@@ -34,10 +34,7 @@ store_prior: # method call
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader
-  batch_size: 32
+  batch_size: 1 # number of batches -- because the dataset yields batches already!
   shuffle: False
-  num_workers: 4
-
-
-
-
+  num_workers: 1
+  collate_fn: null

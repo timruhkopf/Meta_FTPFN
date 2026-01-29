@@ -6,11 +6,16 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 
 from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
 
 from pfns4hpo.priors import Batch
 
+# TODO move to utils!
 @dataclass
 class MyBatch(Batch):
 
@@ -35,6 +40,15 @@ class MyBatch(Batch):
             y=new_y,
             target_y=new_target_y,
             style=new_style
+        )
+
+    def to(self, device: torch.device) -> 'MyBatch':
+        """Move all tensors in the batch to the specified device."""
+        return MyBatch(
+            x=self.x.to(device),
+            y=self.y.to(device),
+            target_y=self.target_y.to(device),
+            style=self.style.to(device) if self.style is not None else None
         )
 
 
@@ -77,6 +91,9 @@ class FT_PPFN(HierarchicalPFN):
             interleaved_layers=interleaved_layers,
         )
         self.force_same_query = force_same_query
+
+        logger.info(f'FT_PPFN initialized with cross-fusion interleaved layers. '
+                    f'Number of parameters to train: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
 
     def parse_train_batch(self, batch: MyBatch, single_eval_pos) -> MyBatch:
         """

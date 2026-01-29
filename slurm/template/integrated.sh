@@ -8,7 +8,7 @@
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 #SBATCH --signal=B:TERM@120
-#SBATCH --array=1-100%20 # TODO set array range as needed, limiting the concurrent jobs with %20
+###SBATCH --array=1-100%20 # TODO set array range as needed, limiting the concurrent jobs with %20
 
 
 # (README) --------------------
@@ -99,7 +99,11 @@ COMMIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "not_a_repo")
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 # Capture all arguments for the log
-FULL_ARGS_STRING="$* $DEVICE_ARGS seed=$SLURM_ARRAY_TASK_ID"
+FULL_ARGS_STRING="$* $DEVICE_ARGS"
+
+if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
+    FULL_ARGS_STRING="$FULL_ARGS_STRING seed=$SLURM_ARRAY_TASK_ID"
+fi
 
 #echo "FULL_ARGS_STRING: $FULL_ARGS_STRING"
 
@@ -150,7 +154,7 @@ echo "Executing CMD: train.py $@ $DEVICE_ARGS"
 FINAL_CMD_ARGS=(
     "$@"
     "$DEVICE_ARGS"
-    "seed=$SLURM_ARRAY_TASK_ID"
+#    "seed=$SLURM_ARRAY_TASK_ID"
 #    "hydra.run.dir=$LOCAL_MLRUNS/hydra_logs"
     "hydra.job.chdir=True"
     "mlflow.tracking_uri=file://$FINAL_MLRUNS"

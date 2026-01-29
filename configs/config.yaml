@@ -10,8 +10,8 @@ defaults:
   - _self_
 
 device: "cuda"
-experiment_name: "ppfn:same_task_new_sample"
-run_name: cosine_warmup_adamw
+experiment_name: "debug"
+run_name: Null #  will be set by mlflow at random
 
 hydra:
   run:
@@ -19,5 +19,6 @@ hydra:
   sweep:
     dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}_${run_name}
 
-
+seed: 42
 hash: ${githash:''}
+

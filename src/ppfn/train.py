@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Tuple
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -36,10 +37,12 @@ def main(cfg: DictConfig) -> None:
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # Load frozen model and get criterion from it
-    logger.info("Loading frozen model...")
-    model = instantiate(cfg.model.model_class).to(device)
-    criterion = model.criterion
+    # set seed for reproducibility
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(cfg.seed)
+
 
     # Create dataloaders
     logger.info("Creating dataloaders...")
@@ -50,6 +53,10 @@ def main(cfg: DictConfig) -> None:
     if cfg.dataset.get("sample_prior", False):
         logger.info("Storing prior samples...")
         dataset.store_prior(**instantiate(cfg.dataset.store_prior))
+
+        # store the generating yaml config alongside the prior samples
+        with open(dataset.storage_path /  'generating_config.yaml', 'w') as f:
+            OmegaConf.save(config=cfg.dataset, f=f)
         return 0 # exit after storing prior
 
      # Create a simple DataLoader around the dataset
@@ -75,6 +82,11 @@ def main(cfg: DictConfig) -> None:
     #     loader._load_chunk(0)
     #
     #     return 0 # exit after storing prior
+
+    # Load frozen model and get criterion from it
+    logger.info("Loading frozen model...")
+    model = instantiate(cfg.model.model_class).to(device)
+    criterion = model.criterion
 
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
@@ -124,6 +136,9 @@ if __name__ == "__main__":
             logger.warning(f"Could not retrieve git hash: {e}")
             return "unknown"
 
+
+    OmegaConf.register_new_resolver("mod", lambda x, y: x % y)
+    OmegaConf.register_new_resolver("div", lambda x, y: int(x / y))
     OmegaConf.register_new_resolver("eval", eval)
     OmegaConf.register_new_resolver("githash", githash)
     main()

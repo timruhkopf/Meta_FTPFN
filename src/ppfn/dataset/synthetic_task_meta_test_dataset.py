@@ -8,7 +8,7 @@ from torch.utils.data import IterableDataset
 from pfns4hpo.priors import Batch
 from pfns4hpo.priors.utils import PriorDataLoader
 from ppfn.dataset.get_batch.same_task import get_batch as same_task_get_batch, Prior
-
+from ppfn.model.mymodel.ft_ppfn import MyBatch
 
 
 class SyntheticTaskMetaTestDataset(IterableDataset):
@@ -77,13 +77,15 @@ class SyntheticTaskMetaTestDataset(IterableDataset):
             chunk = self.load_chunk(chunk_idx)
 
             for _, batch in chunk:
-                yield Batch(
-                    x=batch.x.to(self.device),
-                    y=batch.y.to(self.device),
-                    target_y=batch.target_y.to(self.device),
+                b = MyBatch(
+                    x=batch.x,
+                    y=batch.y,
+                    target_y=batch.target_y,
                     single_eval_pos=self.single_eval_pos,
                     style=batch.style,
                 )
+                b = b.to(self.device)
+                yield b
 
 
 if __name__ == '__main__':

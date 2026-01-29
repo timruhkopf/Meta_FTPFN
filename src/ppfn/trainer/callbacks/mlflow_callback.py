@@ -6,8 +6,10 @@ from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 import subprocess
 
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 def get_git_hash():
     try:
@@ -17,13 +19,13 @@ def get_git_hash():
         return "not-a-git-repo"
 
 
-
 class MLflowCallback(AbstractCallback):
     def __init__(
             self,
             experiment_name: str = "ppfn_training",
             run_name: str | None = None,
             mlflow_tracking_uri: str | None = None,
+            log_system_metrics: bool = True,
     ):
         super().__init__()
         self.experiment_name = experiment_name
@@ -31,6 +33,7 @@ class MLflowCallback(AbstractCallback):
 
         self.run = None
         self.mlflow_tracking_uri = mlflow_tracking_uri
+        self.log_system_metrics = log_system_metrics
 
     def on_train_start(self, **kwargs):
         logger.info("Setting up MLflow tracking...")
@@ -40,7 +43,10 @@ class MLflowCallback(AbstractCallback):
             mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
 
         mlflow.set_experiment(self.experiment_name)
-        self.run = mlflow.start_run(run_name=self.run_name, log_system_metrics=True)
+        self.run = mlflow.start_run(
+            run_name=self.run_name,
+            log_system_metrics=self.log_system_metrics
+        )
 
         # Log Git Metadata
         mlflow.set_tag("mlflow.folder", os.getcwd())

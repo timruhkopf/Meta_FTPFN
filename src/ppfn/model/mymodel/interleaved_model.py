@@ -107,6 +107,10 @@ class HierarchicalPFN(nn.Module):
         kwargs['single_eval_pos'] = single_eval_pos
         value = self.frozen_model(x, **kwargs)
         self.single_eval_pos = None  # reset after forward
+
+        # TODO the value here can be intercepted by model callbacks to log metrics on
+        #  the three streams, when we move towards an aggreagation strategy!
+
         return value
 
     def predict(self, target_task, related_tasks, **kwargs):

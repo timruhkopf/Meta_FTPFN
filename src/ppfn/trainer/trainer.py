@@ -11,19 +11,17 @@ from __future__ import annotations
 import time
 import warnings
 from typing import Dict, List
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 from torch import amp
 
-from tqdm import tqdm
-
-import mlflow
+import pfns4hpo.utils as utils
+from pfns4hpo.priors import Batch
 
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
 
-import pfns4hpo.utils as utils
-from pfns4hpo.priors import Batch
 
 import logging
 
@@ -88,6 +86,7 @@ class PPFNTrainer:
 
 
         self.callbacks = callbacks or []
+        # TODO callbackhandler will need to be ddp rank aware to avoid multiple logging
         self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
         self.verbose = verbose
         self.config = None # Placeholder, we pass this from outside if needed
@@ -103,7 +102,7 @@ class PPFNTrainer:
         self.best_loss = float("inf")
 
         self.description_template = description_template or (
-            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {lr:.6f}"
+            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {train/lr:.8f}"
         )
 
 
@@ -118,6 +117,11 @@ class PPFNTrainer:
         self.callback_handler.on_event("on_train_start")
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
+
+            if hasattr(self.train_loader, '__iter__'):
+                # classical trainloader
+                self.train_loader = iter(self.train_loader)
+
             for epoch in iterator:
                 self.current_epoch = epoch
 
@@ -131,13 +135,13 @@ class PPFNTrainer:
 
                 epoch_metrics.update(feedback)
 
-                if feedback.get('stop_training', False):
-                    print("Early stopping triggered. Terminating training.")
-                    break
-
                 self.callback_handler.on_event(
                     "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
                 )
+
+                if feedback.get('stop_training', False):
+                    print("Early stopping triggered. Terminating training.")
+                    break
 
                 if self.verbose:
                     try:
@@ -153,6 +157,9 @@ class PPFNTrainer:
 
         except KeyboardInterrupt:
             print("Training interrupted by user")
+        except Exception as e:
+            logger.error(f"An error occurred during training: {e}")
+            raise e
         finally:
             # Train end callbacks
             self.callback_handler.on_event(
@@ -160,9 +167,6 @@ class PPFNTrainer:
             )
 
         logger.info("Training complete.")
-
-        # Log final model
-        # self._save_checkpoint("final_model.pt")
 
     def train_epoch(self, n_steps) -> Dict[str, float]:
         """Train for one epoch."""
@@ -175,7 +179,19 @@ class PPFNTrainer:
         epoch_start = time.time()
 
         for step in range(n_steps):
-            batch = self.train_loader.get_batch(device=self.device)
+            if hasattr(self.train_loader, 'get_batch'):
+                # PRIORDATALOADER Legacy support
+                batch = self.train_loader.get_batch(device=self.device)
+            else:
+                # standard dataloader
+                batch = next(self.train_loader)
+                assert isinstance(batch, List) and len(batch) == 1, (
+                    "The PPFNTrainer expects that the dataset class already provides batches, "
+                    "so the loader must have batch_size=1."
+                )
+                batch = batch[0]  # since we expect batch_size=1 with collate_fn=lambda x: x[0]
+
+                batch = batch.to(self.device)
 
             if batch.single_eval_pos is None:
                 seq_len = torch.tensor(batch.x.shape[1])
