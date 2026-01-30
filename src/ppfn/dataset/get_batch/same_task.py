@@ -6,23 +6,19 @@ import numpy as np
 from pfns4hpo.utils import default_device
 from pfns4hpo.priors.utils import Batch
 
-
-from ppfn.dataset.prior import  AllocationPrior, DimensionPrior, FidelityPrior, MultiFidelityTask
-
-
-
+from ppfn.dataset.prior import AllocationPrior, DimensionPrior, FidelityPrior, MultiFidelityTask
 
 
 @torch.no_grad()
 def get_batch(
-    batch_size: int,
-    seq_len: int,
-    num_features: int,
-    single_eval_pos: int,
-    share_unrelated_tasks:float=0.0,
-    device=default_device,
-    hyperparameters=None,
-    **kwargs,
+        batch_size: int,
+        seq_len: int,
+        num_features: int,
+        single_eval_pos: int,
+        share_unrelated_tasks: float = 0.0,
+        device=default_device,
+        hyperparameters=None,
+        **kwargs,
 ):
     """
     This variant is proving the point, that cross attention will work. 
@@ -56,7 +52,6 @@ def get_batch(
     #  and collect all sequences at once. No looping requried.
 
     for i in range(int(batch_size * (1 - share_unrelated_tasks))):
-
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing
         allocation_prior = AllocationPrior(seq_len, n_levels)
@@ -65,12 +60,12 @@ def get_batch(
         # (1) sample "available" hyperparameter configurations, these will later be subselected and
         # determined to be either observation or query points
         # FIXME: move this into the allocation prior, since it is basically an internal representation!
-        curve_configs = np.random.uniform(size=(seq_len, num_params)) 
+        curve_configs = np.random.uniform(size=(seq_len, num_params))
 
         # (2) get the curves for these configurations
         allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
         # get callable to evaluate (hp, t) --> y
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  
+        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())
 
         # (3) map the allocation to actual (x,y) values
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
@@ -86,27 +81,26 @@ def get_batch(
 
     return Batch(x=x, y=y, target_y=y, single_eval_pos=single_eval_pos, style=indicator)
 
-
-class Prior: 
-    def __init__(self, get_batch_fn : Callable):
+# TODO move to utils.py
+class Prior:
+    def __init__(self, get_batch_fn: Callable):
         self.get_batch = get_batch_fn
 
-        
 
-
-if __name__ == "__main__":  
-   
+if __name__ == "__main__":
 
     import os
     import time
     import cloudpickle
-    from pfns4hpo.priors.utils import PriorDataLoader, DistributedPriorDataLoader, get_batch_to_dataloader, get_expon_sep_sampler
+    from pfns4hpo.priors.utils import PriorDataLoader, DistributedPriorDataLoader, \
+        get_batch_to_dataloader, get_expon_sep_sampler
     from tqdm import tqdm
 
     from dotenv import load_dotenv
-    
 
-    def store_batch(path, chunk_id, chunk_size, batch_size, seq_len, n_features, partition, prior_hyperparameters):
+
+    def store_batch(path, chunk_id, chunk_size, batch_size, seq_len, n_features, partition,
+                    prior_hyperparameters):
         if partition:
             partition_id = chunk_id // 1000
             chunk_dir = os.path.join(path, f"partition_{partition_id}")
@@ -114,14 +108,15 @@ if __name__ == "__main__":
             os.makedirs(chunk_dir, exist_ok=True)
         else:
             chunk_file = os.path.join(path, f"chunk_{chunk_id}.pkl")
-        
+
         if not os.path.exists(chunk_file):
             np.random.seed((os.getpid() * int(time.time())) % 123456789)
             chunk_data = []
-            for bid in tqdm(range(chunk_size//batch_size)):
+            for bid in tqdm(range(chunk_size // batch_size)):
                 if eval_pos_sampler is None:
                     # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-                    single_eval_pos = int(np.floor(np.exp(np.random.uniform(0, np.log(seq_len+1))))-1)
+                    single_eval_pos = int(
+                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1)
                 else:
                     single_eval_pos = eval_pos_sampler()
                 assert single_eval_pos < seq_len
@@ -145,7 +140,7 @@ if __name__ == "__main__":
     # dl = get_batch_to_dataloader(sampler.get_batch)
     prior = sampler
     eval_pos_sampler = get_expon_sep_sampler(seq_len=1000, base=2.0, min_eval_pos=1)
-    
+
     # Test the raw store batch call  -------------
     store_batch(
         path=path,
@@ -162,9 +157,9 @@ if __name__ == "__main__":
     pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
 
     # fixme: here we will need to call multiple times to get different numbers of features!
-    pdl.store_prior(prior, local=True, chunk_size=20, batch_size=10, seq_len=1000, n_features=5, partition=True, prior_hyperparameters={}, eval_pos_sampler=eval_pos_sampler)
+    pdl.store_prior(prior, local=True, chunk_size=20, batch_size=10, seq_len=1000, n_features=5,
+                    partition=True, prior_hyperparameters={}, eval_pos_sampler=eval_pos_sampler)
 
-    
     print()
 
     # # taken from pfns4hpo.main ----------------------------------------
@@ -194,25 +189,25 @@ if __name__ == "__main__":
     #     )
 
     #  while offset < configs["border_batch_size"]:
-        #     print(offset) 
-        #     ys = get_batch_func(  # !!!!!!!!!
-        #         configs["batch_size"],
-        #         configs["bptt"],
-        #         num_features,
-        #         hyperparameters=hps,
-        #         single_eval_pos=configs["bptt"],
-        #     )
-        #     _, eff_batch_size = ys.target_y.shape
-        #     ys_bucket[
-        #         :, offset : min(offset + eff_batch_size, configs["border_batch_size"])
-        #     ] = ys.target_y[
-        #         :, : min(eff_batch_size, configs["border_batch_size"] - offset)
-        #     ]
-        #     offset += eff_batch_size
+    #     print(offset)
+    #     ys = get_batch_func(  # !!!!!!!!!
+    #         configs["batch_size"],
+    #         configs["bptt"],
+    #         num_features,
+    #         hyperparameters=hps,
+    #         single_eval_pos=configs["bptt"],
+    #     )
+    #     _, eff_batch_size = ys.target_y.shape
+    #     ys_bucket[
+    #         :, offset : min(offset + eff_batch_size, configs["border_batch_size"])
+    #     ] = ys.target_y[
+    #         :, : min(eff_batch_size, configs["border_batch_size"] - offset)
+    #     ]
+    #     offset += eff_batch_size
 
-        # bucket_limits = bar_distribution.get_bucket_limits(
-        #     configs["num_borders"], ys=ys_bucket
-        # )
+    # bucket_limits = bar_distribution.get_bucket_limits(
+    #     configs["num_borders"], ys=ys_bucket
+    # )
 
     # if configs["load_path"] is None:
     #     single_eval_pos_gen = utils.get_weighted_single_eval_pos_sampler(
@@ -247,8 +242,6 @@ if __name__ == "__main__":
     # _, _, model, _ = train.train(**configs_train)
 
     # torch.save(model, os.path.join("final_models", configs["output_file"]))
-
-
 
     # # parsed default config from main.py  --------------------
     # default_config = {

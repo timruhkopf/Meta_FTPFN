@@ -5,7 +5,7 @@ config:
   d_model: 512
   nhead: 4
   use_prenorm: true
-#  use_gain: False
+
 
 model_class:
   
@@ -23,48 +23,42 @@ model_class:
   
     - name: "transformer_encoder.layers.0"
       layer:
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
         d_model: ${model.config.d_model}
         num_heads: ${model.config.nhead}
         dropout: 0.1
-#        use_gain: ${model.config.use_gain}
         use_prenorm: ${model.config.use_prenorm}
     - name: "transformer_encoder.layers.1"
       layer:
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
         d_model: ${model.config.d_model}
         num_heads: ${model.config.nhead}
         dropout: 0.1
-#        use_gain: ${model.config.use_gain}
         use_prenorm: ${model.config.use_prenorm}
     - name: "transformer_encoder.layers.2"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
         num_heads: ${model.config.nhead}
         dropout: 0.1
-#        use_gain: ${model.config.use_gain}
         use_prenorm: ${model.config.use_prenorm}
     - name: "transformer_encoder.layers.3"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
         num_heads: ${model.config.nhead}
         dropout: 0.1
-#        use_gain: ${model.config.use_gain}
         use_prenorm: ${model.config.use_prenorm}
     - name: "transformer_encoder.layers.4"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
         num_heads: ${model.config.nhead}
         dropout: 0.1
-#        use_gain: ${model.config.use_gain}
         use_prenorm: ${model.config.use_prenorm}
     - name: "transformer_encoder.layers.5"
       layer:
         d_model: ${model.config.d_model}
-        _target_: ppfn.model.mymodel.cross_fusion.CrossFusionV2
+        _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
         num_heads: ${model.config.nhead}
-#        use_gain: ${model.config.use_gain}
         use_prenorm: ${model.config.use_prenorm}

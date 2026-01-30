@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from pfns4hpo.priors.prior import Batch
 
-
+# TODO move to utils
 class MyModuleList(nn.Module):
     def __init__(self, modules):
         super().__init__()
@@ -47,7 +47,7 @@ class HierarchicalPFN(nn.Module):
         else:
             self.interleaved_layers = interleaved_layers
 
-
+        self._params_registry = nn.ModuleList(self.interleaved_layers.values())
 
         # verify that all target modules exist in the frozen model
         for name in self.interleaved_layers.keys():
@@ -133,8 +133,11 @@ if __name__ == "__main__":
         "transformer_encoder.layers.2.linear1": CrossFusion(d_model=512, num_heads=8),
     }
     model = HierarchicalPFN(
-        frozen_model=frozen_model, interleaved_layers=interleaved_layers
+        frozen_model=frozen_model,
+        interleaved_layers=interleaved_layers
     )
+
+    model.state_dict()
     print(model)
 
     def dummy_ft_batch(T=32, B=8, D=5, Tsplit=25):

@@ -1,12 +1,9 @@
-import torch
-import torch.nn as nn
+from typing import Tuple
+
+from torch import nn
 from torch.nn import MultiheadAttention
-import torch.nn.functional as F
-import mlflow
 
-from typing import Dict, Tuple
-
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
+from pfns4hpo.utils import torch_nanmean
 
 
 class CrossFusion(nn.Module):
@@ -15,7 +12,6 @@ class CrossFusion(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.dropout = dropout
-        # self.use_gain = use_gain
         self.use_prenorm = use_prenorm
 
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
@@ -28,22 +24,11 @@ class CrossFusion(nn.Module):
 
         self.norm = nn.LayerNorm(d_model)  # optional but recommended
 
-        # Fading in this layer either using gain parameter or identity init
-      #  if use_gain:
-      #       self.gain = nn.Parameter(torch.zeros(1))
-
         self.initialize_as_identity()
         self.single_eval_pos = None  # placeholder
 
     def initialize_as_identity(self):
         # 1. Zero out the output projection weights and biases
-        # This makes the output of the attention mechanism 0 before the residual connection
-        # nn.init.constant_(self.cross_train.out_proj.weight, 0.0001)
-        # nn.init.constant_(self.cross_train.out_proj.bias, 0.0001)
-        #
-        # nn.init.constant_(self.cross_test.out_proj.weight, 0.0001)
-        # nn.init.constant_(self.cross_test.out_proj.bias, 0.0001)
-
         nn.init.zeros_(self.cross_train.out_proj.weight)
         nn.init.zeros_(self.cross_train.out_proj.bias)
         nn.init.zeros_(self.cross_test.out_proj.weight)
@@ -75,61 +60,6 @@ class CrossFusion(nn.Module):
         return B, single_eval_pos
 
     def forward(self, x, *args, **kwargs):
-        B, single_eval_pos = self.validate_forward_args(x, *args, **kwargs)
-        
-        R = B // 3  # number related tasks
-        Q = x[ :, :R, : ]
-        # (stream A) key: target task marginal predictions (untainted)
-        K = x[ :, R : 2 * R, : ]
-        # (stream B) value: related tasks' marginal predictions (untainted)
-        V = x[ :, 2 * R :, : ]
-        # (stream C) query: related tasks' conditional predictions (to be updated)
-
-        # during evaluation we have only one target task and R related tasks (|A|=1), B, C as before
-        #     R = (B - 1) // 2  # number related
-
-        #     # (stream A) key: target task marginal predictions (untainted)
-        #     Q = x[:, :1, :].expand( -1, R, -1)
-        #     # (stream B) value: related tasks' marginal predictions (untainted)
-        #     K = x[ :, 1 : R + 1, : ]
-        #     # (stream C) query: related tasks' conditional predictions (to be updated)
-        #     V = x[ :, R + 1 :, : ]
-
-        # Handle the train/test split
-        # we only want to attend to the train set of the target task
-        # when updating the conditional predictions of the related tasks
-        # the test tokens refer to the same positions and are skipped later.
-        Q_train, Q_test = Q[:single_eval_pos, :, :], Q[single_eval_pos:, :, :]
-        K_train = K[:single_eval_pos, :, :]  # , K[single_eval_pos:, :, :]
-        V_train = V[:single_eval_pos, :, :]  # , V[single_eval_pos:, :, :]
-
-        # Attention to allow batch attention from target to related train set (in pairs)
-        train_update = (
-            self.norm(self.cross_train(Q_train, K_train, V_train)[0]) + Q_train
-        )
-
-        # Attention to allow batch attention from target test set to related train set (in pairs)
-        test_update = self.norm(self.cross_test(Q_test, K_train, V_train)[0]) + Q_test
-
-        if self.use_gain:
-            gain = torch.sigmoid(self.gain)
-            train_update = train_update * gain
-            test_update = test_update * gain
-
-
-        conditional = torch.cat(
-            [train_update, test_update], dim=0
-        )  # train + test updated conditionals
-
-        # reconstruct the full (partially) updated output
-        output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)
-        # eval:
-        #     output = torch.cat([x[:, : R + 1, :], conditional], dim=1)
-
-        return output
-    
-class CrossFusionV2(CrossFusion):
-    def forward(self, x, *args, **kwargs):
         """
         Core Motivation:
         Since the PFN has already learned useful representations for the marginal predictions,
@@ -140,21 +70,21 @@ class CrossFusionV2(CrossFusion):
         """
 
         B, sep = self.validate_forward_args(x, *args, **kwargs)
-        
+
         R = B // 3  # number related tasks
 
         # Stream (A) query target task marginal predictions (untainted)
-        A = x[ :, : R , : ]
-        
+        A = x[:, : R, :]
+
         # Stream (B.1) key related tasks' marginal predictions (untainted)
-        B = x[ :, R : 2 * R, : ]
+        B = x[:, R: 2 * R, :]
 
         # Stream (B.2) Value: what we want to extract from the related tasks based on
         # the learned kernel(A, B) * B, which will give us \Delta C, that we can add to C.
-        B = x[ :, R: 2 * R , : ] # Key Difference to CrossFusion
+        B = x[:, R: 2 * R, :]  # Key Difference to CrossFusion
 
         # Stream (C): last' layer's conditional predictions (to be updated)
-        C = x[ :, 2 * R :, : ]
+        C = x[:, 2 * R:, :]
 
         if self.use_prenorm:
             A = self.norm_Q(A)
@@ -177,11 +107,6 @@ class CrossFusionV2(CrossFusion):
             train_delta = self.norm(train_delta)
             test_delta = self.norm(test_delta)
 
-        # if self.use_gain:
-        #     gain = torch.sigmoid(self.gain)
-        #     train_delta = train_delta * gain
-        #     test_delta = test_delta * gain
-
         train_update = train_delta + C_train
         test_update = test_delta + C_test
 
@@ -189,13 +114,18 @@ class CrossFusionV2(CrossFusion):
             [train_update, test_update], dim=0
         )  # train + test updated conditionals
 
-
         # combine the untainted streams A, B with the updated conditional stream C
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)
+
+        # FIXME: add an mlp layer?
 
         return output
 
 
+# THE FOLLOWING CODE IS KEPT HERE, BECAUSE IT IS SIGNIFICANTLY
+# RELATED TO THE MULTI-STREAM TRAINING LOGIC
+# IT MAY BE MOVED TO A MORE APPROPRIATE LOCATION LATER, ONCE AN AGGREGATION SCHEME IS
+# IN PLACE.
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple
@@ -208,16 +138,17 @@ class MultiStreamObjective(nn.Module):
     and returns both the loss to optimize and the metrics to log.
     """
 
-    def __init__(self, criterion: nn.Module, model=None):
+    def __init__(self, criterion: nn.Module, model=None, verbose=False):
         super().__init__()
         self.criterion = criterion
+        self.verbose = verbose
         # FIXME: deprecaite this; it is needed only for batch parsing in forward (depending on
         #  train/eval state)
         self.model = model  # Optional reference to the model if needed for batch parsing
 
-    def forward(self, output: torch.Tensor, targets: torch.Tensor, single_eval_pos, batch=None) ->\
+    def forward(self, output: torch.Tensor, targets: torch.Tensor, single_eval_pos, batch=None) -> \
             Tuple[
-        torch.Tensor, Dict[str, float]]:
+                torch.Tensor, Dict[str, float]]:
         # 1. Compute raw loss for all streams
         # Assuming output/targets are shaped correctly for the criterion
 
@@ -225,7 +156,7 @@ class MultiStreamObjective(nn.Module):
             # FIXME: depreciate this with the model reference
             parser = self.model.parse_batch
             b = parser(batch, single_eval_pos)
-            targets =  b.y[single_eval_pos:, ...]
+            targets = b.y[single_eval_pos:, ...]
 
         raw_loss = self.criterion(output, targets)  # [T, B]
 
@@ -240,7 +171,11 @@ class MultiStreamObjective(nn.Module):
 
         # 3. Define the Optimization Target
         # You only want to optimize Stream C
-        optimization_loss = loss_stream_C.mean()
+        optimization_loss, nan_share = torch_nanmean(
+            loss_stream_C.mean(0), # T dim avg -- to see which examples failed
+            axis=0, # final avg
+            return_nanshare=True
+        )
 
         # 4. Compute Metrics (The logic previously in TrainMetricsCallback)
         with torch.no_grad():
@@ -260,150 +195,7 @@ class MultiStreamObjective(nn.Module):
                     'nll/unrelated_task': nll_diff[:, style == 1].mean().item()
                 })
 
+        if self.verbose:
+            metrics['nan_share'] = nan_share.item()
+
         return optimization_loss, metrics
-
-
-# class TrainMetricsCallback(AbstractCallback):
-#     # FIXME: move to model/callbacks to intercept intermediate outputs on the streams prior to
-#     #  aggregation!
-#     """A callback to compute loss only on the workspace (Stream C) outputs."""
-#     def __init__(self, verbose=False):
-#         super().__init__()
-#         self.verbose = verbose
-#
-#     def _calc_nll(self, batch, single_eval_pos, output, targets, loss) -> Dict:
-#         B = output.shape[1]
-#         R = B // 3
-#
-#         assert loss.shape[1] == B, (
-#             "Loss shape does not match output shape; expected loss.shape[1] == output.shape[1]"
-#         )
-#
-#         unconditional_loss = loss[:, :R, ...].detach()  # Stream A
-#         conditional_loss = loss[:, -R:, ...].detach()  # Stream C
-#
-#
-#         nll_diff = (conditional_loss - unconditional_loss).detach()
-#
-#         metrics = {'nll/C-A': nll_diff.mean()}
-#
-#         if self.verbose:
-#             metrics.update({
-#                 "nll/A": unconditional_loss.mean(),
-#                 "nll/C": conditional_loss.mean(),
-#             })
-#
-#         # Handle style-based grouping
-#         if hasattr(batch, 'style') and batch.style is not None:
-#             style = batch.style[::2]
-#             # Ensure we only compute if indices are within bounds
-#             metrics.update({
-#                 'nll/similar_task': nll_diff[:, style != 1].mean(),
-#                 'nll/unrelated_task': nll_diff[:, style == 1].mean()
-#             })
-#
-#         metrics = {k: v.cpu().item() for k, v in metrics.items()}
-#
-#         return metrics
-#
-#     def _calc_kl(self, batch, single_eval_pos, output, targets, loss) -> Dict:
-#         B = output.shape[1]
-#         R = B // 3
-#
-#         # 1. Target (Stream A): Probabilities
-#         A_probs = F.softmax(output[:, :R, :], dim=-1)
-#
-#         # 2. Input (Stream C): Log-Probabilities
-#         C_log_probs = F.log_softmax(output[:, -R:, :], dim=-1)
-#
-#         # 3. Compute KL (Sum over classes, mean over batch/time)
-#         kl_tensor = F.kl_div(
-#             C_log_probs,
-#             A_probs,
-#             reduction="none"
-#         ).sum(dim=-1).detach()
-#
-#         kl = {"kl/A-C": kl_tensor.mean().item()}
-#
-#         if self.verbose and batch.style is not None:
-#             style = batch.style[::2]  # because the pairs get the same value
-#             kl.update({
-#                 'kl/same_task': kl_tensor[:, style != 1].mean().detach().cpu().item(),
-#                 'kl/unrelated_task': kl_tensor[:, style == 1].mean().detach().cpu().item()
-#             })
-#
-#
-#         return kl
-#
-#     def _calc_dist_properties(self, batch, single_eval_pos, output, targets, loss) -> Dict:
-#         B = output.shape[1]
-#         R = B // 3
-#
-#         A = output[:, :R, :]
-#         C = output[:, -R:, :]
-#
-#         # Calculate variance of the probability distributions
-#         var_A = torch.var(F.softmax(A, dim=-1), dim=-1)
-#         var_C = torch.var(F.softmax(C, dim=-1), dim=-1)
-#
-#         return {
-#             # High positive value suggests conditioning reduced uncertainty/spread
-#             'dist/var:A-C': (var_A - var_C).mean().detach().cpu().item(),
-#         }
-#
-#     def on_loss_end(self, batch, single_eval_pos, output, targets, loss) -> Dict:
-#         """
-#         Modify the loss, since we only care about the conditional (Stream C) outputs.
-#         We do however want to track the difference between the unconditional (A) and conditional (C) outputs.
-#
-#         """
-#         B = output.shape[1]
-#         R = B // 3
-#
-#         nll = self._calc_nll(batch, single_eval_pos, output, targets, loss)
-#         kl = self._calc_kl(batch, single_eval_pos, output, targets, loss)
-#         # distrib_properties = self._calc_dist_properties(batch, single_eval_pos, output, targets, loss)
-#         return {
-#             # **distrib_properties,
-#             **nll,
-#             **kl,
-#
-#         }
-#
-#
-# class CrossFusionLossCallback(AbstractCallback):
-#     # FIXME: This callback is temporary, until we found a good aggregation/pooling strategy,
-#     #  so that we will finally have a different output head for the conditional predictions only.
-#     """A callback to compute loss only on the workspace (Stream C) outputs."""
-#
-#     def on_forward_end(self, batch, single_eval_pos, output, targets) -> Dict:
-#         """
-#         Modify the loss to only consider the workspace (Stream C) outputs.
-#
-#         we need to replicate the targets to meet the model's output shape.
-#
-#         This is a temporary fix: the original batch presented to the model has
-#         only the independent batch items. the model however parses the batch into
-#         three streams (A,B,C), so we need to replicate the targets accordingly.
-#
-#         :param batch: The input batch containing single_eval_pos
-#         :param output: The model output tensor
-#         :param targets: The target tensor
-#
-#         """
-#         parser = self.trainer.model.parse_batch
-#         b = parser(batch, single_eval_pos)
-#         return {"targets": b.y[single_eval_pos:, ...]}
-#
-#     def on_loss_end(self, batch, single_eval_pos, output, targets, loss) -> Dict:
-#         """
-#         Modify the loss, since we only care about the conditional (Stream C) outputs.
-#
-#         """
-#         B = output.shape[1]
-#         R = B // 3
-#
-#         return {
-#             "loss": loss[ :, -R: ]
-#             # loss on Stream C only (the others are frozen anyways!)
-#         }

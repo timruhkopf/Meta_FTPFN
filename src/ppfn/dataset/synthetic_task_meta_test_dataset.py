@@ -2,10 +2,8 @@ from pathlib import Path
 from typing import Callable
 
 import cloudpickle
-import torch
 from torch.utils.data import IterableDataset
 
-from pfns4hpo.priors import Batch
 from pfns4hpo.priors.utils import PriorDataLoader
 from ppfn.dataset.get_batch.same_task import get_batch as same_task_get_batch, Prior
 from ppfn.model.mymodel.ft_ppfn import MyBatch

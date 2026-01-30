@@ -69,6 +69,6 @@ class MLflowCallback(AbstractCallback):
         # Log metrics to MLflow
         mlflow.log_metrics(metrics, step=epoch)
 
-    def on_train_end(self, **kwargs):
+    def log_on_train_end(self, **kwargs):
         if mlflow.active_run():
             mlflow.end_run()

@@ -1,6 +1,6 @@
 # Default trainer configuration
 epochs: ${dataset.store_prior.n_chunks }
-steps: ${div:${dataset.store_prior.chunk_size },${dataset.store_prior.batch_size}}
+steps: ${dataset.store_prior.chunk_size }  # ${div:... ,${dataset.store_prior.batch_size}}
 # number of batches assuming chunk_size=1008 and batch_size=16
 
 objective:
@@ -20,6 +20,13 @@ trainer_class:
       experiment_name: ${experiment_name}
       run_name: ${run_name}
       mlflow_tracking_uri: Null
+
+    - _target_: ppfn.trainer.callbacks.checkpoint_callback.CheckpointCallback
+      save_dir: ${hydra:run.dir}/checkpoints/
+      name: "best_nll_CA"
+      mode: "min"
+      monitor: "nll/C-A"
+
     - _target_: ppfn.trainer.callbacks.grad_clipping.GradientClippingCallback
       frequency: 1
 
@@ -72,6 +79,16 @@ trainer_class:
         batch_size: 10  # number of unrelated tasks (bnn) items in batch (half them to get the n-pairs)
 
     # (REAL BENCHMARK METRICS)  ------------------------
+    # Track best model according to average NLL over all 3 benchmarks & checkpoint it
+    - _target_: ppfn.trainer.callbacks.checkpoint_callback.CheckpointCallback
+      save_dir: ${hydra:run.dir}/checkpoints/
+      name: "best_nll_CA_bench128"
+      mode: "min"
+      monitor: # average over these models
+        - "nll/C-A:pd1_tabular"
+        - "nll/C-A:taskset_tabular"
+        - "nll/C-A:lcbench_tabular"
+
     # LCBench
     - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
       device: ${device}
@@ -82,7 +99,6 @@ trainer_class:
         single_eval_pos: 128
         n_folds: 3
         device: ${device}
-
 
     # TaskSet
     - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback

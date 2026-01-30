@@ -37,6 +37,9 @@ class AbstractCallback:
     def on_train_end(self, **kwargs):
         pass
 
+    def log_on_train_end(self, metrics: Dict[str, float], **kwargs):
+        pass
+
     def on_clipping(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs) -> Dict:
         pass
 

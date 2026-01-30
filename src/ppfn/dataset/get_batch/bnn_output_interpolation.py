@@ -6,12 +6,13 @@ import numpy as np
 from pfns4hpo.utils import default_device
 from pfns4hpo.priors.utils import Batch
 
-
 from ppfn.dataset.prior import AllocationPrior, DimensionPrior, FidelityPrior, MultiFidelityTask
 
 from ppfn.dataset.get_batch.ftpfn import get_batch as ftpfn_get_batch
 from ppfn.model.mymodel.ft_ppfn import MyBatch
 
+
+# TODO split into multiple files?
 def get_batch_eval(
         batch_size: int,
         seq_len: int,
@@ -20,7 +21,7 @@ def get_batch_eval(
         device=default_device,
         hyperparameters=None,
         **kwargs,
-    ) -> Batch:
+) -> Batch:
     """
     This is the synthetic eval scenario, in which we have a single target task
     and all other tasks are related to it by interpolating between their BNN outputs.
@@ -85,13 +86,12 @@ def get_batch_eval(
         x.append(x_i)
         y.append(y_i)
 
-    return  MyBatch(
+    return MyBatch(
         x=torch.cat(x, dim=1).to(device).float(), y=torch.cat(y, dim=1).to(device).float(),
         target_y=torch.cat(y, dim=1).to(device).float(),
         single_eval_pos=single_eval_pos,
         style=torch.tensor(indicator, device=device)
     )
-
 
 
 @torch.no_grad()
@@ -101,8 +101,8 @@ def get_batch_train(
         num_features: int,
 
         single_eval_pos: int,
-        num_params: int=None,
-        n_levels: int=None,
+        num_params: int = None,
+        n_levels: int = None,
         device=default_device,
         hyperparameters=None,
         **kwargs,
@@ -117,14 +117,11 @@ def get_batch_train(
     if num_params is None:
         num_params = DimensionPrior(num_features).sample()
 
-
     if n_levels is None:
         n_levels = FidelityPrior().sample()
 
-
     relatedness = np.random.beta(0.1, 20, size=int(batch_size / 2))
     indicator = relatedness.repeat(2)
-
 
     # both the target and related task in one go
     # sample all configs for the task at once
@@ -177,7 +174,6 @@ def get_batch_train(
         x.append(x_i)
         y.append(y_i)
 
-
     y = torch.stack(y, dim=1)
     return MyBatch(
         x=torch.stack(x, dim=1).to(device).float(), y=y.to(device).float(),
@@ -185,7 +181,6 @@ def get_batch_train(
         single_eval_pos=single_eval_pos,
         style=torch.tensor(indicator, device=device)
     )
-
 
 
 @torch.no_grad()
@@ -228,7 +223,6 @@ def get_batch_mixed(
     # n_levels = FidelityPrior().sample()
     n_levels = None
 
-
     related_batch = get_batch_train(
         batch_size=n_related,
         seq_len=seq_len,
@@ -236,8 +230,8 @@ def get_batch_mixed(
         single_eval_pos=single_eval_pos,
         device=device,
         hyperparameters=hyperparameters,
-        num_params =num_params,
-        n_levels = n_levels
+        num_params=num_params,
+        n_levels=n_levels
     )
     if n_unrelated == 0:
         return related_batch
@@ -249,12 +243,14 @@ def get_batch_mixed(
             single_eval_pos=single_eval_pos,
             device=device,
             hyperparameters=hyperparameters,
-            num_params =num_params,
-            n_levels= n_levels,
+            num_params=num_params,
+            n_levels=n_levels,
         )
 
         return related_batch + unrelated_batch
 
+
+# TODO move to utils
 class Prior:
     def __init__(self, get_batch_fn: Callable):
         self.get_batch = get_batch_fn
@@ -269,7 +265,6 @@ if __name__ == "__main__":
         single_eval_pos=50,
         share_unrelated_tasks=0.3,
     )
-
 
     import os
     import time
@@ -424,8 +419,6 @@ if __name__ == "__main__":
     # _, _, model, _ = train.train(**configs_train)
 
     # torch.save(model, os.path.join("final_models", configs["output_file"]))
-
-
 
     # # parsed default config from main.py  --------------------
     # default_config = {

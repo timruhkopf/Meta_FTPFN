@@ -17,7 +17,6 @@ import torch
 import torch.nn as nn
 from torch import amp
 
-import pfns4hpo.utils as utils
 from pfns4hpo.priors import Batch
 
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
@@ -161,15 +160,14 @@ class PPFNTrainer:
             logger.error(f"An error occurred during training: {e}")
             raise e
         finally:
-            # Train end callbacks
-            self.callback_handler.on_event(
-                "on_train_end", best_loss=self.best_loss, epochs=self.current_epoch
-            )
+            self.callback_handler.on_event("on_train_end",)
+
+            # e.g. terminate mlflow run
+            self.callback_handler.on_event("log_on_train_end",)
 
         logger.info("Training complete.")
 
     def train_epoch(self, n_steps) -> Dict[str, float]:
-        """Train for one epoch."""
         self.model.train()
         epoch_metrics = {
             "num_batches": 0,
@@ -232,11 +230,8 @@ class PPFNTrainer:
         return epoch_metrics
 
     def _train_step(self, step, batch: Batch, single_eval_pos) -> Dict[str, float]:
-        """Execute a single training step."""
         device_type = self.device.type if hasattr(self, "device") else "cuda"
-        losses, step_metrics = self._forward_pass(batch, single_eval_pos=single_eval_pos)
-
-        loss, nan_share = utils.torch_nanmean(losses.mean(0), return_nanshare=True)
+        loss, step_metrics = self._forward_pass(batch, single_eval_pos=single_eval_pos)
 
         # Scale loss for gradient accumulation
         loss_scaled = loss / self.aggregate_k_gradients
@@ -276,10 +271,8 @@ class PPFNTrainer:
         )
         if self.verbose:
             step_metrics.update({
-                "train/nan_share": nan_share,
                 "train/single_eval_pos": single_eval_pos
             })
-        del step_metrics['loss']  # remove unscaled loss to hide it from epoch tracking
 
         return step_metrics
 
@@ -296,36 +289,6 @@ class PPFNTrainer:
             loss, metrics = self.criterion(output, targets, batch=batch, single_eval_pos=single_eval_pos)
 
         return loss, metrics
-
-            # allow callback to modify the outputs (temporary fix, while we experiment with the
-            # aggregation schemes)
-            # feedback = self.callback_handler.on_event(
-            #     "on_forward_end",
-            #     batch=batch,
-            #     single_eval_pos=single_eval_pos,
-            #     output=output,
-            #     targets=targets
-            # )
-            #
-            # output = feedback.get("output", output)
-            # targets = feedback.get("targets", targets)
-            #
-            # loss = self.criterion(output, targets)
-            #
-            # feedback = self.callback_handler.on_event(
-            #     "on_loss_end", batch=batch,
-            #     single_eval_pos=single_eval_pos,
-            #     output=output, targets=targets,
-            #     loss=loss
-            # )
-            #
-            # loss = feedback.get("loss", loss)
-
-        # # 6. Metrics extraction (to satisfy the type hint)
-        # # Often callbacks return extra metrics (accuracy, etc.)
-        # metrics = feedback
-        #
-        # return loss, metrics
 
     def _save_checkpoint(self, filename: str = "checkpoint.pt"):
         """Save model checkpoint."""
@@ -347,7 +310,6 @@ class PPFNTrainer:
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         self.current_epoch = checkpoint["epoch"]
         self.best_loss = checkpoint["best_loss"]
-
 
 
 

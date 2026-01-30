@@ -1,9 +1,8 @@
-import warnings
-
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 from typing import Dict
+
 import torch
 
+from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 
 
 class MetaTestCallback(AbstractCallback):
@@ -22,14 +21,8 @@ class MetaTestCallback(AbstractCallback):
         self.frequency = frequency
         self.device = device
         self.switch_to_eval = switch_to_eval
-        assert hasattr(self.dataset, 'name'), "Dataset must have a 'name' attribute for logging purposes."
-
-        warnings.warn(
-            'MetaTestCallback relies on TrainMetricsCallback implicitly to compute the '
-            'metrics during evaluation. This is likely subject to change with a '
-            'fixed architecture. Any callback with on_forward_end or on_loss_end '
-            'methods will be called during this evaluation.',
-            UserWarning)
+        assert hasattr(self.dataset,
+                       'name'), "Dataset must have a 'name' attribute for logging purposes."
 
     def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
         if (epoch + 1) % self.frequency == 0:
@@ -81,6 +74,3 @@ class MetaTestCallback(AbstractCallback):
             aggregated_metrics[newkey] = sum(r[key] for r in results) / len(results)
 
         return aggregated_metrics
-
-
-

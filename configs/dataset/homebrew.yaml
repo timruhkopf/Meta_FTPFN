@@ -1,5 +1,5 @@
 dataset_name: homebrew_bnn_interpolation_and_unrelated
-sample_prior: True
+sample_prior: False
 dataset_class:
 
   _target_: ppfn.dataset.priordataloader.StoredPriorDataset
