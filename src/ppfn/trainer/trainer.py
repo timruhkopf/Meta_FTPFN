@@ -128,6 +128,12 @@ class PPFNTrainer:
         # prepare sigterm handler for slurm
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGUSR1, signal_handler)
+
+        # notice that we can trigger the signal during debugging:
+        # Sends SIGUSR1 to the most recent Python process running train.py
+        # kill -USR1 $(pgrep -n -f train.py)
+        # Then check the resulting log!
+
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
 
@@ -173,6 +179,7 @@ class PPFNTrainer:
         except GracefulExit as e:
             # This block specifically catches the Slurm Timeout / USR1
             logger.warning(f"Training interrupted by Slurm: {e}")
+
         except Exception as e:
             logger.error(f"An error occurred during training: {e}")
             raise e
@@ -180,7 +187,7 @@ class PPFNTrainer:
             self.callback_handler.on_event("on_train_end",)
 
             # e.g. terminate mlflow run
-            self.callback_handler.on_event("log_on_train_end",)
+            self.callback_handler.on_event("log_on_train_end")
 
         logger.info("Training complete.")
 

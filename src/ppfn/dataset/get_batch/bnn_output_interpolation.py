@@ -175,6 +175,7 @@ def get_batch_train(
         y.append(y_i)
 
     y = torch.stack(y, dim=1)
+
     return MyBatch(
         x=torch.stack(x, dim=1).to(device).float(), y=y.to(device).float(),
         target_y=y.to(device).float(),
@@ -245,6 +246,13 @@ def get_batch_mixed(
             hyperparameters=hyperparameters,
             num_params=num_params,
             n_levels=n_levels,
+        )
+        unrelated_batch = MyBatch(
+            x=unrelated_batch.x,
+            y=unrelated_batch.y,
+            target_y=unrelated_batch.target_y,
+            single_eval_pos=unrelated_batch.single_eval_pos,
+            style=torch.ones(n_unrelated, device=device) # that is what we need to add
         )
 
         return related_batch + unrelated_batch

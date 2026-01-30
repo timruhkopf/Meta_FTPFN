@@ -28,11 +28,10 @@ class MyBatch(Batch):
         new_y = torch.cat([self.y, other.y], dim=1)
         new_target_y = torch.cat([self.target_y, other.target_y], dim=1)
 
-        style = torch.ones(self.x.shape[1], device=self.x.device) if self.style is None else (
-            self.style)
-        otherstyle = torch.ones(other.x.shape[1], device=other.x.device) if other.style is None \
-            else other.style
-        new_style = torch.cat([style, otherstyle], dim=0)
+        if self.style is None or other.style is None:
+            new_style = None
+        else:
+            new_style = torch.cat([self.style, other.style], dim=0)
 
         # Create the new instance
         return MyBatch(
