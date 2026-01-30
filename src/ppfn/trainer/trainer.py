@@ -12,6 +12,7 @@ import time
 import warnings
 from typing import Dict, List
 from tqdm import tqdm
+import signal
 
 import torch
 import torch.nn as nn
@@ -26,6 +27,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+class GracefulExit(Exception):
+    """Custom exception to trigger clean shutdown on signals."""
+    pass
+
+def signal_handler(signum, frame):
+    signame = signal.Signals(signum).name
+    logger.info(f"Signal {signame} received. Triggering graceful shutdown...")
+    raise GracefulExit(f"Received {signame}")
 
 
 class PPFNTrainer:
@@ -114,6 +124,10 @@ class PPFNTrainer:
         """
         logger.info("Starting training...")
         self.callback_handler.on_event("on_train_start")
+
+        # prepare sigterm handler for slurm
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGUSR1, signal_handler)
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
 
@@ -156,6 +170,9 @@ class PPFNTrainer:
 
         except KeyboardInterrupt:
             print("Training interrupted by user")
+        except GracefulExit as e:
+            # This block specifically catches the Slurm Timeout / USR1
+            logger.warning(f"Training interrupted by Slurm: {e}")
         except Exception as e:
             logger.error(f"An error occurred during training: {e}")
             raise e

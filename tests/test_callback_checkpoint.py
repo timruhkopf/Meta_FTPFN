@@ -19,17 +19,23 @@ def mock_trainer():
 
 
 @pytest.fixture
-def callback(tmp_path):
+def callback(tmp_path, mock_trainer):
     """Initializes callback with a temporary directory."""
-    return CheckpointCallback(
+
+    callb = CheckpointCallback(
         save_dir=str(tmp_path),
         monitor="val/loss",
         mode="min",
         name="test_model"
     )
 
+    callb.set_trainer(mock_trainer)
+    callb.best_score = float("inf")  # Start with worst possible score
+    callb.global_step = 10  # Mock global step
+    return callb
 
-def test_save_on_improvement(callback, mock_trainer):
+
+def test_save_on_improvement(callback):
     metrics = {"val/loss": 0.5}
 
     # Define a side effect that creates the file torch.save is supposed to create
@@ -37,7 +43,7 @@ def test_save_on_improvement(callback, mock_trainer):
         Path(path).touch()
 
     with patch("torch.save", side_effect=fake_save):
-        callback.log_on_epoch_end(epoch=1, metrics=metrics, global_step=10, trainer=mock_trainer)
+        callback.log_on_epoch_end(epoch=1, metrics=metrics)
 
         pt_path = callback.save_dir / "best_test_model.pt"
         json_path = callback.save_dir / "best_test_model.json"
@@ -47,19 +53,19 @@ def test_save_on_improvement(callback, mock_trainer):
         assert callback.best_score == 0.5
 
 
-def test_no_save_on_worse_metric(callback, mock_trainer):
+def test_no_save_on_worse_metric(callback):
     callback.best_score = 0.1  # Set a very good initial score
     metrics = {"val/loss": 0.5}
 
     with patch("torch.save") as mock_torch_save:
-        callback.log_on_epoch_end(epoch=1, metrics=metrics, global_step=10, trainer=mock_trainer)
+        callback.log_on_epoch_end(epoch=1, metrics=metrics)
 
         pt_path = callback.save_dir / "best_test_model.pt"
         assert not pt_path.exists()
         assert callback.best_score == 0.1
 
 
-def test_mlflow_upload_on_train_end(callback, mock_trainer):
+def test_mlflow_upload_on_train_end(callback):
     # Setup: Create dummy local files first
     pt_path = callback.save_dir / "best_test_model.pt"
     json_path = callback.save_dir / "best_test_model.json"
@@ -77,7 +83,8 @@ def test_mlflow_upload_on_train_end(callback, mock_trainer):
         mock_log.assert_any_call(str(pt_path), artifact_path="final_checkpoints")
         mock_log.assert_any_call(str(json_path), artifact_path="final_checkpoints")
 
-def test_monitor_list_averaging(callback, mock_trainer):
+
+def test_monitor_list_averaging(callback):
     callback.monitor = ["loss_a", "loss_b"]
     callback.best_score = 10.0
     metrics = {"loss_a": 2.0, "loss_b": 4.0}
@@ -86,19 +93,19 @@ def test_monitor_list_averaging(callback, mock_trainer):
         Path(path).touch()
 
     with patch("torch.save", side_effect=fake_save):
-        callback.log_on_epoch_end(epoch=1, metrics=metrics, global_step=10, trainer=mock_trainer)
+        callback.log_on_epoch_end(epoch=1, metrics=metrics)
         assert callback.best_score == 3.0
 
 
-def test_nan_guard(callback, mock_trainer):
+def test_nan_guard(callback):
     metrics = {"val/loss": float("nan")}
 
     with patch("torch.save") as mock_torch_save:
-        callback.log_on_epoch_end(epoch=1, metrics=metrics, global_step=10, trainer=mock_trainer)
+        callback.log_on_epoch_end(epoch=1, metrics=metrics)
         assert not (callback.save_dir / "best_test_model.pt").exists()
 
 
-def test_maximization_mode(callback, mock_trainer):
+def test_maximization_mode(callback):
     """Ensures Benchmark Accuracy (max) logic is correct."""
     callback.mode = "max"
     callback.best_score = 0.70
@@ -109,22 +116,22 @@ def test_maximization_mode(callback, mock_trainer):
 
     with patch("torch.save", side_effect=fake_save):
         # Should NOT save (0.65 < 0.70)
-        callback.log_on_epoch_end(1, {"val/accuracy": 0.65}, 10, mock_trainer)
+        callback.log_on_epoch_end(1, {"val/accuracy": 0.65})
         assert callback.best_score == 0.70
 
         # SHOULD save (0.85 > 0.70)
-        callback.log_on_epoch_end(2, {"val/accuracy": 0.85}, 20, mock_trainer)
+        callback.log_on_epoch_end(2, {"val/accuracy": 0.85})
         assert callback.best_score == 0.85
 
 
-def test_sidecar_metadata_accuracy(callback, mock_trainer):
+def test_sidecar_metadata_accuracy(callback):
     """Ensures the sidecar matches the training state exactly."""
     metrics = {"val/loss": 0.42}
 
     def fake_save(obj, path): Path(path).touch()
 
     with patch("torch.save", side_effect=fake_save):
-        callback.log_on_epoch_end(epoch=99, metrics=metrics, global_step=1234, trainer=mock_trainer)
+        callback.log_on_epoch_end(epoch=99, metrics=metrics)
 
         json_path = callback.save_dir / f"best_{callback.name}.json"
         data = json.loads(json_path.read_text())

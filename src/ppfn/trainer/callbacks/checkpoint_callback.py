@@ -27,7 +27,8 @@ class CheckpointCallback(AbstractCallback):
             save_dir: str = "checkpoints",
             monitor: Union[str, List] = "val/nll_diff",
             mode: str = "min",
-            name: str = "nll_best"
+            name: str = "nll_best",
+            **kwargs,
     ):
         """
         Args:
@@ -36,6 +37,7 @@ class CheckpointCallback(AbstractCallback):
             mode (str): "min" or "max" to indicate if lower or higher is better.
             name (str): Base name for saved checkpoint files.
         """
+        super().__init__(**kwargs)
         self.save_dir = Path(save_dir)
 
         if isinstance(monitor, str):
@@ -49,7 +51,7 @@ class CheckpointCallback(AbstractCallback):
         # Ensure directory exists immediately
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
-    def log_on_epoch_end(self, epoch: int, metrics: Dict[str, Any], global_step: int, trainer: Any):
+    def log_on_epoch_end(self, epoch: int, metrics: Dict[str, Any]):
         """Checks for improvement and saves locally."""
 
         # Mean over multiple monitored metrics if list is provided
@@ -66,11 +68,11 @@ class CheckpointCallback(AbstractCallback):
 
         if is_best:
             self.best_score = current_score
-            self._save_local(epoch, global_step, f"best_{self.name}.pt", metrics, trainer)
+            self._save_local(epoch=epoch, filename=f"best_{self.name}.pt", metrics=metrics)
             logger.info(f"✨ New best [{self.name}] | {self.monitor}: {current_score:.4f}")
 
-    def _save_local(self, epoch: int, global_step: int, filename: str, metrics: Dict[str, Any],
-                    trainer: Any):
+    def _save_local(self, epoch: int, filename: str, metrics: Dict[str, Any],
+                   ):
         file_path = self.save_dir / filename
 
         # 1. Filter metrics for JSON (Tensors -> floats)
@@ -84,17 +86,18 @@ class CheckpointCallback(AbstractCallback):
         # 2. Construct Checkpoint Payload
         checkpoint = {
             "epoch": epoch,
-            "global_step": global_step,
-            "model_state_dict": trainer.model.state_dict(),
-            "optimizer_state_dict": trainer.optimizer.state_dict(),
-            "scheduler_state_dict": trainer.scheduler.state_dict() if hasattr(trainer, 'scheduler') else None,
+            "global_step": self.trainer.global_step,
+            "model_state_dict": self.trainer.model.state_dict(),
+            "optimizer_state_dict": self.trainer.optimizer.state_dict(),
+            "scheduler_state_dict": self.trainer.scheduler.state_dict() if hasattr(self.trainer,
+                                                                               'scheduler') else None,
             "metrics": serializable_metrics,
             "best_score": self.best_score,
             "monitor": self.monitor
         }
 
-        if getattr(trainer, 'scaler', None):
-            checkpoint["scaler_state_dict"] = trainer.scaler.state_dict()
+        if getattr(self.trainer, 'scaler', None):
+            checkpoint["scaler_state_dict"] = self.trainer.scaler.state_dict()
 
         # 3. Atomic Save (Anti-Corruption)
         temp_path = file_path.with_suffix('.tmp')
@@ -108,12 +111,12 @@ class CheckpointCallback(AbstractCallback):
             "monitor": self.monitor,
             "best_score": self.best_score,
             "epoch": epoch,
-            "step": global_step,
+            "step": self.trainer.global_step,
             "metrics_at_save": serializable_metrics
         }
         meta_path.write_text(json.dumps(meta_payload, indent=4))
 
-    def log_on_train_end(self, **kwargs):
+    def on_train_end(self, **kwargs):
         """
         Triggered at the end of training (ideally in a 'finally' block).
         Uploads the best local versions to MLflow.
