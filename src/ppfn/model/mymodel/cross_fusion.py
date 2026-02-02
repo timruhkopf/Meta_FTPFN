@@ -7,7 +7,7 @@ from pfns4hpo.utils import torch_nanmean
 
 
 class CrossFusion(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.0, use_prenorm=True):
+    def __init__(self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=False):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -16,6 +16,7 @@ class CrossFusion(nn.Module):
 
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
         self.cross_test = MultiheadAttention(d_model, num_heads, dropout)
+        self.linear = ( nn.Linear(d_model, d_model) if add_linear else None )
 
         # PRE-NORM: Normalize inputs, not the output delta
         if self.use_prenorm:
@@ -113,6 +114,9 @@ class CrossFusion(nn.Module):
         conditional = torch.cat(
             [train_update, test_update], dim=0
         )  # train + test updated conditionals
+
+        if self.linear is not None:
+            conditional = self.linear(conditional)
 
         # combine the untainted streams A, B with the updated conditional stream C
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)
