@@ -84,6 +84,8 @@ def main(cfg: DictConfig) -> None:
     criterion = model.criterion
 
     if hasattr(cfg.trainer, "objective"):
+        # TODO consider moving this into the wrapper model; then both the backend
+        #  and the model are accessing 'criterion'
         logger.info("Wrapping criterion with objective...")
         # this is a wrapper objective around the model's criterion
         criterion = instantiate(

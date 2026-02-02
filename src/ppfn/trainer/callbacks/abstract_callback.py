@@ -11,6 +11,10 @@ class AbstractCallback:
     def set_trainer(self, trainer):
         self.trainer = trainer
 
+    def on_trainer_init(self, **kwargs):
+        """Called at the end of trainer initialization; allows e.g. the checkpoint callback to load the trainer checkpoint."""
+        pass
+
     def on_train_start(self, **kwargs):
         pass
 
@@ -37,7 +41,7 @@ class AbstractCallback:
     def on_train_end(self, **kwargs):
         pass
 
-    def log_on_train_end(self, metrics: Dict[str, float], **kwargs):
+    def log_on_train_end(self, **kwargs):
         pass
 
     def on_clipping(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs) -> Dict:
@@ -56,11 +60,9 @@ class CallbackHandler:
     def on_event(self, event_name: str, *args, **kwargs):
         feedback = {}
         for callback in self.callbacks:
-            
             method = getattr(callback, event_name, None)
-            if callable(method):
-                D = method(*args, **kwargs)
-                if D is not None:
-                    feedback.update(D)
+            D = method(*args, **kwargs)
+            if D is not None:
+                feedback.update(D)
 
         return feedback

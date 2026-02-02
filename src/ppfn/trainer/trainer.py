@@ -97,6 +97,7 @@ class PPFNTrainer:
         self.callbacks = callbacks or []
         # TODO callbackhandler will need to be ddp rank aware to avoid multiple logging
         self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
+
         self.verbose = verbose
         self.config = None # Placeholder, we pass this from outside if needed
 
@@ -113,6 +114,8 @@ class PPFNTrainer:
         self.description_template = description_template or (
             "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {train/lr:.8f}"
         )
+
+        self.callback_handler.on_event("on_trainer_init")
 
 
     def fit(self, epochs: int, steps: int):
@@ -184,7 +187,7 @@ class PPFNTrainer:
             logger.error(f"An error occurred during training: {e}")
             raise e
         finally:
-            self.callback_handler.on_event("on_train_end",)
+            self.callback_handler.on_event("on_train_end")
 
             # e.g. terminate mlflow run
             self.callback_handler.on_event("log_on_train_end")

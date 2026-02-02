@@ -22,3 +22,5 @@ hydra:
 seed: 42
 hash: ${githash:''}
 
+
+checkpoint: Null

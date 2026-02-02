@@ -26,6 +26,7 @@ trainer_class:
       name: "best_nll_CA"
       mode: "min"
       monitor: "nll/C-A"
+      resume_from: ${checkpoint}
 
     - _target_: ppfn.trainer.callbacks.grad_clipping.GradientClippingCallback
       frequency: 1
@@ -82,12 +83,13 @@ trainer_class:
     # Track best model according to average NLL over all 3 benchmarks & checkpoint it
     - _target_: ppfn.trainer.callbacks.checkpoint_callback.CheckpointCallback
       save_dir: ${hydra:run.dir}/checkpoints/
-      name: "best_nll_CA_bench128"
+      name: "best_avg_nll_CA_bench128"
       mode: "min"
+      _convert_: object
       monitor: # average over these models
-        - "nll/C-A:pd1_tabular"
-        - "nll/C-A:taskset_tabular"
-        - "nll/C-A:lcbench_tabular"
+        - "nll/C-A:pd1_tabular_128"
+        - "nll/C-A:taskset_tabular_128"
+        - "nll/C-A:lcbench_tabular_128"
 
     # LCBench
     - _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
