@@ -5,14 +5,19 @@ import torch.nn as nn
 
 from pfns4hpo.priors.prior import Batch
 
-# TODO move to utils
-class MyModuleList(nn.Module):
-    def __init__(self, modules):
-        super().__init__()
-        self.modules_list = nn.ModuleList(modules)
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
+# TODO move to utils
+class MySequential(nn.Sequential):
+    """
+    Acts like nn.Sequential but propagates all extra arguments
+    (like single_eval_pos) to every sub-module.
+    """
     def forward(self, x, *args, **kwargs):
-        for module in self.modules_list:
+        for module in self:
+            # We pass x AND all extra args to every layer in the wrapper
             x = module(x, *args, **kwargs)
         return x
 
@@ -61,8 +66,10 @@ class HierarchicalPFN(nn.Module):
             if name in self.interleaved_layers:
                 interleaved_layer = self.interleaved_layers[name]
                 # Replace the target module with a sequential module
-                wrapped_module = MyModuleList(
-                    [  # this way, we can intercept any layer including all arguments of the call
+                wrapped_module = MySequential(
+                    # Notice, that we cannot use nn.Sequential here, because it would only pass on the first argument,
+                    # ignoring e.g. single_eval_pos or others that might be needed by the interleaved layer.
+                    *[  # this way, we can intercept any layer including all arguments of the call
                         interleaved_layer,
                         module,
                     ]
@@ -109,7 +116,7 @@ class HierarchicalPFN(nn.Module):
         self.single_eval_pos = None  # reset after forward
 
         # TODO the value here can be intercepted by model callbacks to log metrics on
-        #  the three streams, when we move towards an aggreagation strategy!
+        #  the three streams, when we move towards an aggregation strategy!
 
         return value
 
@@ -121,6 +128,52 @@ class HierarchicalPFN(nn.Module):
         )
         combined_input = torch.cat([target_task.repeat(), related_tasks], dim=1)
         return self.frozen_model(combined_input, **kwargs)
+
+    def state_dict(self, *args, **kwargs):
+        """
+        Gathers state_dicts from all interleaved layers into a nested dictionary.
+        """
+        return {
+            name: layer.state_dict(*args, **kwargs)
+            for name, layer in self.interleaved_layers.items()
+        }
+
+    def load_state_dict(self, state_dict: dict, strict: bool = True):
+        """
+        Distributes the nested state_dict back to the individual layers.
+        """
+        # Clean the state_dict keys if they come from a DDP save
+        if any(k.startswith('module.') for k in state_dict.keys()):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+        for name, layer_state in state_dict.items():
+            if name in self.interleaved_layers:
+                self.interleaved_layers[name].load_state_dict(layer_state, strict=strict)
+            elif strict:
+                # If we are loading a full trainer checkpoint, it might have
+                # other keys; we only care about the keys in our registry.
+                logger.warning(f"Key '{name}' in state_dict not found in interleaved_layers.")
+
+    def save(self, path: str):
+        """Saves only the relevant interleaved weights."""
+        torch.save(self.state_dict(), path)
+
+    def load(self, path: str, strict: bool = True):
+        """Loads weights from a file into the current instance."""
+        state_dict = torch.load(path, map_location='cpu')
+        self.load_state_dict(state_dict, strict=strict)
+
+    @classmethod
+    def from_checkpoint(
+            cls,
+            path: str,
+            frozen_model: nn.Module,
+            interleaved_layers: Union[Mapping[str, nn.Module], List]
+    ):
+        """Factory method: Creates the wrapper and loads weights immediately."""
+        instance = cls(frozen_model, interleaved_layers)
+        instance.load(path)  # Calls the instance method above
+        return instance
 
 
 if __name__ == "__main__":
