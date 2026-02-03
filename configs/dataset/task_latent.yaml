@@ -1,4 +1,4 @@
-dataset_name: homebrew_bnn_interpolation_and_unrelated
+dataset_name: task_latent
 sample_prior: False
 dataset_class:
 
