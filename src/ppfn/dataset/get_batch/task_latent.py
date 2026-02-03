@@ -120,7 +120,7 @@ def get_batch_latent(
         target_y=y_tensor,
         single_eval_pos=single_eval_pos,
         # We can store the latents in 'style' if the model needs to see them
-        style=torch.stack(latents_used).to(device)
+        style=torch.stack(latents_used).squeeze().to(device)
     )
 
 if __name__ == '__main__':

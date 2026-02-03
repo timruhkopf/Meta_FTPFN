@@ -2,13 +2,17 @@
 ##SBATCH --job-name= # TODO set a job name here
 #SBATCH --partition=amo
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=72:00:00 # TODO adjust time as needed
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+#SBATCH --time=00:25:00 # TODO adjust time as needed
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 #SBATCH --signal=B:TERM@120
 ###SBATCH --array=1-100%20 # TODO set array range as needed, limiting the concurrent jobs with %20
+
+#sbatch --partition=amo --time=00:30:00 --array=1 slurm/template/integrated.sh dataset=task_latent dataset.dataset_name=task_latent
+
+# sbatch --partition=gpu --gres=gpu:1 --time=24:00:00 slurm/template/integrated.sh dataset=task_latent dataset.dataset_name=task_latent dataset.sample_prior=False device=cuda
 
 
 # (README) --------------------

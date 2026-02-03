@@ -193,7 +193,7 @@ class MultiStreamObjective(nn.Module):
 
             # Handle style-based grouping if batch is provided
             if batch is not None and hasattr(batch, 'style') and batch.style is not None:
-                style = batch.style[::2]
+                style = batch.style[::2].squeeze()  # Extract style for stream A tasks
                 metrics.update({
                     'nll/similar_task': nll_diff[:, style != 1].mean().item(),
                     'nll/unrelated_task': nll_diff[:, style == 1].mean().item()
