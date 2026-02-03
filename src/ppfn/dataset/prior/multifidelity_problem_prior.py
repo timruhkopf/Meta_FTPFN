@@ -51,7 +51,7 @@ class MultiFidelityTask:
 
  
         plugging the bnn outputs (curve parameters) into a weighted mixture to collect the functional 
-        learning curve equations, taht can be evaluated at any fidelity level t
+        learning curve equations, that can be evaluated at any fidelity level t
 
         Returns:
             Callable: specific_curve_model(t, config_idx) 
@@ -89,5 +89,111 @@ class MultiFidelityTask:
         u2 = np.random.uniform()
         self.y0 = min(u1, u2)
         self.ymax = max(u1, u2) if np.random.uniform() < 0.25 else 1.0
+
+
+if __name__ == '__main__':
+    import numpy as np
+    import torch
+    import plotly.graph_objects as go
+    from plotly.offline import plot
+    import matplotlib.pyplot as plt
+
+    import numpy as np
+    import torch
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+
+    def plot_blended_surfaces(linspace=np.linspace(0, 1, 50), alpha=0.5):
+        # 1. Setup - Generate two distinct tasks
+        def get_surface_data(linspace):
+            task = MultiFidelityTask(num_inputs=1, num_outputs=23)
+            task.sample_task()
+            curve_model = task.get_marginal_curve(torch.from_numpy(linspace).float().view(-1, 1), noise=False)
+
+            z = np.zeros((len(linspace), len(linspace)))
+            for i in range(len(linspace)):
+                with torch.no_grad():
+                    preds = curve_model(torch.from_numpy(linspace).float(), i)
+                    z[:, i] = np.array(preds).flatten()
+            return z
+
+        z1 = get_surface_data(linspace)
+        z2 = get_surface_data(linspace)
+
+        # 2. Compute the weighted average (the blend)
+        # Equation: $Z_{blend} = (1 - \alpha)Z_1 + \alpha Z_2$
+        z_blend = (1 - alpha) * z1 + alpha * z2
+
+        # 3. Create Subplots (1 row, 3 columns)
+        fig = make_subplots(
+            rows=1, cols=3,
+            specs=[[{'type': 'surface'}, {'type': 'surface'}, {'type': 'surface'}]],
+            subplot_titles=(f'Task A', f'Blended (α={alpha})', f'Task B')
+        )
+
+        # Helper to add surfaces easily
+        surfaces = [z1, z_blend, z2]
+        for idx, z in enumerate(surfaces, start=1):
+            fig.add_trace(
+                go.Surface(z=z, x=linspace, y=linspace, colorscale='Viridis', showscale=False),
+                row=1, col=idx
+            )
+
+        # 4. Layout Updates
+        fig.update_layout(
+            title_text='Multi-Fidelity Task Blending',
+            height=600,
+            width=1500,
+            scene=dict(xaxis_title='HP', yaxis_title='Fid', zaxis_title='Perf'),
+            scene2=dict(xaxis_title='HP', yaxis_title='Fid', zaxis_title='Perf'),
+            scene3=dict(xaxis_title='HP', yaxis_title='Fid', zaxis_title='Perf'),
+        )
+
+        fig.show()
+
+
+    # Run it with alpha=0.5 for an equal mix
+    plot_blended_surfaces(alpha=0.1)
+
+
+
+    def plot_linesurface_2d_interactive(linspace=np.linspace(0, 1, 50)):
+        # 1. Setup grids and task
+        task = MultiFidelityTask(num_inputs=1, num_outputs=23)
+        task.sample_task()
+        curve_model = task.get_marginal_curve(torch.from_numpy(linspace).float().view(-1, 1), noise=False)
+        # Initialize Z matrix: rows = fidelity, cols = hyperparameters
+        z_values = np.zeros((len(linspace), len(linspace)))
+        # 2. Evaluate the model
+        for i in range(len(linspace)):
+            with torch.no_grad():
+                preds = curve_model(torch.from_numpy(linspace).float(), i)
+                # Ensure we handle both tensor and numpy returns
+                z_values[:, i] = np.array(preds).flatten()
+        # 3. Create the Interactive Plot
+        fig = go.Figure(data=[go.Surface(
+            z=z_values,
+            x=linspace,  # Hyperparameters
+            y=linspace,  # Fidelities
+            colorscale='Viridis',
+            colorbar_title="Performance"
+        )])
+        fig.update_layout(
+            title='Multi-Fidelity Performance Surface',
+            scene=dict(
+                xaxis_title='Hyperparameter',
+                yaxis_title='Fidelity',
+                zaxis_title='Predicted Performance'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40)
+        )
+        fig.show()
+        # plot(fig)
+        plt.clf()
+
+
+    plot_linesurface_2d_interactive()
+
 
 
