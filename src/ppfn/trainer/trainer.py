@@ -204,19 +204,23 @@ class PPFNTrainer:
         epoch_start = time.time()
 
         for step in range(n_steps):
-            if hasattr(self.train_loader, 'get_batch'):
-                # PRIORDATALOADER Legacy support
-                batch = self.train_loader.get_batch(device=self.device)
-            else:
-                # standard dataloader
-                batch = next(self.train_loader)
-                assert isinstance(batch, List) and len(batch) == 1, (
-                    "The PPFNTrainer expects that the dataset class already provides batches, "
-                    "so the loader must have batch_size=1."
-                )
-                batch = batch[0]  # since we expect batch_size=1 with collate_fn=lambda x: x[0]
+            try:
+                if hasattr(self.train_loader, 'get_batch'):
+                    # PRIORDATALOADER Legacy support
+                    batch = self.train_loader.get_batch(device=self.device)
+                else:
+                    # standard dataloader
+                    batch = next(self.train_loader)
+                    assert isinstance(batch, List) and len(batch) == 1, (
+                        "The PPFNTrainer expects that the dataset class already provides batches, "
+                        "so the loader must have batch_size=1."
+                    )
+                    batch = batch[0]  # since we expect batch_size=1 with collate_fn=lambda x: x[0]
 
-                batch = batch.to(self.device)
+                    batch = batch.to(self.device)
+            except StopIteration:
+                logger.warn("DataLoader exhausted before reaching n_steps.")
+                break
 
             if batch.single_eval_pos is None:
                 seq_len = torch.tensor(batch.x.shape[1])
