@@ -123,5 +123,3 @@ trainer_class:
         single_eval_pos: 128
         n_folds: 3
         device: ${device}
-
-

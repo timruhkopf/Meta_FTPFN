@@ -187,6 +187,7 @@ class PPFNTrainer:
             logger.error(f"An error occurred during training: {e}")
             raise e
         finally:
+            logger.info("Reached end of training...")
             self.callback_handler.on_event("on_train_end")
 
             # e.g. terminate mlflow run
@@ -307,14 +308,14 @@ class PPFNTrainer:
 
         return step_metrics
 
-    def _forward_pass(self, batch: Batch, single_eval_pos) -> tuple[torch.Tensor, Dict[str, float]]:
+    def _forward_pass(self, batch: Batch, single_eval_pos, **kwargs) -> tuple[torch.Tensor, Dict[str, float]]:
         """Perform a single forward pass and compute loss."""
         # Unpack batch; adapt based on your batch structure
         # if isinstance(batch, (tuple, list)):
         # batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
 
         with (amp.autocast(device_type="cuda", enabled=self.use_amp)):
-            output = self.model(batch, single_eval_pos=single_eval_pos)
+            output = self.model(batch, single_eval_pos=single_eval_pos, **kwargs)
             targets = batch.y[single_eval_pos:, ...]
 
             loss, metrics = self.criterion(output, targets, batch=batch, single_eval_pos=single_eval_pos)

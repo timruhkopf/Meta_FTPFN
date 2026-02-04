@@ -55,13 +55,6 @@ class MetaTestCallback(AbstractCallback):
 
         with torch.no_grad():
             for batch in evaluation_dataloader:
-                # for convenience, we use the trainer's forward pass method
-                # that includes the architectural modifications (if any) in
-                # the callback.on_forward_end and callback.on_loss_end methods
-                # from CrossFusionLossCallback
-                # Currently the actual metrics are being computed by
-                # TrainMetricsCallback.on_forwad_end, which we abuse here.
-                # Future warning:
                 losses, step_metrics = self.trainer._forward_pass(
                     batch, self.dataset.single_eval_pos
                 )
