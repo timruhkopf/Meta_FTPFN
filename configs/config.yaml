@@ -3,7 +3,7 @@
 
 defaults:
   - model: ppfn
-  - dataset: same_task_new_sample
+  - dataset: task_latent
   - optimizer: adamw
   - scheduler: cosine_with_warmup
   - trainer: default

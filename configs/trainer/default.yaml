@@ -1,6 +1,6 @@
 # Default trainer configuration
 epochs: ${dataset.store_prior.n_chunks }
-steps: ${dataset.store_prior.chunk_size }  # ${div:... ,${dataset.store_prior.batch_size}}
+steps:  ${div:${dataset.store_prior.chunk_size},${dataset.store_prior.batch_size}}
 # number of batches assuming chunk_size=1008 and batch_size=16
 
 objective:

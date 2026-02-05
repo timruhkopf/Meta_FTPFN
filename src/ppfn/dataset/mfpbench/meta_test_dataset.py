@@ -9,6 +9,8 @@ from sklearn.model_selection import KFold
 
 
 class MFPBenchMetaTestDataset(IterableDataset):
+    target_first = True
+
     def __init__(
             self,
             data_path: str,

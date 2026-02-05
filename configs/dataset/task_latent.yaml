@@ -11,9 +11,9 @@ store_prior: # method call
     _target_: ppfn.dataset.get_batch.task_latent.get_batch_latent
     _partial_: True
 
-  n_chunks: 300 # 400
-  chunk_size: 3500 # 5000
-  batch_size: 30 # 25
+  n_chunks: 300 # 400  # array size
+  chunk_size: 3500 # 5000 # number of items (tasks) per file
+  batch_size: 10 # 25 # number of tasks in a batch number of batches = n_chunks * chunk_size / batch_size
   seq_len: 1000
   batch_kwargs:
     share_unrelated_tasks: 0.33
@@ -36,5 +36,5 @@ dataloader_class:
   _target_: torch.utils.data.DataLoader
   batch_size: 1 # number of batches -- because the dataset yields batches already!
   shuffle: False
-#  num_workers: 1
-  collate_fn: null
+  #  num_workers: 1
+#  collate_fn  is overwritten in train.py, since we cannot collate batches with different hp dim!
