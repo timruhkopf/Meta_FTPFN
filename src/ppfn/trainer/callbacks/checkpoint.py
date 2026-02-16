@@ -4,6 +4,10 @@ from typing import Dict, Any, List, Union, Optional
 import logging
 import math
 
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import mlflow
 import torch
 
@@ -30,6 +34,7 @@ class CheckpointCallback(AbstractCallback):
             name: str = "nll_best",
             resume_from: Optional[Union[str, Path]] = None,  # New: Path to checkpoint
             read_only: bool = False,  # New: If True, skip saving
+            min_save_interval: int = 300,
             **kwargs,
     ):
         """
@@ -56,6 +61,10 @@ class CheckpointCallback(AbstractCallback):
 
         # Ensure directory exists immediately
         self.save_dir.mkdir(parents=True, exist_ok=True)
+
+        self.min_save_interval = min_save_interval
+        self.last_save_time = 0
+        self._executor = ThreadPoolExecutor(max_workers=1)  # Single worker for sequential saves
 
     def on_trainer_init(self):
         """
@@ -91,85 +100,96 @@ class CheckpointCallback(AbstractCallback):
             logger.warning(f"⚠️ Checkpoint path {self.resume_path} was provided but does not exist.")
 
     def log_on_epoch_end(self, epoch: int, metrics: Dict[str, Any]):
-        """Checks for improvement and saves locally."""
-
-        # Mean over multiple monitored metrics if list is provided
-        current_scores = [metrics.get(m) for m in self.monitor]
-        current_scores = [s for s in current_scores if s is not None]
-        assert len(current_scores) >= 0, \
-            f"None of the monitored metrics {self.monitor} were found in metrics."
-
-        if len(current_scores) != len(self.monitor):
-            logger.warning(f"⚠️ Some monitored metrics {self.monitor} were not found in metrics . Found: {list(metrics.keys())}")
-
+        """Decides if we should save, then triggers background task."""
+        # 1. Calculate Score
+        current_scores = [metrics.get(m) for m in self.monitor if metrics.get(m) is not None]
+        if not current_scores: return
         current_score = sum(current_scores) / len(current_scores)
 
-        # Guard against missing metrics or NaNs
-        if current_score is None or math.isnan(current_score):
-            return
-
-        # Check for improvement
+        # 2. Check Logic (Improvement + Time Guard)
         is_best = (self.mode == "min" and current_score < self.best_score) or \
                   (self.mode == "max" and current_score > self.best_score)
 
+        now = time.time()
+        time_since_last = now - self.last_save_time
+
         if is_best:
+            if time_since_last < self.min_save_interval:
+                logger.info(f"⏭️ New best found ({current_score:.4f}), but skipping save "
+                            f"(last save was {time_since_last:.0f}s ago).")
+                return
+
             self.best_score = current_score
-            self._save_local(epoch=epoch, filename=f"best_{self.name}.pt", metrics=metrics)
-            logger.info(f"✨ New best [{self.name}] | {self.monitor}: {current_score:.4f}")
+            self.last_save_time = now
 
-    def _save_local(self, epoch: int, filename: str, metrics: Dict[str, Any],):
-        if self.read_only:
-            logger.warning("⚠️ CheckpointCallback is in read-only mode; skipping save.")
-            return
+            # --- CRITICAL: PREPARE DATA ON MAIN THREAD ---
+            # We snapshot the weights to CPU so the GPU can keep training
+            state_snapshot = self._prepare_snapshot(epoch, metrics)
 
-        file_path = self.save_dir / filename
+            # --- OFFLOAD I/O TO BACKGROUND ---
+            self._executor.submit(self._save_local_worker, state_snapshot)
+            logger.info(f"💾 Async save started for epoch {epoch} (Best: {current_score:.4f})")
 
-        # 1. Filter metrics for JSON (Tensors -> floats)
+    def _prepare_snapshot(self, epoch: int, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Snapshots current state into CPU memory. Runs on MAIN thread."""
         serializable_metrics = {}
         for k, v in metrics.items():
             if isinstance(v, (int, float)):
                 serializable_metrics[k] = v
             elif isinstance(v, torch.Tensor):
-                serializable_metrics[k] = v.item()
+                serializable_metrics[k] = v.detach().cpu().item()
 
-        # 2. Construct Checkpoint Payload
-        checkpoint = {
+        # Deep copy/move weights to CPU to prevent race conditions during training
+        snapshot = {
             "epoch": epoch,
             "global_step": self.trainer.global_step,
-            "model_state_dict": self.trainer.model.state_dict(),
-            "optimizer_state_dict": self.trainer.optimizer.state_dict(),
-            "scheduler_state_dict": self.trainer.scheduler.state_dict() if hasattr(self.trainer,
-                                                                               'scheduler') else None,
+            "model_state_dict": {k: v.cpu().clone() for k, v in self.trainer.model.state_dict().items()},
+            "optimizer_state_dict": self.trainer.optimizer.state_dict(),  # Usually small/CPU
             "metrics": serializable_metrics,
             "best_score": self.best_score,
-            "monitor": self.monitor
+            "filename": f"best_{self.name}.pt"
         }
 
+        if hasattr(self.trainer, 'scheduler'):
+            snapshot["scheduler_state_dict"] = self.trainer.scheduler.state_dict()
         if getattr(self.trainer, 'scaler', None):
-            checkpoint["scaler_state_dict"] = self.trainer.scaler.state_dict()
+            snapshot["scaler_state_dict"] = self.trainer.scaler.state_dict()
 
-        # 3. Atomic Save (Anti-Corruption)
-        temp_path = file_path.with_suffix('.tmp')
-        torch.save(checkpoint, temp_path)
-        temp_path.replace(file_path)
+        return snapshot
 
-        # 4. Save Sidecar Metadata
-        meta_path = file_path.with_suffix('.json')
-        meta_payload = {
-            "name": self.name,
-            "monitor": self.monitor,
-            "best_score": self.best_score,
-            "epoch": epoch,
-            "step": self.trainer.global_step,
-            "metrics_at_save": serializable_metrics
-        }
-        meta_path.write_text(json.dumps(meta_payload, indent=4))
+    def _save_local_worker(self, snapshot: Dict[str, Any]):
+        """The actual I/O logic. Runs on BACKGROUND thread."""
+        if self.read_only: return
+
+        try:
+            file_path = self.save_dir / snapshot["filename"]
+
+            # 1. Atomic Save of .pt
+            temp_path = file_path.with_suffix('.tmp')
+            torch.save(snapshot, temp_path)
+            temp_path.replace(file_path)
+
+            # 2. Save Sidecar JSON
+            meta_path = file_path.with_suffix('.json')
+            meta_payload = {
+                "name": self.name,
+                "best_score": snapshot["best_score"],
+                "epoch": snapshot["epoch"],
+                "step": snapshot["global_step"],
+                "metrics_at_save": snapshot["metrics"]
+            }
+            meta_path.write_text(json.dumps(meta_payload, indent=4))
+        except Exception as e:
+            logger.error(f"❌ Background save failed: {e}")
 
     def on_train_end(self, **kwargs):
         """
         Triggered at the end of training (ideally in a 'finally' block).
         Uploads the best local versions to MLflow.
         """
+        logger.info("⏳ Training ended. Waiting for final background saves...")
+        self._executor.shutdown(wait=True)
+
         if not mlflow.active_run():
             return
 
