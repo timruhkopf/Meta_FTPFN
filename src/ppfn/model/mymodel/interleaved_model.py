@@ -177,7 +177,7 @@ class HierarchicalPFN(nn.Module):
 
 
 if __name__ == "__main__":
-    from ppfn.model.mymodel.ft_ppfn import load_frozen_model
+    from ppfn.utils.load_ftpfn import load_frozen_model
     from ppfn.model.mymodel.cross_fusion import CrossFusion
 
     frozen_model = load_frozen_model()

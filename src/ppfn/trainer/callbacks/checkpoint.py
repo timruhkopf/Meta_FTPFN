@@ -34,7 +34,7 @@ class CheckpointCallback(AbstractCallback):
             name: str = "nll_best",
             resume_from: Optional[Union[str, Path]] = None,  # New: Path to checkpoint
             read_only: bool = False,  # New: If True, skip saving
-            min_save_interval: int = 300,
+            min_save_interval: int = 600,
             **kwargs,
     ):
         """
@@ -65,6 +65,8 @@ class CheckpointCallback(AbstractCallback):
         self.min_save_interval = min_save_interval
         self.last_save_time = 0
         self._executor = ThreadPoolExecutor(max_workers=1)  # Single worker for sequential saves
+        self._pending_snapshot = None  # Store the latest "best" in memory
+        self._needs_saving = False  # Track if the RAM version is newer than Disk version
 
     def on_trainer_init(self):
         """
@@ -114,21 +116,31 @@ class CheckpointCallback(AbstractCallback):
         time_since_last = now - self.last_save_time
 
         if is_best:
-            if time_since_last < self.min_save_interval:
-                logger.info(f"⏭️ New best found ({current_score:.4f}), but skipping save "
-                            f"(last save was {time_since_last:.0f}s ago).")
-                return
-
             self.best_score = current_score
-            self.last_save_time = now
+            # Always snapshot the best state to CPU memory immediately
+            # This ensures we have the best version even if we don't write to disk yet
+            self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
+            self._needs_saving = True  # <--- Mark as "dirty" (needs disk sync)
+            logger.info(f"✨ New best captured in memory (Epoch {epoch}: {current_score:.4f})")
 
-            # --- CRITICAL: PREPARE DATA ON MAIN THREAD ---
-            # We snapshot the weights to CPU so the GPU can keep training
-            state_snapshot = self._prepare_snapshot(epoch, metrics)
+            # 3. Time Guard for Disk I/O
+        now = time.time()
+        time_since_last = now - self.last_save_time
 
-            # --- OFFLOAD I/O TO BACKGROUND ---
-            self._executor.submit(self._save_local_worker, state_snapshot)
-            logger.info(f"💾 Async save started for epoch {epoch} (Best: {current_score:.4f})")
+        if self._needs_saving and time_since_last >= self.min_save_interval:
+            self._trigger_save(now)
+
+    def _trigger_save(self, timestamp: float):
+        """Internal helper to push pending snapshot to the background thread."""
+        if self._pending_snapshot:
+            snapshot = self._pending_snapshot
+            # We clear the pending ref (or keep it, but trigger_save handles the logic)
+            self._executor.submit(self._save_local_worker, snapshot)
+            self.last_save_time = timestamp
+            self._needs_saving = False  # <--- Disk is now catching up to RAM
+            # We can keep _pending_snapshot as a reference, but
+            # we've successfully offloaded this version to the worker.
+            logger.info(f"💾 Async disk save started for epoch {snapshot['epoch']}")
 
     def _prepare_snapshot(self, epoch: int, metrics: Dict[str, Any]) -> Dict[str, Any]:
         """Snapshots current state into CPU memory. Runs on MAIN thread."""
@@ -143,7 +155,10 @@ class CheckpointCallback(AbstractCallback):
         snapshot = {
             "epoch": epoch,
             "global_step": self.trainer.global_step,
-            "model_state_dict": {k: v.cpu().clone() for k, v in self.trainer.model.state_dict().items()},
+            "model_state_dict": {
+                k: v.cpu().clone() if isinstance(v, torch.Tensor) else v
+                for k, v in self.trainer.model.state_dict().items()
+            },
             "optimizer_state_dict": self.trainer.optimizer.state_dict(),  # Usually small/CPU
             "metrics": serializable_metrics,
             "best_score": self.best_score,
@@ -187,6 +202,12 @@ class CheckpointCallback(AbstractCallback):
         Triggered at the end of training (ideally in a 'finally' block).
         Uploads the best local versions to MLflow.
         """
+        # 1. If we have a pending best that never hit the disk due to the timer:
+        if self._needs_saving and self._pending_snapshot:
+            logger.info("💾 Final sync: Saving the last 'best' that was throttled by the timer.")
+            self._save_local_worker(self._pending_snapshot)
+
+        # 2. Standard shutdown logic
         logger.info("⏳ Training ended. Waiting for final background saves...")
         self._executor.shutdown(wait=True)
 

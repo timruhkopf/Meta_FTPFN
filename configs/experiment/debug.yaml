@@ -6,3 +6,5 @@ defaults:
 
 experiment_name: debug
 run_name: Null
+
+mlflow_tracking_uri: 'sqlite:///mlflow.db'
