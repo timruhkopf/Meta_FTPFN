@@ -6,7 +6,7 @@ from torch.nn import MultiheadAttention
 
 
 class CrossFusion(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=False):
+    def __init__(self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=True):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -119,8 +119,6 @@ class CrossFusion(nn.Module):
 
         # combine the untainted streams A, B with the updated conditional stream C
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)
-
-        # FIXME: add an mlp layer?
 
         return output
 

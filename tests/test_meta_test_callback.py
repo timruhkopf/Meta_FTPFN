@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from torch.utils.data import DataLoader
 
 # Replace 'ppfn.trainer.callbacks.meta_test_callback' with your actual import path
-from ppfn.trainer.callbacks.meta_test_callback import MetaTestCallback
+from ppfn.trainer.callbacks.meta_test import MetaTestCallback
 
 
 @pytest.fixture

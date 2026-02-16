@@ -4,7 +4,7 @@ import torch
 import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from ppfn.trainer.callbacks.checkpoint_callback import CheckpointCallback
+from ppfn.trainer.callbacks.checkpoint import CheckpointCallback
 
 
 @pytest.fixture
