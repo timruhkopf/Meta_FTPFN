@@ -13,8 +13,6 @@ logger.setLevel(logging.INFO)
 
 from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
 
-from pfns4hpo.priors import Batch
-
 # TODO move to utils!
 @dataclass
 class MyBatch(Batch):
@@ -49,24 +47,6 @@ class MyBatch(Batch):
             target_y=self.target_y.to(device),
             style=self.style.to(device) if self.style is not None else None
         )
-
-
-def load_frozen_model() -> nn.Module:
-    """Load frozen pre-trained PPFN model from ifBO."""
-    import torch
-    from dotenv import load_dotenv
-    from ifbo.surrogate import FTPFN
-
-    # Load from project root .env (4 levels up from this file)
-    load_dotenv(dotenv_path=Path(__file__).parents[4] / ".env")
-
-    model_path = os.getenv("MODELDIR", "models/") + "pfn_ckpt"
-    frozen_model = FTPFN(
-        target_path=Path(model_path), version="0.0.1", device=torch.device("cpu")
-    ).model
-    
-    return frozen_model
-
 
 class FT_PPFN(HierarchicalPFN):
     """
