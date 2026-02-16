@@ -1,0 +1,6 @@
+mlflow:
+  _target_: ppfn.trainer.callbacks.mlflow_callback.MLflowCallback
+  experiment_name: ${experiment_name}
+  run_name: ${run_name}
+  mlflow_tracking_uri: Null
+  log_system_metrics: False

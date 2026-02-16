@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - /callbacks:
+      - mlflow
+      - ckpt_nll_avg
+      - clip
+      - validation_synthetic
+      - validation_real
+  - _self_
+
+
+experiment_name: ???
+run_name: Null

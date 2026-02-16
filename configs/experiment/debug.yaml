@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - /callbacks:
+      - mlflow
+  - _self_
+
+experiment_name: debug
+run_name: Null

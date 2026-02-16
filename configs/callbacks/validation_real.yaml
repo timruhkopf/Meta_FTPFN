@@ -1,0 +1,32 @@
+lcbench:
+  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  device: ${device}
+  dataset:
+    _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+    benchmark_name: lcbench_tabular
+    data_path: ${oc.env:DATADIR}/validation
+    single_eval_pos: 128
+    n_folds: 3
+    device: ${device}
+
+taskset:
+  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  device: ${device}
+  dataset:
+    _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+    benchmark_name: taskset_tabular
+    data_path: ${oc.env:DATADIR}/validation
+    single_eval_pos: 128
+    n_folds: 3
+    device: ${device}
+
+pd1:
+  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  device: ${device}
+  dataset:
+    _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+    benchmark_name: pd1_tabular
+    data_path: ${oc.env:DATADIR}/validation
+    single_eval_pos: 128
+    n_folds: 3
+    device: ${device}

@@ -1,9 +1,8 @@
 from typing import Tuple
 
+import torch
 from torch import nn
 from torch.nn import MultiheadAttention
-
-from pfns4hpo.utils import torch_nanmean
 
 
 class CrossFusion(nn.Module):
@@ -16,7 +15,7 @@ class CrossFusion(nn.Module):
 
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
         self.cross_test = MultiheadAttention(d_model, num_heads, dropout)
-        self.linear = ( nn.Linear(d_model, d_model) if add_linear else None )
+        self.linear = (nn.Linear(d_model, d_model) if add_linear else None)
 
         # PRE-NORM: Normalize inputs, not the output delta
         if self.use_prenorm:

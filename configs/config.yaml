@@ -1,3 +1,5 @@
+# @package _global_
+
 # Default configuration for PPFN training
 # Override with specific experiments via configs/experiment/
 
@@ -7,11 +9,20 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine_with_warmup
   - trainer: default
+  - experiment: debug
+  - callbacks:
+      - mlflow
   - _self_
 
 device: "cuda"
-experiment_name: "debug"
+experiment_name: ???
 run_name: Null #  will be set by mlflow at random
+
+trainer:
+  trainer_class:
+    callbacks: ${callbacks}
+
+
 
 hydra:
   run:

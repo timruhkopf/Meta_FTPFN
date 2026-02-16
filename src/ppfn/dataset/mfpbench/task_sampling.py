@@ -21,7 +21,7 @@ except ImportError as e:
 # ------------------------------------------------------------------------------
 import mfpbench
 
-from src.mfpbench.taskset_tabular.benchmark import TaskSetTabularConfig_8p
+from mfpbench.taskset_tabular.benchmark import TaskSetTabularConfig_8p
 
 import os
 import torch
@@ -335,7 +335,7 @@ if __name__ == '__main__':
             benchmarks=[benchmark_name],
             task_ids=task_ids,  # Just a few for testing
             ntasks_per_dataset=1,  # only one allocation per dataset
-            single_eval_positions=[128],
+            single_eval_positions=[500],
             num_repetitions=3,
             seq_len=1000,
             data_path="/home/ruhkopf/VSCode/Meta_FTPFN/data/",

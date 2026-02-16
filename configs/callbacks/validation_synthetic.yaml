@@ -1,0 +1,36 @@
+same_task_128:
+  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  device: ${device}
+  switch_to_eval: False
+  dataset:
+    _target_: ppfn.dataset.synthetic_task_meta_test_dataset.SyntheticTaskMetaTestDataset
+    name: synthetic_same_task
+    get_batch_fn:
+      _target_:  ppfn.dataset.get_batch.same_task.get_batch
+      _partial_: True
+    data_path: ${oc.env:DATADIR}/validation
+    single_eval_pos: 128
+    device: ${device}
+    # kwargs for generating the dataset:
+    n_chunks: 1
+    chunk_size: 100
+    batch_size: 10 # 100 # half this number is number of pairs of items (bnn) per batch
+
+
+unrelated_128:
+  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  device: ${device}
+  switch_to_eval: False
+  dataset:
+    _target_: ppfn.dataset.synthetic_task_meta_test_dataset.SyntheticTaskMetaTestDataset
+    name: synthetic_unrelated_task
+    get_batch_fn:
+      _target_: ppfn.dataset.get_batch.ftpfn.get_batch
+      _partial_: True
+    data_path: ${oc.env:DATADIR}/validation
+    single_eval_pos: 128
+    device: ${device}
+    # kwargs for generating the dataset:
+    n_chunks: 1 # number of files
+    chunk_size: 100 # number of items per file
+    batch_size: 10  # number of unrelated tasks (bnn) items in batch (half them to get the n-pairs)
