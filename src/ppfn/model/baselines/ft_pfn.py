@@ -1,12 +1,11 @@
-
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from ifbo.surrogate import FTPFN
 
-def ft_pfn():
 
+def ft_pfn():
 
     load_dotenv(dotenv_path=Path(__file__).parents[4] / ".env")
 
@@ -18,5 +17,5 @@ def ft_pfn():
     ).model
 
     criterion = frozen_model.criterion
-    
+
     return frozen_model

@@ -6,8 +6,10 @@ import torch.nn as nn
 from pfns4hpo.priors.prior import Batch
 
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 # TODO move to utils
 class MySequential(nn.Sequential):
@@ -15,6 +17,7 @@ class MySequential(nn.Sequential):
     Acts like nn.Sequential but propagates all extra arguments
     (like single_eval_pos) to every sub-module.
     """
+
     def forward(self, x, *args, **kwargs):
         for module in self:
             # We pass x AND all extra args to every layer in the wrapper
@@ -24,7 +27,9 @@ class MySequential(nn.Sequential):
 
 class HierarchicalPFN(nn.Module):
     def __init__(
-        self, frozen_model: nn.Module, interleaved_layers: Union[Mapping[str, nn.Module], List]
+        self,
+        frozen_model: nn.Module,
+        interleaved_layers: Union[Mapping[str, nn.Module], List],
     ):
         """Initialize the InterleavedModel with a frozen model and interleaved layers.
 
@@ -104,14 +109,18 @@ class HierarchicalPFN(nn.Module):
 
         # parse input to meet ft_pfn format
         x = (batch.x, batch.y)
-        single_eval_pos = batch.single_eval_pos if single_eval_pos is None else single_eval_pos
+        single_eval_pos = (
+            batch.single_eval_pos if single_eval_pos is None else single_eval_pos
+        )
 
         if single_eval_pos is None:
-            raise ValueError("single_eval_pos must be provided in the batch or as an argument.")
-    
-        self.single_eval_pos = single_eval_pos # propagate to interleaved layers
-        
-        kwargs['single_eval_pos'] = single_eval_pos
+            raise ValueError(
+                "single_eval_pos must be provided in the batch or as an argument."
+            )
+
+        self.single_eval_pos = single_eval_pos  # propagate to interleaved layers
+
+        kwargs["single_eval_pos"] = single_eval_pos
         value = self.frozen_model(x, **kwargs)
         self.single_eval_pos = None  # reset after forward
 
@@ -143,16 +152,20 @@ class HierarchicalPFN(nn.Module):
         Distributes the nested state_dict back to the individual layers.
         """
         # Clean the state_dict keys if they come from a DDP save
-        if any(k.startswith('module.') for k in state_dict.keys()):
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        if any(k.startswith("module.") for k in state_dict.keys()):
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
 
         for name, layer_state in state_dict.items():
             if name in self.interleaved_layers:
-                self.interleaved_layers[name].load_state_dict(layer_state, strict=strict)
+                self.interleaved_layers[name].load_state_dict(
+                    layer_state, strict=strict
+                )
             elif strict:
                 # If we are loading a full trainer checkpoint, it might have
                 # other keys; we only care about the keys in our registry.
-                logger.warning(f"Key '{name}' in state_dict not found in interleaved_layers.")
+                logger.warning(
+                    f"Key '{name}' in state_dict not found in interleaved_layers."
+                )
 
     def save(self, path: str):
         """Saves only the relevant interleaved weights."""
@@ -160,15 +173,15 @@ class HierarchicalPFN(nn.Module):
 
     def load(self, path: str, strict: bool = True):
         """Loads weights from a file into the current instance."""
-        state_dict = torch.load(path, map_location='cpu')
+        state_dict = torch.load(path, map_location="cpu")
         self.load_state_dict(state_dict, strict=strict)
 
     @classmethod
     def from_checkpoint(
-            cls,
-            path: str,
-            frozen_model: nn.Module,
-            interleaved_layers: Union[Mapping[str, nn.Module], List]
+        cls,
+        path: str,
+        frozen_model: nn.Module,
+        interleaved_layers: Union[Mapping[str, nn.Module], List],
     ):
         """Factory method: Creates the wrapper and loads weights immediately."""
         instance = cls(frozen_model, interleaved_layers)
@@ -186,8 +199,7 @@ if __name__ == "__main__":
         "transformer_encoder.layers.2.linear1": CrossFusion(d_model=512, num_heads=8),
     }
     model = HierarchicalPFN(
-        frozen_model=frozen_model,
-        interleaved_layers=interleaved_layers
+        frozen_model=frozen_model, interleaved_layers=interleaved_layers
     )
 
     model.state_dict()
@@ -222,14 +234,13 @@ if __name__ == "__main__":
 
     (x, y), single_eval_pos = dummy_ft_batch()
 
-
     # test batch: ----------------------------
 
     n_related = x.shape[1] - 1
-    x_target_eval = x[:, :1, :] # query
+    x_target_eval = x[:, :1, :]  # query
     y_target_eval = y[:, :1]
 
-    x_related_eval = x[:, 1:, :] # key, value
+    x_related_eval = x[:, 1:, :]  # key, value
     # we want to have the exact same query location!
     x_related_eval[:single_eval_pos, :, :] = x_target_eval[:single_eval_pos, :1, :]
     y_related_eval = y[:, 1:]
@@ -237,13 +248,18 @@ if __name__ == "__main__":
     # concat in batch dimension
     # unconditional target task, unconditional related tasks, target tasks to be conditioned on the related tasks
     # q, k, v
-    x_eval = torch.cat([x_target_eval, x_related_eval, x_target_eval.expand(-1, n_related + 1, -1)], dim=1)
-    y_eval = torch.cat([y_target_eval, y_related_eval, y_target_eval.expand(-1, n_related + 1)], dim=1)
+    x_eval = torch.cat(
+        [x_target_eval, x_related_eval, x_target_eval.expand(-1, n_related + 1, -1)],
+        dim=1,
+    )
+    y_eval = torch.cat(
+        [y_target_eval, y_related_eval, y_target_eval.expand(-1, n_related + 1)], dim=1
+    )
 
     model.eval()
     with torch.no_grad():
-        _ =  model((x_eval, y_eval), single_eval_pos=single_eval_pos)
-   
+        _ = model((x_eval, y_eval), single_eval_pos=single_eval_pos)
+
     # n_related = x.shape[1] - 1
     # x_target_eval = x[:, :1, :].repeat(1, n_related +1, 1) # query
     # y_target_eval = y[:, :1].repeat(1, n_related +1)
@@ -264,8 +280,8 @@ if __name__ == "__main__":
     #     _ =  model((x_eval, y_eval), single_eval_pos=single_eval_pos)
 
     # train_batch ----------------------------
-    x_related  = x
-    y_related  = y
+    x_related = x
+    y_related = y
 
     x_target = x.roll(1, dims=1)  # shift by one along sequence dimension
     y_target = y.roll(1, dims=1)
@@ -280,8 +296,6 @@ if __name__ == "__main__":
 
     model.train()
 
-    _ =  model((x_train, y_train), single_eval_pos=single_eval_pos)
-
-
+    _ = model((x_train, y_train), single_eval_pos=single_eval_pos)
 
     print("success")

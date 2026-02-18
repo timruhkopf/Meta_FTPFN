@@ -6,11 +6,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class GradientClippingCallback(AbstractCallback):
     def __init__(self, frequency: int = 100):
         self.frequency = frequency
 
-    def on_clipping(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs) -> Dict:
+    def on_clipping(
+        self, epoch: int, step: int, metrics: Dict[str, float], **kwargs
+    ) -> Dict:
         if (step + 1) % self.frequency == 0:
             grads = []
             for p in self.trainer.model.parameters():
@@ -27,11 +30,11 @@ class GradientClippingCallback(AbstractCallback):
             mean_grad = all_grads.mean().item()
             std_grad = all_grads.std().item()
             # Adding a small epsilon to avoid division by zero
-            gsnr = (mean_grad ** 2) / (std_grad ** 2 + 1e-8)
+            gsnr = (mean_grad**2) / (std_grad**2 + 1e-8)
 
             return {
                 "train/grad/sparsity": sparsity,
                 "train/grad/gsnr": gsnr,
                 "train/grad/mean": mean_grad,
-                "train/grad/std": std_grad
+                "train/grad/std": std_grad,
             }

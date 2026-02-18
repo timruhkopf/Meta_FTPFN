@@ -6,7 +6,12 @@ import numpy as np
 from pfns4hpo.utils import default_device
 from pfns4hpo.priors.utils import Batch
 
-from ppfn.dataset.prior import AllocationPrior, DimensionPrior, FidelityPrior, MultiFidelityTask
+from ppfn.dataset.prior import (
+    AllocationPrior,
+    DimensionPrior,
+    FidelityPrior,
+    MultiFidelityTask,
+)
 
 from ppfn.dataset.get_batch.ftpfn import get_batch as ftpfn_get_batch
 from ppfn.model.mymodel.ft_ppfn import MyBatch
@@ -14,13 +19,13 @@ from ppfn.model.mymodel.ft_ppfn import MyBatch
 
 # TODO split into multiple files?
 def get_batch_eval(
-        batch_size: int,
-        seq_len: int,
-        num_features: int,
-        single_eval_pos: int,
-        device=default_device,
-        hyperparameters=None,
-        **kwargs,
+    batch_size: int,
+    seq_len: int,
+    num_features: int,
+    single_eval_pos: int,
+    device=default_device,
+    hyperparameters=None,
+    **kwargs,
 ) -> Batch:
     """
     This is the synthetic eval scenario, in which we have a single target task
@@ -39,7 +44,9 @@ def get_batch_eval(
         size=(seq_len, batch_size, num_params)
     )  # sample all configs for the task at once
 
-    target_curves = dataset_prior.get_marginal_curve(torch.from_numpy(all_configs[:, 0, :]).float())
+    target_curves = dataset_prior.get_marginal_curve(
+        torch.from_numpy(all_configs[:, 0, :]).float()
+    )
 
     # get all the related curves from the target task's perspective
     target_task_outputs = []
@@ -61,7 +68,9 @@ def get_batch_eval(
 
         # interpolate between both tasks' bnn outputs
         alpha = relatedness[i - 1]
-        mixed_bnn_outputs = ((1 - alpha) * target_task_outputs[i - 1] + alpha * bnn_outputs.numpy())
+        mixed_bnn_outputs = (1 - alpha) * target_task_outputs[
+            i - 1
+        ] + alpha * bnn_outputs.numpy()
 
         dataset_prior.sample_y0_ymax()  # move the curves
         parametrized_curve_model = dataset_prior.linker.curve_factory(
@@ -81,38 +90,44 @@ def get_batch_eval(
         allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
 
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
-            all_configs[:, i, :], related_task_curves[i], num_params, single_eval_pos, allocation
+            all_configs[:, i, :],
+            related_task_curves[i],
+            num_params,
+            single_eval_pos,
+            allocation,
         )
         x.append(x_i)
         y.append(y_i)
 
     return MyBatch(
-        x=torch.cat(x, dim=1).to(device).float(), y=torch.cat(y, dim=1).to(device).float(),
+        x=torch.cat(x, dim=1).to(device).float(),
+        y=torch.cat(y, dim=1).to(device).float(),
         target_y=torch.cat(y, dim=1).to(device).float(),
         single_eval_pos=single_eval_pos,
-        style=torch.tensor(indicator, device=device)
+        style=torch.tensor(indicator, device=device),
     )
 
 
 @torch.no_grad()
 def get_batch_train(
-        batch_size: int,
-        seq_len: int,
-        num_features: int,
-
-        single_eval_pos: int,
-        num_params: int = None,
-        n_levels: int = None,
-        device=default_device,
-        hyperparameters=None,
-        **kwargs,
+    batch_size: int,
+    seq_len: int,
+    num_features: int,
+    single_eval_pos: int,
+    num_params: int = None,
+    n_levels: int = None,
+    device=default_device,
+    hyperparameters=None,
+    **kwargs,
 ) -> Batch:
     """
     In this synthetic training scenario, we create a batch where every other example is
     the related task to the previous target task (i.e. related and targets are paired up and
     spliced in the batch).
     """
-    assert batch_size % 2 == 0, "Batch size must be even for paired related/target tasks."
+    assert batch_size % 2 == 0, (
+        "Batch size must be even for paired related/target tasks."
+    )
 
     if num_params is None:
         num_params = DimensionPrior(num_features).sample()
@@ -120,9 +135,11 @@ def get_batch_train(
     if n_levels is None:
         n_levels = FidelityPrior().sample()
 
-    relatedness = kwargs.get('relatedness', None)
+    relatedness = kwargs.get("relatedness", None)
     if relatedness is not None:
-        assert len(relatedness) == batch_size // 2, "Relatedness array length must match half the batch size."
+        assert len(relatedness) == batch_size // 2, (
+            "Relatedness array length must match half the batch size."
+        )
         alpha = kwargs.get("alpha", 0.1)
         beta = kwargs.get("beta", 20)
 
@@ -142,14 +159,14 @@ def get_batch_train(
         dataset_prior.sample_task()  # sample initial task
 
         # fixing the performance range if provided (for plotting mainly)
-        y0, ymax = kwargs.get('y0', None), kwargs.get('ymax', None)
+        y0, ymax = kwargs.get("y0", None), kwargs.get("ymax", None)
         if y0 is not None and ymax is not None:
             dataset_prior.y0 = y0
             dataset_prior.ymax = ymax
 
-
         target_curves = dataset_prior.get_marginal_curve(
-            torch.from_numpy(all_configs[:, target_task_idx, :]).float())
+            torch.from_numpy(all_configs[:, target_task_idx, :]).float()
+        )
 
         # get all the curves' parameters from the target task's perspective
         hyperparams = torch.from_numpy(all_configs[:, target_task_idx, :]).float()
@@ -163,11 +180,12 @@ def get_batch_train(
 
         # interpolate between both tasks' bnn outputs
         alpha = relatedness[i]
-        mixed_bnn_outputs = (1 - alpha) * bnn_outputs_target \
-                            + alpha * bnn_outputs_related
+        mixed_bnn_outputs = (
+            1 - alpha
+        ) * bnn_outputs_target + alpha * bnn_outputs_related
 
         # fixing the performance range if provided (for plotting mainly)
-        y0, ymax = kwargs.get('y0', None), kwargs.get('ymax', None)
+        y0, ymax = kwargs.get("y0", None), kwargs.get("ymax", None)
         if y0 is not None and ymax is not None:
             dataset_prior.y0 = y0
             dataset_prior.ymax = ymax
@@ -190,7 +208,11 @@ def get_batch_train(
         allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
 
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
-            all_configs[:, i, :], parametrized_curves[i], num_params, single_eval_pos, allocation
+            all_configs[:, i, :],
+            parametrized_curves[i],
+            num_params,
+            single_eval_pos,
+            allocation,
         )
         x.append(x_i)
         y.append(y_i)
@@ -198,24 +220,25 @@ def get_batch_train(
     y = torch.stack(y, dim=1)
 
     return MyBatch(
-        x=torch.stack(x, dim=1).to(device).float(), y=y.to(device).float(),
+        x=torch.stack(x, dim=1).to(device).float(),
+        y=y.to(device).float(),
         target_y=y.to(device).float(),
         single_eval_pos=single_eval_pos,
-        style=torch.tensor(indicator, device=device)
+        style=torch.tensor(indicator, device=device),
     )
 
 
 @torch.no_grad()
 def get_batch_mixed(
-        batch_size: int,
-        seq_len: int,
-        num_features: int,
-        single_eval_pos: int,
-        share_unrelated_tasks: float = 0.0,
-        device=default_device,
-        hyperparameters=None,
-        num_params: int = None,
-        **kwargs,
+    batch_size: int,
+    seq_len: int,
+    num_features: int,
+    single_eval_pos: int,
+    share_unrelated_tasks: float = 0.0,
+    device=default_device,
+    hyperparameters=None,
+    num_params: int = None,
+    **kwargs,
 ):
     """
     This prior will sample batches,
@@ -256,7 +279,7 @@ def get_batch_mixed(
         hyperparameters=hyperparameters,
         num_params=num_params,
         n_levels=n_levels,
-        **kwargs
+        **kwargs,
     )
     if n_unrelated == 0:
         return related_batch
@@ -276,7 +299,7 @@ def get_batch_mixed(
             y=unrelated_batch.y,
             target_y=unrelated_batch.target_y,
             single_eval_pos=unrelated_batch.single_eval_pos,
-            style=torch.ones(n_unrelated, device=device) # that is what we need to add
+            style=torch.ones(n_unrelated, device=device),  # that is what we need to add
         )
 
         return related_batch + unrelated_batch
@@ -289,39 +312,27 @@ class Prior:
 
 
 if __name__ == "__main__":
-
     import matplotlib.pyplot as plt
     import numpy as np
     import torch
     from scipy.stats import beta as beta_dist
 
-
-
-    import plotly.graph_objects as go
-    import plotly.offline as pyo
-    import numpy as np
     import torch
-    import webbrowser
     import os
-    import platform
     from pathlib import Path
-    from scipy.stats import beta as beta_dist
-    import matplotlib.pyplot as plt
-
 
     def plot_beta_pdf(alpha, beta):
         """Plots the probability density of your relatedness factor."""
         x = np.linspace(0, 1, 100)
         y = beta_dist.pdf(x, alpha, beta)
         plt.figure(figsize=(6, 3))
-        plt.plot(x, y, 'r-', lw=2)
-        plt.fill_between(x, y, alpha=0.2, color='red')
+        plt.plot(x, y, "r-", lw=2)
+        plt.fill_between(x, y, alpha=0.2, color="red")
         plt.title(f"Relatedness Distribution: Beta(α={alpha}, β={beta})")
         plt.xlabel("Relatedness Factor (0=Identical, 1=Independent)")
         plt.ylabel("Density")
         plt.grid(True, alpha=0.3)
         plt.show()
-
 
     def plot_relatedness_static(batch, pair_idx=0):
         """
@@ -349,23 +360,42 @@ if __name__ == "__main__":
         ax1 = fig.add_subplot(1, 2, 1)
         x_beta = np.linspace(0, 1, 500)
         y_beta = beta_dist.pdf(x_beta, 0.1, 20)
-        ax1.plot(x_beta, y_beta, color='red', lw=2)
-        ax1.fill_between(x_beta, y_beta, color='red', alpha=0.1)
-        ax1.axvline(rel_val, color='black', linestyle='--', label=f'Current Alpha: {rel_val:.4f}')
+        ax1.plot(x_beta, y_beta, color="red", lw=2)
+        ax1.fill_between(x_beta, y_beta, color="red", alpha=0.1)
+        ax1.axvline(
+            rel_val,
+            color="black",
+            linestyle="--",
+            label=f"Current Alpha: {rel_val:.4f}",
+        )
         ax1.set_title("Beta(0.1, 20) Prior")
         ax1.set_xlabel("Relatedness Factor")
         ax1.legend()
 
         # Subplot 2: The 3D Task Surface
-        ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
 
         # Plot Target points
-        ax2.scatter(x_target[:, 0], x_target[:, 1], y_target,
-                    c='blue', label='Target Task', s=10, alpha=0.6)
+        ax2.scatter(
+            x_target[:, 0],
+            x_target[:, 1],
+            y_target,
+            c="blue",
+            label="Target Task",
+            s=10,
+            alpha=0.6,
+        )
 
         # Plot Related points
-        ax2.scatter(x_related[:, 0], x_related[:, 1], y_related,
-                    c='red', label='Related Task', s=10, alpha=0.6)
+        ax2.scatter(
+            x_related[:, 0],
+            x_related[:, 1],
+            y_related,
+            c="red",
+            label="Related Task",
+            s=10,
+            alpha=0.6,
+        )
 
         ax2.set_title(f"Task Comparison (α={rel_val:.6f})")
         ax2.set_xlabel("HP 1")
@@ -408,7 +438,7 @@ if __name__ == "__main__":
         # beta=20
         relatedness=relatedness,
         y0=0.5,
-        ymax=1
+        ymax=1,
     )
 
     plot_relatedness_static(batch, pair_idx=1)
@@ -417,38 +447,12 @@ if __name__ == "__main__":
     y = beta_dist.pdf(x, 0.1, 20)
 
     plt.figure(figsize=(6, 4))
-    plt.plot(x, y, color='green')
-    plt.fill_between(x, y, alpha=0.2, color='green')
+    plt.plot(x, y, color="green")
+    plt.fill_between(x, y, alpha=0.2, color="green")
     plt.title("Beta(0.1, 20) Distribution PDF")
     plt.xlabel("Relatedness Factor (alpha)")
     plt.ylabel("Density")
     plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     get_batch_mixed(
         batch_size=12,
@@ -458,18 +462,23 @@ if __name__ == "__main__":
         share_unrelated_tasks=0.3,
     )
 
-    import os
     import time
     import cloudpickle
-    from pfns4hpo.priors.utils import PriorDataLoader, DistributedPriorDataLoader, \
-        get_batch_to_dataloader, get_expon_sep_sampler
+    from pfns4hpo.priors.utils import PriorDataLoader, get_expon_sep_sampler
     from tqdm import tqdm
 
     from dotenv import load_dotenv
 
-
-    def store_batch(path, chunk_id, chunk_size, batch_size, seq_len, n_features, partition,
-                    prior_hyperparameters):
+    def store_batch(
+        path,
+        chunk_id,
+        chunk_size,
+        batch_size,
+        seq_len,
+        n_features,
+        partition,
+        prior_hyperparameters,
+    ):
         if partition:
             partition_id = chunk_id // 1000
             chunk_dir = os.path.join(path, f"partition_{partition_id}")
@@ -485,21 +494,23 @@ if __name__ == "__main__":
                 if eval_pos_sampler is None:
                     # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
                     single_eval_pos = int(
-                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1)
+                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+                    )
                 else:
                     single_eval_pos = eval_pos_sampler()
                 assert single_eval_pos < seq_len
-                b = prior.get_batch(batch_size=batch_size,
-                                    single_eval_pos=single_eval_pos,
-                                    seq_len=seq_len,
-                                    num_features=n_features,
-                                    hyperparameters=prior_hyperparameters)
+                b = prior.get_batch(
+                    batch_size=batch_size,
+                    single_eval_pos=single_eval_pos,
+                    seq_len=seq_len,
+                    num_features=n_features,
+                    hyperparameters=prior_hyperparameters,
+                )
                 chunk_data.append((single_eval_pos, b))
-            with open(chunk_file, 'wb') as file:
+            with open(chunk_file, "wb") as file:
                 cloudpickle.dump(chunk_data, file)
         else:
             print("Already done.")
-
 
     load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
 
@@ -526,8 +537,17 @@ if __name__ == "__main__":
     pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
 
     # fixme: here we will need to call multiple times to get different numbers of features!
-    pdl.store_prior(prior, local=True, chunk_size=20, batch_size=10, seq_len=1000, n_features=5,
-                    partition=True, prior_hyperparameters={}, eval_pos_sampler=eval_pos_sampler)
+    pdl.store_prior(
+        prior,
+        local=True,
+        chunk_size=20,
+        batch_size=10,
+        seq_len=1000,
+        n_features=5,
+        partition=True,
+        prior_hyperparameters={},
+        eval_pos_sampler=eval_pos_sampler,
+    )
 
     print()
 

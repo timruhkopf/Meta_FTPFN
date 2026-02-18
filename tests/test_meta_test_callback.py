@@ -1,8 +1,6 @@
 import pytest
 import torch
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-from torch.utils.data import DataLoader
+from unittest.mock import MagicMock
 
 # Replace 'ppfn.trainer.callbacks.meta_test_callback' with your actual import path
 from ppfn.trainer.callbacks.meta_test import MetaTestCallback
@@ -28,10 +26,7 @@ def mock_trainer():
     trainer = MagicMock()
     # Mock _forward_pass to return (loss, metrics_dict)
     # We use a dummy loss and a dictionary of metrics
-    trainer._forward_pass.return_value = (
-        torch.tensor(0.5),
-        {"mse": 0.1, "nll": 0.2}
-    )
+    trainer._forward_pass.return_value = (torch.tensor(0.5), {"mse": 0.1, "nll": 0.2})
     # Ensure the model mock supports train() and eval() calls
     trainer.model = MagicMock(spec=torch.nn.Module)
     return trainer
@@ -41,10 +36,7 @@ def mock_trainer():
 def callback(mock_dataset, mock_trainer):
     """Initializes the MetaTestCallback with mocks."""
     cb = MetaTestCallback(
-        dataset=mock_dataset,
-        frequency=2,
-        device='cpu',
-        switch_to_eval=True
+        dataset=mock_dataset, frequency=2, device="cpu", switch_to_eval=True
     )
     cb.set_trainer(mock_trainer)
     return cb
@@ -53,6 +45,7 @@ def callback(mock_dataset, mock_trainer):
 # =================================================================
 # TEST CASES
 # =================================================================
+
 
 def test_init_validation():
     """Ensures the callback raises an error if dataset has no 'name' attribute."""
@@ -82,7 +75,7 @@ def test_evaluation_metric_aggregation(callback, mock_trainer):
     # Setup mock to return different metric values per step to test averaging
     mock_trainer._forward_pass.side_effect = [
         (None, {"mse": 0.2}),
-        (None, {"mse": 0.4})
+        (None, {"mse": 0.4}),
     ]
 
     results = callback.on_epoch_end(epoch=1, metrics={})

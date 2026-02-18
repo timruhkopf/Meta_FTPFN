@@ -5,12 +5,12 @@ import torch
 
 from pfns4hpo.priors import Batch
 
+
 @dataclass
 class MyBatch(Batch):
     src_key_padding_mask: Optional[torch.Tensor] = None
 
-    def __add__(self, other) -> 'MyBatch':
-
+    def __add__(self, other) -> "MyBatch":
 
         # Concatenate core tensors along the batch dimension (dim=1)
         # Assuming shape: [seq_len, batch_size, n_features]
@@ -31,18 +31,13 @@ class MyBatch(Batch):
             )
 
         # Create the new instance
-        return MyBatch(
-            x=new_x,
-            y=new_y,
-            target_y=new_target_y,
-            style=new_style
-        )
+        return MyBatch(x=new_x, y=new_y, target_y=new_target_y, style=new_style)
 
-    def to(self, device: torch.device) -> 'MyBatch':
+    def to(self, device: torch.device) -> "MyBatch":
         """Move all tensors in the batch to the specified device."""
         return MyBatch(
             x=self.x.to(device),
             y=self.y.to(device),
             target_y=self.target_y.to(device),
-            style=self.style.to(device) if self.style is not None else None
+            style=self.style.to(device) if self.style is not None else None,
         )

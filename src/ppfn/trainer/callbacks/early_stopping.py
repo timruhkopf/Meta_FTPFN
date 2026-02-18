@@ -10,12 +10,12 @@ class EarlyStopping(AbstractCallback):
     CKPT_WARMUP_EPOCHS = 100
 
     def __init__(
-            self,
-            monitor: str = "val_loss",
-            patience: int = 5,
-            min_delta: float = 0.0,
-            mode: str = "min",
-            checkpoint_name: str = "best_model.pt"
+        self,
+        monitor: str = "val_loss",
+        patience: int = 5,
+        min_delta: float = 0.0,
+        mode: str = "min",
+        checkpoint_name: str = "best_model.pt",
     ):
         """
         Args:
@@ -43,7 +43,9 @@ class EarlyStopping(AbstractCallback):
         current_score = metrics.get(self.monitor)
 
         if current_score is None:
-            logger.warning(f"EarlyStopping monitored metric '{self.monitor}' not found.")
+            logger.warning(
+                f"EarlyStopping monitored metric '{self.monitor}' not found."
+            )
             return {}
 
         # 2. Check if the score has improved
@@ -60,17 +62,21 @@ class EarlyStopping(AbstractCallback):
                 self.counter = 0  # Reset counter
             else:
                 self.counter += 1
-                logger.info(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+                logger.info(
+                    f"EarlyStopping counter: {self.counter} out of {self.patience}"
+                )
 
                 if self.counter >= self.patience:
                     logger.info("Early stopping triggered. Terminating training.")
                     # We set a flag on the trainer that the training loop should check
-                    return {'stop_training': True}
+                    return {"stop_training": True}
 
     def _save_and_update(self, score):
         """Helper to update best score and trigger trainer's checkpointing."""
         self.best_score = score
-        logger.info(f"Metric {self.monitor} improved. Saving checkpoint: {self.checkpoint_name}")
+        logger.info(
+            f"Metric {self.monitor} improved. Saving checkpoint: {self.checkpoint_name}"
+        )
 
         # Calling the specific method you mentioned
         self.trainer._save_checkpoint(filename=self.checkpoint_name)

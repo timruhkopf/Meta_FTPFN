@@ -11,22 +11,22 @@ class MetaTestCallback(AbstractCallback):
     """
 
     def __init__(
-            self,
-            dataset,
-            frequency: int = 1,
-            device: str = 'cpu',
-            switch_to_eval: bool = True,
+        self,
+        dataset,
+        frequency: int = 1,
+        device: str = "cpu",
+        switch_to_eval: bool = True,
     ):
         self.dataset = dataset
         self.frequency = frequency
         self.device = device
         self.switch_to_eval = switch_to_eval
-        assert hasattr(self.dataset,
-                       'name'), "Dataset must have a 'name' attribute for logging purposes."
+        assert hasattr(self.dataset, "name"), (
+            "Dataset must have a 'name' attribute for logging purposes."
+        )
 
     def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
         if (epoch + 1) % self.frequency == 0:
-
             if self.switch_to_eval:
                 # The real benchmarks need the model in eval due to the kfold design
                 # and the iteration over the dedicated target task in the meta-test fold,
@@ -63,7 +63,7 @@ class MetaTestCallback(AbstractCallback):
 
         aggregated_metrics = {}
         for key in results[0].keys():
-            newkey = f'{key}:{self.dataset.name}'
+            newkey = f"{key}:{self.dataset.name}"
             aggregated_metrics[newkey] = sum(r[key] for r in results) / len(results)
 
         return aggregated_metrics

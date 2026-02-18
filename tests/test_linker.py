@@ -1,18 +1,17 @@
 import pytest
 import numpy as np
-from scipy.stats import norm, gamma, expon
 
 import time
-import pandas as pd
 
 from unittest.mock import patch
 
 from ppfn.dataset.prior.bnn_link_fn import VectorizedParameterLinker
-from ppfn.dataset.prior.bnn_link_fn_old import weighted_curve_model, ECDFParameterLinker
+from ppfn.dataset.prior.bnn_link_fn_old import ECDFParameterLinker
 
 
 # Assuming your classes are imported or defined above
 # from your_module import ECDFParameterLinker, VectorizedParameterLinker
+
 
 class MockBNNPrior:
     def __init__(self, n_samples=1000):
@@ -31,8 +30,6 @@ def input_data():
     num_params = 23  # The number of outputs expected by the logic
     # Raw BNN outputs (unbounded)
     return np.random.uniform(-3, 3, (batch_size, num_params))
-
-
 
 
 def test_parameter_linker_timing_and_equivalence(bnn_prior, input_data):
@@ -72,9 +69,9 @@ def test_parameter_linker_timing_and_equivalence(bnn_prior, input_data):
     # --- Equivalence Check ---
     param_names = ["Y0", "Yinf", "w", "alpha", "Xsat", "PREC", "Rpsat", "sigma"]
     for i, name in enumerate(param_names):
-        assert np.allclose(orig_results[i], vect_results[i], atol=1e-7), f"Mismatch in: {name}"
-
-
+        assert np.allclose(orig_results[i], vect_results[i], atol=1e-7), (
+            f"Mismatch in: {name}"
+        )
 
 
 @pytest.fixture
@@ -96,7 +93,7 @@ def test_curve_factory_equivalence(test_setup):
 
     # We turn off noise for the comparison to ensure the underlying math is equivalent
     # Or patch np.random.normal to return zeros
-    with patch('numpy.random.normal', return_value=np.zeros_like(x_eval)):
+    with patch("numpy.random.normal", return_value=np.zeros_like(x_eval)):
         # 1. Create closures from both factories
         # These call the internal __call__ methods we already verified
         orig_curve_fn = orig_linker.curve_factory(bnn_outputs, y0, ymax)
@@ -108,7 +105,9 @@ def test_curve_factory_equivalence(test_setup):
             y_vect = vect_curve_fn(x_eval, cid=cid)
 
             # Verify the curves match
-            assert np.allclose(y_orig, y_vect, atol=1e-9), f"Curve mismatch at cid {cid}"
+            assert np.allclose(y_orig, y_vect, atol=1e-9), (
+                f"Curve mismatch at cid {cid}"
+            )
 
 
 def test_noise_scaling_consistency(test_setup):

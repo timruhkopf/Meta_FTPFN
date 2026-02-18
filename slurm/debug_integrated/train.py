@@ -2,12 +2,13 @@
 import hydra
 import mlflow
 import time
-import os
 from omegaconf import DictConfig
 
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def my_app(cfg: DictConfig) -> None:

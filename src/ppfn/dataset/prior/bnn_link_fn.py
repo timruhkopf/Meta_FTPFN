@@ -1,7 +1,7 @@
 from typing import Callable
 import numpy as np
 
-from scipy.stats import norm, beta, gamma, expon
+from scipy.stats import norm, gamma, expon
 
 
 class CurveModels:
@@ -40,7 +40,7 @@ class CurveModels:
         alpha = np.clip(alpha, 1e-5, None)
         num = np.log(alpha + 1e-10)
         # The internal term must stay positive for the log
-        inner = (alpha ** prec - alpha) * x / (xsat + 1e-10) + alpha
+        inner = (alpha**prec - alpha) * x / (xsat + 1e-10) + alpha
         den = np.log(np.clip(inner, 1e-10, None))
         return Yinf - (Yinf - Y0) * num / (den + 1e-10)
 
@@ -48,7 +48,9 @@ class CurveModels:
     def power_law(x, Y0, Yinf, prec, xsat, alpha):
         # Use log-space for the multiplier to handle small alpha
         # multiplier = (exp(log(prec)/alpha) - 1) / xsat
-        ln_multiplier_top = np.log(np.clip(prec, 1e-10, None)) / np.clip(alpha, 0.1, None)
+        ln_multiplier_top = np.log(np.clip(prec, 1e-10, None)) / np.clip(
+            alpha, 0.1, None
+        )
         multiplier = np.expm1(ln_multiplier_top) / (xsat + 1e-10)
 
         base = np.clip(multiplier * x + 1, 1e-10, None)
@@ -61,6 +63,7 @@ class CurveModels:
         term = np.power(base, alpha) * (prec - 1)
         denom = np.clip(1 + term, 1e-10, None)
         return Yinf - (Yinf - Y0) / denom
+
 
 class VectorizedParameterLinker:
     """
@@ -158,12 +161,14 @@ class VectorizedParameterLinker:
 
         # Indices 10-13: Xsat_rel (shifted)
         Xsat_rel = gamma.ppf(u_shift[:, 10:14], a=1)
-        Xsat = (Xsat_max[:, np.newaxis] * Xsat_rel) / np.max(Xsat_rel, axis=1, keepdims=True)
+        Xsat = (Xsat_max[:, np.newaxis] * Xsat_rel) / np.max(
+            Xsat_rel, axis=1, keepdims=True
+        )
 
         # Indices 14-17: PREC (Original calls self.uniform(-3, 0) directly -> RAW)
         # 1.0 / 10**uniform(-3, 0) => 1.0 / 10**(-3 + 3*u_raw)
         u_prec = -3.0 + 3.0 * u_raw[:, 14:18]
-        PREC = 1.0 / (10 ** u_prec)
+        PREC = 1.0 / (10**u_prec)
 
         # Indices 18-21: Rpsat (shifted)
         Rpsat = 1.0 - expon.ppf(u_shift[:, 18:22], scale=1)
@@ -175,31 +180,54 @@ class VectorizedParameterLinker:
 
     @staticmethod
     def weighted_curve_model_vectorized(
-            x, Y0=0.2, Yinf=0.8, sigma=0.01, L=0.0001,
-            PREC=[100] * 4, Xsat=[1.0] * 4, alpha=[2.71, 0.36, 1.01, 1.0],
-            Rpsat=[1.0] * 4, w=[0.25] * 4,
+        x,
+        Y0=0.2,
+        Yinf=0.8,
+        sigma=0.01,
+        L=0.0001,
+        PREC=[100] * 4,
+        Xsat=[1.0] * 4,
+        alpha=[2.71, 0.36, 1.01, 1.0],
+        Rpsat=[1.0] * 4,
+        w=[0.25] * 4,
     ):
         x = np.atleast_1d(x)
         PREC, Xsat, alpha, Rpsat, w = map(np.array, [PREC, Xsat, alpha, Rpsat, w])
 
         # 1. Vectorized Saturation Transformation: Shape (4, len(x))
-        x_t = np.where(x < Xsat[:, None], x, Rpsat[:, None] * (x - Xsat[:, None]) + Xsat[:, None])
+        x_t = np.where(
+            x < Xsat[:, None], x, Rpsat[:, None] * (x - Xsat[:, None]) + Xsat[:, None]
+        )
 
         # 2. Define the Basis Models
-        model_fns = [CurveModels.power_law, CurveModels.exponential,
-                     CurveModels.logarithmic, CurveModels.hill]
+        model_fns = [
+            CurveModels.power_law,
+            CurveModels.exponential,
+            CurveModels.logarithmic,
+            CurveModels.hill,
+        ]
 
         # apply tail function
         # 3. Calculate Slopes at Zero (The "Tail Gradient")
         # We evaluate each model at two tiny points near zero to get the derivative
-        EPS_GRAD = 10 ** -9
+        EPS_GRAD = 10**-9
         eps_grid = np.array([EPS_GRAD, 2 * EPS_GRAD])
         # y_eps shape: (4, 2)
-        y_eps = np.stack([model_fns[i](eps_grid, Y0, Yinf, PREC[i], Xsat[i], alpha[i]) for i in range(4)])
+        y_eps = np.stack(
+            [
+                model_fns[i](eps_grid, Y0, Yinf, PREC[i], Xsat[i], alpha[i])
+                for i in range(4)
+            ]
+        )
         grads = (y_eps[:, 1] - y_eps[:, 0]) / EPS_GRAD
 
         # 4. Evaluate main curve values: Shape (4, len(x))
-        y_raw = np.stack([model_fns[i](x_t[i], Y0, Yinf, PREC[i], Xsat[i], alpha[i]) for i in range(4)])
+        y_raw = np.stack(
+            [
+                model_fns[i](x_t[i], Y0, Yinf, PREC[i], Xsat[i], alpha[i])
+                for i in range(4)
+            ]
+        )
 
         # 5. Compute Exponential Tail for x <= 0
         # grads[:, None] broadcasts the 4 gradients across all N points

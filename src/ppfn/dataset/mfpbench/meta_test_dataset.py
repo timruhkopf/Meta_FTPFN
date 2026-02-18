@@ -3,7 +3,6 @@ from torch.utils.data import IterableDataset
 from pathlib import Path
 
 from pfns4hpo.priors.prior import Batch
-from typing import List, Tuple
 
 from sklearn.model_selection import KFold
 
@@ -12,20 +11,29 @@ class MFPBenchMetaTestDataset(IterableDataset):
     target_first = True
 
     def __init__(
-            self,
-            data_path: str,
-            benchmark_name: str,
-            single_eval_pos: int,
-            n_folds: int = 5,
-            device='cpu'
+        self,
+        data_path: str,
+        benchmark_name: str,
+        single_eval_pos: int,
+        n_folds: int = 5,
+        device="cpu",
     ):
         self.data_path = Path(data_path)
 
-        self.task_ids = list(p.name for p in Path.glob(self.data_path / benchmark_name, "task_*"))
-        available_repetitions = len(list(Path.glob(
-            self.data_path / benchmark_name / self.task_ids[0] / f"sep_{single_eval_pos}",
-            "rep_*"
-        )))
+        self.task_ids = list(
+            p.name for p in Path.glob(self.data_path / benchmark_name, "task_*")
+        )
+        available_repetitions = len(
+            list(
+                Path.glob(
+                    self.data_path
+                    / benchmark_name
+                    / self.task_ids[0]
+                    / f"sep_{single_eval_pos}",
+                    "rep_*",
+                )
+            )
+        )
 
         self.n_folds = n_folds
         self.device = device
@@ -42,9 +50,18 @@ class MFPBenchMetaTestDataset(IterableDataset):
     def __len__(self):
         return self.n_folds * len(self.task_ids)
 
-    def load_chunk(self, task, rep_idx, ):
-        file_path = (self.data_path / self.benchmark_name /
-                     f"{task}" / f"sep_{self.single_eval_pos}" / f"rep_{rep_idx}.pt")
+    def load_chunk(
+        self,
+        task,
+        rep_idx,
+    ):
+        file_path = (
+            self.data_path
+            / self.benchmark_name
+            / f"{task}"
+            / f"sep_{self.single_eval_pos}"
+            / f"rep_{rep_idx}.pt"
+        )
 
         if file_path.exists():
             # Shape: [ntasks_per_dataset, seq_len, num_features]
@@ -59,7 +76,9 @@ class MFPBenchMetaTestDataset(IterableDataset):
         for fold_idx, (train_idx_list, test_idx_list) in enumerate(self.folds):
             # 1. LOAD ONCE: Cache the meta-train tasks for this fold
             # We use fold_idx as rep_idx for consistency
-            train_chunks = [self.load_chunk(self.task_ids[i], fold_idx) for i in train_idx_list]
+            train_chunks = [
+                self.load_chunk(self.task_ids[i], fold_idx) for i in train_idx_list
+            ]
             train_data = torch.cat(train_chunks, dim=1)  # [B_train, T, D]
 
             # 2. ITERATE: Stream the test tasks one by one
@@ -75,13 +94,15 @@ class MFPBenchMetaTestDataset(IterableDataset):
                     x=combined[..., :-1].to(self.device),
                     y=combined[..., -1].to(self.device),
                     target_y=combined[..., -1].to(self.device),
-                    single_eval_pos=torch.tensor([self.single_eval_pos]).to(self.device)
+                    single_eval_pos=torch.tensor([self.single_eval_pos]).to(
+                        self.device
+                    ),
                 )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     dataset = MFPBenchMetaTestDataset(
-        benchmark_name='lcbench_tabular',
+        benchmark_name="lcbench_tabular",
         single_eval_pos=64,
         n_folds=2,
         data_path="/home/ruhkopf/VSCode/Meta_FTPFN/data/validation/",

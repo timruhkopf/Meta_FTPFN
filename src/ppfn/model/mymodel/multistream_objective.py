@@ -18,18 +18,28 @@ class MultiStreamObjective(nn.Module):
         self.verbose = verbose
         # FIXME: deprecaite this; it is needed only for batch parsing in forward (depending on
         #  train/eval state)
-        self.model = model  # Optional reference to the model if needed for batch parsing
+        self.model = (
+            model  # Optional reference to the model if needed for batch parsing
+        )
 
-    def forward(self, output: torch.Tensor, targets: torch.Tensor, single_eval_pos, batch=None, src_key_padding_mask=None, **kwargs) -> \
-            Tuple[
-                torch.Tensor, Dict[str, float]]:
+    def forward(
+        self,
+        output: torch.Tensor,
+        targets: torch.Tensor,
+        single_eval_pos,
+        batch=None,
+        src_key_padding_mask=None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # 1. Compute raw loss for all streams
         # Assuming output/targets are shaped correctly for the criterion
 
         if self.model is not None:
             # FIXME: depreciate this with the model reference
             parser = self.model.parse_batch
-            b, _ = parser(batch, single_eval_pos, src_key_padding_mask=src_key_padding_mask)
+            b, _ = parser(
+                batch, single_eval_pos, src_key_padding_mask=src_key_padding_mask
+            )
             targets = b.y[single_eval_pos:, ...]
 
         # notice, that the padding is only on the train part; meaning we won't need to mask the raw loss,
@@ -48,9 +58,9 @@ class MultiStreamObjective(nn.Module):
         # 3. Define the Optimization Target
         # You only want to optimize Stream C
         optimization_loss, nan_share = torch_nanmean(
-            loss_stream_C.mean(0), # T dim avg -- to see which examples failed
-            axis=0, # final avg
-            return_nanshare=True
+            loss_stream_C.mean(0),  # T dim avg -- to see which examples failed
+            axis=0,  # final avg
+            return_nanshare=True,
         )
 
         # 4. Compute Metrics (The logic previously in TrainMetricsCallback)
@@ -64,14 +74,20 @@ class MultiStreamObjective(nn.Module):
             }
 
             # Handle style-based grouping if batch is provided
-            if batch is not None and hasattr(batch, 'style') and batch.style is not None:
+            if (
+                batch is not None
+                and hasattr(batch, "style")
+                and batch.style is not None
+            ):
                 style = batch.style[::2].squeeze()  # Extract style for stream A tasks
-                metrics.update({
-                    'nll/similar_task': nll_diff[:, style != 1].mean().item(),
-                    'nll/unrelated_task': nll_diff[:, style == 1].mean().item()
-                })
+                metrics.update(
+                    {
+                        "nll/similar_task": nll_diff[:, style != 1].mean().item(),
+                        "nll/unrelated_task": nll_diff[:, style == 1].mean().item(),
+                    }
+                )
 
         if self.verbose:
-            metrics['nan_share'] = nan_share.item()
+            metrics["nan_share"] = nan_share.item()
 
         return optimization_loss, metrics

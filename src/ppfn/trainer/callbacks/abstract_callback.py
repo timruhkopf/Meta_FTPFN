@@ -1,10 +1,10 @@
-
 from typing import Dict
 
 
 class AbstractCallback:
     """Base class for training callbacks."""
-    def __init__(self, verbose:bool= False):
+
+    def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.trainer = None
 
@@ -44,9 +44,10 @@ class AbstractCallback:
     def log_on_train_end(self, **kwargs):
         pass
 
-    def on_clipping(self, epoch: int, step: int, metrics: Dict[str, float], **kwargs) -> Dict:
+    def on_clipping(
+        self, epoch: int, step: int, metrics: Dict[str, float], **kwargs
+    ) -> Dict:
         pass
-
 
 
 class CallbackHandler:
@@ -70,10 +71,11 @@ class CallbackHandler:
     def _build_cache(self):
         """Scans all callbacks once to map implemented events."""
         all_events = [
-            method_name for method_name in dir(AbstractCallback)
+            method_name
+            for method_name in dir(AbstractCallback)
             if callable(getattr(AbstractCallback, method_name))
-               and not method_name.startswith("_")
-               and method_name != "set_trainer"
+            and not method_name.startswith("_")
+            and method_name != "set_trainer"
         ]
 
         cache = {}

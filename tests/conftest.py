@@ -1,11 +1,11 @@
 import pytest
 import torch
 import torch.nn as nn
-from pathlib import Path
 import tempfile
 import shutil
 
 from ppfn.model.baselines.ft_pfn import ft_pfn
+
 
 @pytest.fixture
 def device():
@@ -46,27 +46,30 @@ def num_heads():
 @pytest.fixture
 def dummy_decoder(hidden_dim, num_heads):
     """Create a dummy decoder for testing."""
+
     class DummyDecoder(nn.Module):
         def __init__(self, hidden_dim, num_layers=4):
             super().__init__()
             self.embedding = nn.Embedding(100, hidden_dim)
-            self.layers = nn.ModuleList([
-                nn.TransformerEncoderLayer(
-                    d_model=hidden_dim,
-                    nhead=num_heads,
-                    batch_first=True,
-                    dim_feedforward=hidden_dim * 4,
-                )
-                for _ in range(num_layers)
-            ])
+            self.layers = nn.ModuleList(
+                [
+                    nn.TransformerEncoderLayer(
+                        d_model=hidden_dim,
+                        nhead=num_heads,
+                        batch_first=True,
+                        dim_feedforward=hidden_dim * 4,
+                    )
+                    for _ in range(num_layers)
+                ]
+            )
             self.output = nn.Linear(hidden_dim, 100)
-        
+
         def forward(self, x):
             x = self.embedding(x)
             for layer in self.layers:
                 x = layer(x)
             return self.output(x)
-    
+
     return DummyDecoder(hidden_dim)
 
 
@@ -83,11 +86,11 @@ def ft_batch_factory():
     def dummy_ft_batch(T=32, B=8, D=5, Tsplit=25):
         """
         Create a dummy batch of input data.
-        
+
         returns:
             x: tuple of (features, targets)
             Tsplit: int, split index between train and test
-        """ 
+        """
         torch.manual_seed(42)
 
         assert D >= 1 and D <= 11  # 1 int + up to 10 float features
@@ -100,20 +103,17 @@ def ft_batch_factory():
         x_test = floats[Tsplit:]
         y_train = ints[:Tsplit].float()
 
-
-        # this is the target format: 
-        x = (
-                torch.cat([x_train, x_test], dim=0),
-                y_train
-        )
+        # this is the target format:
+        x = (torch.cat([x_train, x_test], dim=0), y_train)
         # single_eval_pos=x_train.shape[0],
         # src_key_padding_mask=None
 
         return x, Tsplit
+
     return dummy_ft_batch
 
 
 @pytest.fixture
 def get_ft_pfn():
-    
+
     return ft_pfn()

@@ -2,10 +2,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Union, Optional
 import logging
-import math
 
 import time
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import mlflow
@@ -27,15 +25,15 @@ class CheckpointCallback(AbstractCallback):
     """
 
     def __init__(
-            self,
-            save_dir: str = "checkpoints",
-            monitor: Union[str, List] = "val/nll_diff",
-            mode: str = "min",
-            name: str = "nll_best",
-            resume_from: Optional[Union[str, Path]] = None,  # New: Path to checkpoint
-            read_only: bool = False,  # New: If True, skip saving
-            min_save_interval: int = 600,
-            **kwargs,
+        self,
+        save_dir: str = "checkpoints",
+        monitor: Union[str, List] = "val/nll_diff",
+        mode: str = "min",
+        name: str = "nll_best",
+        resume_from: Optional[Union[str, Path]] = None,  # New: Path to checkpoint
+        read_only: bool = False,  # New: If True, skip saving
+        min_save_interval: int = 600,
+        **kwargs,
     ):
         """
         Args:
@@ -64,9 +62,13 @@ class CheckpointCallback(AbstractCallback):
 
         self.min_save_interval = min_save_interval
         self.last_save_time = 0
-        self._executor = ThreadPoolExecutor(max_workers=1)  # Single worker for sequential saves
+        self._executor = ThreadPoolExecutor(
+            max_workers=1
+        )  # Single worker for sequential saves
         self._pending_snapshot = None  # Store the latest "best" in memory
-        self._needs_saving = False  # Track if the RAM version is newer than Disk version
+        self._needs_saving = (
+            False  # Track if the RAM version is newer than Disk version
+        )
 
     def on_trainer_init(self):
         """
@@ -76,19 +78,29 @@ class CheckpointCallback(AbstractCallback):
             logger.info(f"🔄 Loading checkpoint from: {self.resume_path}")
 
             # Map location to CPU first to avoid OOM issues before moving to device
-            checkpoint = torch.load(self.resume_path, map_location='cpu', weights_only=False)
+            checkpoint = torch.load(
+                self.resume_path, map_location="cpu", weights_only=False
+            )
 
             # 1. Restore Model & Optimizer state
             self.trainer.model.load_state_dict(checkpoint["model_state_dict"])
             if "optimizer_state_dict" in checkpoint:
-                self.trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                self.trainer.optimizer.load_state_dict(
+                    checkpoint["optimizer_state_dict"]
+                )
 
             # 2. Restore Scheduler (if it exists)
-            if "scheduler_state_dict" in checkpoint and hasattr(self.trainer, 'scheduler'):
-                self.trainer.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if "scheduler_state_dict" in checkpoint and hasattr(
+                self.trainer, "scheduler"
+            ):
+                self.trainer.scheduler.load_state_dict(
+                    checkpoint["scheduler_state_dict"]
+                )
 
             # 3. Restore Scaler (for mixed precision)
-            if "scaler_state_dict" in checkpoint and getattr(self.trainer, 'scaler', None):
+            if "scaler_state_dict" in checkpoint and getattr(
+                self.trainer, "scaler", None
+            ):
                 self.trainer.scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
             # 4. Sync Callback & Trainer state
@@ -96,21 +108,29 @@ class CheckpointCallback(AbstractCallback):
             self.trainer.global_step = checkpoint.get("global_step", 0)
             self.best_score = checkpoint.get("best_score", self.best_score)
 
-            logger.info(f"✅ Resumed from epoch {checkpoint.get('epoch')} "
-                        f"with best score {self.best_score:.4f}")
+            logger.info(
+                f"✅ Resumed from epoch {checkpoint.get('epoch')} "
+                f"with best score {self.best_score:.4f}"
+            )
         elif self.resume_path:
-            logger.warning(f"⚠️ Checkpoint path {self.resume_path} was provided but does not exist.")
+            logger.warning(
+                f"⚠️ Checkpoint path {self.resume_path} was provided but does not exist."
+            )
 
     def log_on_epoch_end(self, epoch: int, metrics: Dict[str, Any]):
         """Decides if we should save, then triggers background task."""
         # 1. Calculate Score
-        current_scores = [metrics.get(m) for m in self.monitor if metrics.get(m) is not None]
-        if not current_scores: return
+        current_scores = [
+            metrics.get(m) for m in self.monitor if metrics.get(m) is not None
+        ]
+        if not current_scores:
+            return
         current_score = sum(current_scores) / len(current_scores)
 
         # 2. Check Logic (Improvement + Time Guard)
-        is_best = (self.mode == "min" and current_score < self.best_score) or \
-                  (self.mode == "max" and current_score > self.best_score)
+        is_best = (self.mode == "min" and current_score < self.best_score) or (
+            self.mode == "max" and current_score > self.best_score
+        )
 
         now = time.time()
         time_since_last = now - self.last_save_time
@@ -121,7 +141,9 @@ class CheckpointCallback(AbstractCallback):
             # This ensures we have the best version even if we don't write to disk yet
             self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
             self._needs_saving = True  # <--- Mark as "dirty" (needs disk sync)
-            logger.info(f"✨ New best captured in memory (Epoch {epoch}: {current_score:.4f})")
+            logger.info(
+                f"✨ New best captured in memory (Epoch {epoch}: {current_score:.4f})"
+            )
 
             # 3. Time Guard for Disk I/O
         now = time.time()
@@ -162,36 +184,37 @@ class CheckpointCallback(AbstractCallback):
             "optimizer_state_dict": self.trainer.optimizer.state_dict(),  # Usually small/CPU
             "metrics": serializable_metrics,
             "best_score": self.best_score,
-            "filename": f"best_{self.name}.pt"
+            "filename": f"best_{self.name}.pt",
         }
 
-        if hasattr(self.trainer, 'scheduler'):
+        if hasattr(self.trainer, "scheduler"):
             snapshot["scheduler_state_dict"] = self.trainer.scheduler.state_dict()
-        if getattr(self.trainer, 'scaler', None):
+        if getattr(self.trainer, "scaler", None):
             snapshot["scaler_state_dict"] = self.trainer.scaler.state_dict()
 
         return snapshot
 
     def _save_local_worker(self, snapshot: Dict[str, Any]):
         """The actual I/O logic. Runs on BACKGROUND thread."""
-        if self.read_only: return
+        if self.read_only:
+            return
 
         try:
             file_path = self.save_dir / snapshot["filename"]
 
             # 1. Atomic Save of .pt
-            temp_path = file_path.with_suffix('.tmp')
+            temp_path = file_path.with_suffix(".tmp")
             torch.save(snapshot, temp_path)
             temp_path.replace(file_path)
 
             # 2. Save Sidecar JSON
-            meta_path = file_path.with_suffix('.json')
+            meta_path = file_path.with_suffix(".json")
             meta_payload = {
                 "name": self.name,
                 "best_score": snapshot["best_score"],
                 "epoch": snapshot["epoch"],
                 "step": snapshot["global_step"],
-                "metrics_at_save": snapshot["metrics"]
+                "metrics_at_save": snapshot["metrics"],
             }
             meta_path.write_text(json.dumps(meta_payload, indent=4))
         except Exception as e:
@@ -204,7 +227,9 @@ class CheckpointCallback(AbstractCallback):
         """
         # 1. If we have a pending best that never hit the disk due to the timer:
         if self._needs_saving and self._pending_snapshot:
-            logger.info("💾 Final sync: Saving the last 'best' that was throttled by the timer.")
+            logger.info(
+                "💾 Final sync: Saving the last 'best' that was throttled by the timer."
+            )
             self._save_local_worker(self._pending_snapshot)
 
         # 2. Standard shutdown logic

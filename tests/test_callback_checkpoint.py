@@ -1,7 +1,6 @@
 import json
 import pytest
 import torch
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -33,7 +32,7 @@ def callback(tmp_path, mock_trainer):
         monitor="val/loss",
         mode="min",
         name="test_model",  # Defined name implies file will be best_test_model.pt
-        min_save_interval=0  # Disable time guard for most tests by default
+        min_save_interval=0,  # Disable time guard for most tests by default
     )
     callb.set_trainer(mock_trainer)
     return callb
@@ -90,7 +89,9 @@ def test_min_save_interval_blocking(callback, tmp_path):
         callback.log_on_epoch_end(epoch=2, metrics={"val/loss": 0.1})
         callback._executor.shutdown(wait=True)  # Ensure any tasks finish
 
-        assert not json_file.exists(), "File should not exist because save was blocked by timer"
+        assert not json_file.exists(), (
+            "File should not exist because save was blocked by timer"
+        )
 
 
 def test_atomic_save_mechanism(callback):
@@ -98,8 +99,10 @@ def test_atomic_save_mechanism(callback):
     metrics = {"val/loss": 0.1}
 
     # We patch inside the worker method because it runs in a different thread
-    with patch("torch.save") as mock_torch_save, \
-            patch.object(Path, "replace") as mock_replace:
+    with (
+        patch("torch.save") as mock_torch_save,
+        patch.object(Path, "replace") as mock_replace,
+    ):
         callback.log_on_epoch_end(epoch=1, metrics=metrics)
         callback.on_train_end()  # Ensure worker runs
 
@@ -146,7 +149,7 @@ def test_resume_from_checkpoint(tmp_path, mock_trainer):
         "global_step": 500,
         "best_score": 0.2,
         "model_state_dict": {"weights": torch.tensor([0.9])},
-        "optimizer_state_dict": {"opt": "resumed"}
+        "optimizer_state_dict": {"opt": "resumed"},
     }
     torch.save(fake_checkpoint, checkpoint_path)
 
@@ -165,8 +168,10 @@ def test_mlflow_upload_on_train_end(callback, tmp_path):
     (tmp_path / f"best_{callback.name}.pt").write_text("dummy")
     (tmp_path / f"best_{callback.name}.json").write_text("{}")
 
-    with patch("mlflow.active_run", return_value=True), \
-            patch("mlflow.log_artifact") as mock_log:
+    with (
+        patch("mlflow.active_run", return_value=True),
+        patch("mlflow.log_artifact") as mock_log,
+    ):
         callback.on_train_end()  # This calls shutdown(wait=True) then logs
         assert mock_log.call_count == 2
 
@@ -175,10 +180,7 @@ def test_read_only_mode(tmp_path, mock_trainer):
     """Ensures no files are written if read_only is True."""
     # Initialize separate callback for read-only test
     cb = CheckpointCallback(
-        save_dir=str(tmp_path),
-        read_only=True,
-        monitor="val/loss",
-        mode="min"
+        save_dir=str(tmp_path), read_only=True, monitor="val/loss", mode="min"
     )
     cb.set_trainer(mock_trainer)
 

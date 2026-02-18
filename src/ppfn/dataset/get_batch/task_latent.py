@@ -1,9 +1,12 @@
 import torch
-import torch.nn as nn
 import numpy as np
 
-from ppfn.dataset.prior import MultiFidelityTask, DimensionPrior, FidelityPrior, AllocationPrior
-from ppfn.dataset.prior.bnn_prior import BNNPrior
+from ppfn.dataset.prior import (
+    MultiFidelityTask,
+    DimensionPrior,
+    FidelityPrior,
+    AllocationPrior,
+)
 from ppfn.model.mymodel.ft_ppfn import MyBatch
 
 
@@ -55,21 +58,23 @@ class LatentMultiFidelityTask(MultiFidelityTask):
 
 @torch.no_grad()
 def get_batch_latent(
-        batch_size: int,
-        seq_len: int,
-        num_features: int,
-        single_eval_pos: int,
-        latent_dim: int = 1,
-        num_params: int = None,
-        n_levels: int = None,
-        device='cpu',
-        **kwargs,
+    batch_size: int,
+    seq_len: int,
+    num_features: int,
+    single_eval_pos: int,
+    latent_dim: int = 1,
+    num_params: int = None,
+    n_levels: int = None,
+    device="cpu",
+    **kwargs,
 ):
     """
     Simplified batch generation where each task identity is purely
     defined by its location in the latent space Z.
     """
-    assert batch_size % 2 == 0, "Batch size must be even to have pairs of tasks with shared BNN but different latents."
+    assert batch_size % 2 == 0, (
+        "Batch size must be even to have pairs of tasks with shared BNN but different latents."
+    )
     if num_params is None:
         num_params = DimensionPrior(num_features).sample()
     if n_levels is None:
@@ -97,9 +102,7 @@ def get_batch_latent(
         # Generate the curve model using the sampled latent
         configs_torch = torch.from_numpy(all_configs[:, i, :]).float()
         curve_model = task_prior.get_marginal_curve(
-            configs_torch,
-            latent_vec=z_i,
-            noise=True
+            configs_torch, latent_vec=z_i, noise=True
         )
         parametrized_curves.append(curve_model)
 
@@ -107,12 +110,9 @@ def get_batch_latent(
         z_i = task_prior.current_latent
         latents_used.append(z_i)
         curve_model = task_prior.get_marginal_curve(
-            configs_torch,
-            latent_vec=z_i,
-            noise=True
+            configs_torch, latent_vec=z_i, noise=True
         )
         parametrized_curves.append(curve_model)
-
 
     # 3. Allocation mapping
     x = []
@@ -126,7 +126,7 @@ def get_batch_latent(
             parametrized_curves[i],
             num_params,
             single_eval_pos,
-            allocation
+            allocation,
         )
         x.append(x_i)
         y.append(y_i)
@@ -140,19 +140,18 @@ def get_batch_latent(
         target_y=y_tensor,
         single_eval_pos=single_eval_pos,
         # We can store the latents in 'style' if the model needs to see them
-        style=torch.stack(latents_used).squeeze().to(device)
+        style=torch.stack(latents_used).squeeze().to(device),
     )
 
-if __name__ == '__main__':
 
+if __name__ == "__main__":
     get_batch_latent(
         batch_size=4,
         seq_len=1000,
         num_features=3,
         single_eval_pos=100,
         latent_dim=2,
-        device='cpu'
-
+        device="cpu",
     )
 
     import os
@@ -161,7 +160,6 @@ if __name__ == '__main__':
     import plotly.io as pio
 
     pio.renderers.default = "iframe"
-
 
     def plot_latent_interpolation(steps=2):
         task = LatentMultiFidelityTask(num_inputs=1, num_outputs=23, latent_dim=1)
@@ -175,17 +173,24 @@ if __name__ == '__main__':
         hp_input = torch.from_numpy(linspace).float().view(-1, 1)
 
         fig = make_subplots(
-            rows=1, cols=steps,
-            specs=[[{'type': 'surface'}] * steps],
-            subplot_titles=[f"Interpolation {i / (steps - 1):.1f}" for i in range(steps)]
+            rows=1,
+            cols=steps,
+            specs=[[{"type": "surface"}] * steps],
+            subplot_titles=[
+                f"Interpolation {i / (steps - 1):.1f}" for i in range(steps)
+            ],
         )
 
         for i in range(steps):
             # Linear interpolation in latent space
             alpha = i / (steps - 1)
-            z_interp = (1 - alpha) * z_start + alpha * z_end # FIXME: this should not be necesary
+            z_interp = (
+                1 - alpha
+            ) * z_start + alpha * z_end  # FIXME: this should not be necesary
             print(z_interp)
-            curve_model = task.get_marginal_curve(hp_input, latent_vec=z_interp, noise=False)
+            curve_model = task.get_marginal_curve(
+                hp_input, latent_vec=z_interp, noise=False
+            )
 
             z_values = np.zeros((len(linspace), len(linspace)))
             for j in range(len(linspace)):
@@ -193,11 +198,20 @@ if __name__ == '__main__':
                 z_values[:, j] = np.array(preds).flatten()
 
             fig.add_trace(
-                go.Surface(z=z_values, x=linspace, y=linspace, colorscale='Plasma', showscale=False),
-                row=1, col=i + 1
+                go.Surface(
+                    z=z_values,
+                    x=linspace,
+                    y=linspace,
+                    colorscale="Plasma",
+                    showscale=False,
+                ),
+                row=1,
+                col=i + 1,
             )
 
-        fig.update_layout(height=500, width=1500, title_text="Latent Space Task Morphing")
+        fig.update_layout(
+            height=500, width=1500, title_text="Latent Space Task Morphing"
+        )
         # fig.show()
 
         output_path = "latent_interpolation.html"

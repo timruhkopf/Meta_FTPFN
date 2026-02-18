@@ -5,11 +5,13 @@ from pfns4hpo.utils import default_device
 from pfns4hpo.priors.utils import Batch
 
 
-from ppfn.dataset.prior import  AllocationPrior, DimensionPrior, FidelityPrior, MultiFidelityTask
+from ppfn.dataset.prior import (
+    AllocationPrior,
+    DimensionPrior,
+    FidelityPrior,
+    MultiFidelityTask,
+)
 
-
-
-   
 
 # function producing batches for PFN training
 @torch.no_grad()
@@ -23,13 +25,13 @@ def get_batch(
     **kwargs,
 ):
     """
-    This variant is proving the point, that cross attention will work despite 
+    This variant is proving the point, that cross attention will work despite
     the tasks being shifted in the performance range (through y0, ymax).
-    
+
     For every batch, we sample new relation, that is the same for all tasks in the batch.
-    Main difference: The sampled Trajectory (hp and budget allocation) differs across tasks, 
+    Main difference: The sampled Trajectory (hp and budget allocation) differs across tasks,
     and also the performance range (y0, ymax) is resampled per task.
-    
+
     :param batch_size: Description
     :param seq_len: Description
     :param num_features: Description
@@ -38,7 +40,7 @@ def get_batch(
     :param hyperparameters: Description
     :param kwargs: Description
     """
- 
+
     num_params = DimensionPrior(num_features).sample()
 
     dataset_prior = MultiFidelityTask(num_params, 23)
@@ -46,7 +48,7 @@ def get_batch(
 
     # determine the number of fidelity levels (ranging from 1: BB, up to seq_len)
     n_levels = FidelityPrior().sample()
-        # print(f"n_levels: {n_levels}")
+    # print(f"n_levels: {n_levels}")
 
     x = []
     y = []
@@ -54,9 +56,7 @@ def get_batch(
     # FIXME: (low-prio) efficincy: since all is the same task, we could just do one single fwd (get_marginal curve)
     #  and collect all sequences at once. No looping requried.
     for i in range(batch_size):
-
-    
-        dataset_prior.sample_y0_ymax() # This is a distortion between the tasks
+        dataset_prior.sample_y0_ymax()  # This is a distortion between the tasks
 
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing
@@ -66,14 +66,16 @@ def get_batch(
         # (1) sample "available" hyperparameter configurations, these will later be subselected and
         # determined to be either observation or query points
         # FIXME: move this into the allocation prior, since it is basically an internal representation!
-        curve_configs = np.random.uniform(size=(seq_len, num_params)) 
+        curve_configs = np.random.uniform(size=(seq_len, num_params))
 
-         # (2) get the curves for these configurations
+        # (2) get the curves for these configurations
         allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
 
         # we need control over y0 and ymax here, so we overwrite the behaviour:
         dataset_prior.sample_y0_ymax()
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  # get callable to evaluate (hp, t) --> y
+        curves = dataset_prior.get_marginal_curve(
+            torch.from_numpy(curve_configs).float()
+        )  # get callable to evaluate (hp, t) --> y
 
         # (3) map the allocation to actual (x,y) values
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
@@ -89,12 +91,10 @@ def get_batch(
     return Batch(x=x, y=y, target_y=y)
 
 
-
-if __name__ == "__main__":  
-
+if __name__ == "__main__":
     # import matplotlib.pyplot as plt
 
-    # create plot with multiple curves based on the get_batch 
+    # create plot with multiple curves based on the get_batch
     batch = get_batch(
         batch_size=4,
         seq_len=32,

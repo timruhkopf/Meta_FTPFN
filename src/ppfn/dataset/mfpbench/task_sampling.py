@@ -4,7 +4,9 @@ from typing import Union
 
 
 # Define the path to the 'src' folder
-mfpbench_path = "/home/ruhkopf/VSCode/Meta_FTPFN/external/ifbo_icml2024/src/mf-prior-bench/src"
+mfpbench_path = (
+    "/home/ruhkopf/VSCode/Meta_FTPFN/external/ifbo_icml2024/src/mf-prior-bench/src"
+)
 
 if mfpbench_path not in sys.path:
     sys.path.insert(0, mfpbench_path)
@@ -82,10 +84,10 @@ def get_benchmark(name, task_id, data_path):
 
 
 def generate_tasks(
-        benchmark_name, task_id, ntasks_per_dataset, single_eval_pos, data_path, seq_len
+    benchmark_name, task_id, ntasks_per_dataset, single_eval_pos, data_path, seq_len
 ):
     """Shitcode from section5.1/generate_tasks.py adapted to generate tasks for multiple datasets and aggregate them."""
-    EPS = 10 ** -9
+    EPS = 10**-9
     benchmark, output_name = get_benchmark(benchmark_name, task_id, data_path)
 
     space = benchmark.space
@@ -136,7 +138,7 @@ def generate_tasks(
                         1, cutoff_per_curve[cid] + 1
                     )
                 if cutoff_per_curve[cid] < epochs_per_curve[cid]:  # queries (if any)
-                    x_[cutoff_per_curve[cid]:] = np.random.choice(
+                    x_[cutoff_per_curve[cid] :] = np.random.choice(
                         np.arange(cutoff_per_curve[cid] + 1, n_levels + 1),
                         size=epochs_per_curve[cid] - cutoff_per_curve[cid],
                         replace=False,
@@ -156,9 +158,11 @@ def generate_tasks(
         # assign max fidelity to all curves in context
         # specific to the evaluation in 5.1
         unique_curves = np.unique(id_curve[:single_eval_pos])
-        nbiud = len(id_curve[single_eval_pos:(single_eval_pos + len(unique_curves))])
+        nbiud = len(id_curve[single_eval_pos : (single_eval_pos + len(unique_curves))])
         num_unique_curves = len(unique_curves)
-        id_curve[single_eval_pos: single_eval_pos + num_unique_curves] = unique_curves[:nbiud]
+        id_curve[single_eval_pos : single_eval_pos + num_unique_curves] = unique_curves[
+            :nbiud
+        ]
         end_pos = min(single_eval_pos + num_unique_curves, seq_len)
         epoch[single_eval_pos:end_pos] = max_fidelities
 
@@ -170,25 +174,25 @@ def generate_tasks(
 
         default_space = deepcopy(benchmark.space)
         hp_dims = {
-            'l1':UniformFloatHyperparameter(
+            "l1": UniformFloatHyperparameter(
                 "l1",
                 lower=1e-9,
                 upper=10,
                 log=True,
             ),
-            'l2': UniformFloatHyperparameter(
+            "l2": UniformFloatHyperparameter(
                 "l2",
                 lower=1e-9,
                 upper=10,
                 log=True,
             ),
-            'linear_decay': UniformFloatHyperparameter(
+            "linear_decay": UniformFloatHyperparameter(
                 "linear_decay",
                 lower=1e-8,
                 upper=0.0001,
                 log=True,
             ),
-            'exponential_decay': UniformFloatHyperparameter(
+            "exponential_decay": UniformFloatHyperparameter(
                 "exponential_decay",
                 lower=1e-6,
                 upper=1e-3,
@@ -204,7 +208,7 @@ def generate_tasks(
         np.random.shuffle(original_id)
         task_data = []
         for ordering, config_id, fidelity in zip(
-                id_curve, original_id[id_curve.astype(int) - 1], epoch
+            id_curve, original_id[id_curve.astype(int) - 1], epoch
         ):
             if ordering == 0:
                 tmp = [0] * len(task_data[-1])
@@ -213,23 +217,26 @@ def generate_tasks(
                 tmp = []
                 tmp = tmp + [ordering, fidelity]
 
-                if  benchmark_name == "taskset_tabular"  and 'adam4p' in benchmark.name:
+                if benchmark_name == "taskset_tabular" and "adam4p" in benchmark.name:
                     # adam4p is a subspace of adam8p, so some hp are set to their defaults
                     # implicitly.
                     # we need to figure out, what the missing hyperparameters are set to
                     # after normalization in the hierarchical definition of taskset_tabular
                     # so that we can fill them in the correct spaces of the input vector for the pfn
                     conf = benchmark.configs[_config_id].as_dict()
-                    conf.update({
-                        'l1': 1e-7,
-                        'l2': 1e-7,
-                        'linear_decay': 1e-8,
-                        'exponential_decay': 1e-6,
-                        'id': _config_id
-                    })
+                    conf.update(
+                        {
+                            "l1": 1e-7,
+                            "l2": 1e-7,
+                            "linear_decay": 1e-8,
+                            "exponential_decay": 1e-6,
+                            "id": _config_id,
+                        }
+                    )
 
                     normalized_config = _get_normalized_values(
-                        config=TaskSetTabularConfig_8p(**conf), configuration_space=default_space
+                        config=TaskSetTabularConfig_8p(**conf),
+                        configuration_space=default_space,
                     )
 
                 else:
@@ -239,35 +246,45 @@ def generate_tasks(
                     )
 
                 tmp = tmp + normalized_config
-                tmp = tmp + [benchmark.query(config=_config_id, at=fidelity).error] # add y
+                tmp = tmp + [
+                    benchmark.query(config=_config_id, at=fidelity).error
+                ]  # add y
             task_data.append(tmp)
         all_tasks.append(task_data)
 
     all_tasks = torch.from_numpy(np.array(all_tasks).astype(np.float32))
 
-    return all_tasks.permute(1, 0, 2)  # [seq_len, nallocations_per_dataset, num_features]
+    return all_tasks.permute(
+        1, 0, 2
+    )  # [seq_len, nallocations_per_dataset, num_features]
 
 
 def save_task_batch(
-        benchmark_name,
-        task_id: Union[str, dict],
-        ntasks_per_tensor,
-        single_eval_pos,
-        data_path,
-        target_path,
-        seq_len, rep_idx
+    benchmark_name,
+    task_id: Union[str, dict],
+    ntasks_per_tensor,
+    single_eval_pos,
+    data_path,
+    target_path,
+    seq_len,
+    rep_idx,
 ):
     """
     Calls the original generate_tasks existing function and saves the result to a specific
     sub-directory.
     """
     if isinstance(task_id, dict):
-        task_name = "_".join([f"{v}" for  v in task_id.values()])
+        task_name = "_".join([f"{v}" for v in task_id.values()])
     else:
         task_name = str(task_id)
 
     # Create the specific directory for this configuration
-    target_dir = Path(target_path) / benchmark_name / f"task_{task_name}" / f"sep_{single_eval_pos}"
+    target_dir = (
+        Path(target_path)
+        / benchmark_name
+        / f"task_{task_name}"
+        / f"sep_{single_eval_pos}"
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = target_dir / f"rep_{rep_idx}.pt"
@@ -284,22 +301,29 @@ def save_task_batch(
 
 
 def orchestrate_generation(
-        benchmarks,
-        task_ids:Union[list, dict],
-        single_eval_positions,
-        num_repetitions,
-        ntasks_per_dataset,
-        data_path,
-        target_path,
-        seq_len,
-        n_jobs=-1
+    benchmarks,
+    task_ids: Union[list, dict],
+    single_eval_positions,
+    num_repetitions,
+    ntasks_per_dataset,
+    data_path,
+    target_path,
+    seq_len,
+    n_jobs=-1,
 ):
     """
     Parallelizes generation across all combinations.
     """
     tasks = [
         delayed(save_task_batch)(
-            b_name, t_id, ntasks_per_dataset, pos, data_path, target_path, seq_len, r_idx
+            b_name,
+            t_id,
+            ntasks_per_dataset,
+            pos,
+            data_path,
+            target_path,
+            seq_len,
+            r_idx,
         )
         for b_name in benchmarks
         for t_id in task_ids
@@ -312,13 +336,13 @@ def orchestrate_generation(
     return results
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     from ppfn.dataset.mfpbench.tasks import LCBENCH_IDS, PD1_IDS, TASKSET_IDS
 
     datasets = {
-        'taskset_tabular': TASKSET_IDS,
-        'pd1_tabular': PD1_IDS,
-        'lcbench_tabular': LCBENCH_IDS
+        "taskset_tabular": TASKSET_IDS,
+        "pd1_tabular": PD1_IDS,
+        "lcbench_tabular": LCBENCH_IDS,
     }
 
     for benchmark_name, task_ids in datasets.items():
@@ -340,7 +364,7 @@ if __name__ == '__main__':
             seq_len=1000,
             data_path="/home/ruhkopf/VSCode/Meta_FTPFN/data/",
             target_path="/home/ruhkopf/VSCode/Meta_FTPFN/data/validation/",
-            n_jobs=-1
+            n_jobs=-1,
         )
 
     print("Task generation completed.")

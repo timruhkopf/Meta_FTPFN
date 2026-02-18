@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import os
-from typing import Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 
 import hydra
 from hydra.utils import instantiate
@@ -17,11 +14,11 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-@hydra.main(version_base='1.1', config_path="../../configs", config_name="config")
+@hydra.main(version_base="1.1", config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """
     Main training entry point.
-    
+
     Args:
         cfg: Hydra config from configs/config.yaml and experiment override
     """
@@ -36,13 +33,13 @@ def main(cfg: DictConfig) -> None:
     # set seed for reproducibility
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
-    if device.type == 'cuda':
+    if device.type == "cuda":
         torch.cuda.manual_seed_all(cfg.seed)
 
     # Create dataloaders
     logger.info("Creating dataloaders...")
 
-    # Sampling the prior and storing it if required. 
+    # Sampling the prior and storing it if required.
     # This is only needed once and is the entry point to the get_batch functions
     dataset = instantiate(cfg.dataset.dataset_class)
     if cfg.dataset.get("sample_prior", False):
@@ -50,15 +47,13 @@ def main(cfg: DictConfig) -> None:
         dataset.store_prior(**instantiate(cfg.dataset.store_prior))
 
         # store the generating yaml config alongside the prior samples
-        with open(dataset.storage_path / 'generating_config.yaml', 'w') as f:
+        with open(dataset.storage_path / "generating_config.yaml", "w") as f:
             OmegaConf.save(config=cfg.dataset, f=f)
         return 0  # exit after storing prior
 
     # Create a simple DataLoader around the dataset
     loader = instantiate(
-        cfg.dataset.dataloader_class,
-        dataset=dataset,
-        collate_fn=lambda x: x
+        cfg.dataset.dataloader_class, dataset=dataset, collate_fn=lambda x: x
     )
     # next(iter(loader))  # sanity check
 
@@ -88,11 +83,7 @@ def main(cfg: DictConfig) -> None:
         #  and the model are accessing 'criterion'
         logger.info("Wrapping criterion with objective...")
         # this is a wrapper objective around the model's criterion
-        criterion = instantiate(
-            cfg.trainer.objective,
-            criterion=criterion,
-            model=model
-        )
+        criterion = instantiate(cfg.trainer.objective, criterion=criterion, model=model)
 
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
@@ -112,7 +103,7 @@ def main(cfg: DictConfig) -> None:
         device=device,
     )
     # dictconfig cannot be passed directly; neither a dict with _target_ key
-    trainer.config = OmegaConf.to_container(cfg, resolve=True),
+    trainer.config = (OmegaConf.to_container(cfg, resolve=True),)
 
     logger.info(f"Starting training for {cfg.trainer.epochs} epochs...")
     trainer.fit(epochs=cfg.trainer.epochs, steps=cfg.trainer.steps)
@@ -123,22 +114,24 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-
     from pathlib import Path
     from dotenv import load_dotenv
 
     load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env")
 
-
     def githash(*args, **kwargs) -> str:
         try:
             import subprocess
-            git_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+
+            git_hash = (
+                subprocess.check_output(["git", "rev-parse", "HEAD"])
+                .decode("ascii")
+                .strip()
+            )
             return git_hash
         except Exception as e:
             logger.warning(f"Could not retrieve git hash: {e}")
             return "unknown"
-
 
     OmegaConf.register_new_resolver("mod", lambda x, y: x % y)
     OmegaConf.register_new_resolver("div", lambda x, y: int(x / y))

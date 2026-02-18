@@ -6,7 +6,9 @@ from torch.nn import MultiheadAttention
 
 
 class CrossFusion(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=True):
+    def __init__(
+        self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=True
+    ):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -15,7 +17,7 @@ class CrossFusion(nn.Module):
 
         self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
         self.cross_test = MultiheadAttention(d_model, num_heads, dropout)
-        self.linear = (nn.Linear(d_model, d_model) if add_linear else None)
+        self.linear = nn.Linear(d_model, d_model) if add_linear else None
 
         # PRE-NORM: Normalize inputs, not the output delta
         if self.use_prenorm:
@@ -74,17 +76,17 @@ class CrossFusion(nn.Module):
         R = B // 3  # number related tasks
 
         # Stream (A) query target task marginal predictions (untainted)
-        A = x[:, : R, :]
+        A = x[:, :R, :]
 
         # Stream (B.1) key related tasks' marginal predictions (untainted)
-        B = x[:, R: 2 * R, :]
+        B = x[:, R : 2 * R, :]
 
         # Stream (B.2) Value: what we want to extract from the related tasks based on
         # the learned kernel(A, B) * B, which will give us \Delta C, that we can add to C.
-        B = x[:, R: 2 * R, :]  # Key Difference to CrossFusion
+        B = x[:, R : 2 * R, :]  # Key Difference to CrossFusion
 
         # Stream (C): last' layer's conditional predictions (to be updated)
-        C = x[:, 2 * R:, :]
+        C = x[:, 2 * R :, :]
 
         if self.use_prenorm:
             A = self.norm_Q(A)

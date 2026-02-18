@@ -5,7 +5,7 @@ from ppfn.utils.deprecate import deprecated
 
 
 class AllocationPrior:
-    EPS = 10 ** -9
+    EPS = 10**-9
 
     def __init__(self, seq_len, n_levels) -> None:
         """Determine the allocation of observations/queries per curve in the sequence."""
@@ -31,10 +31,10 @@ class AllocationPrior:
         Returns:
             tuple: A tuple containing:
                 - cutoff_per_curve (np.ndarray): Integer array of shape (seq_len,) indicating the number
-                  of (visibile/training context)observations allocated to each curve. 
+                  of (visibile/training context)observations allocated to each curve.
                   Values are cumulative counts of positions before single_eval_pos.
                 - epochs_per_curve (np.ndarray): Integer array of shape (seq_len,) indicating the total
-                  number of epochs (observations + queries) allocated to each curve (including budget tokens 
+                  number of epochs (observations + queries) allocated to each curve (including budget tokens
                   after the cutoff -- i.e. the queries).
                 - ordering (np.ndarray): Integer array of shape (seq_len,) representing the sampled
                   ordering of curve indices for each position in the sequence. Will be used to map positions
@@ -52,7 +52,9 @@ class AllocationPrior:
         ids = np.arange(self.seq_len)
         all_levels = np.repeat(ids, self.n_levels)
         all_p = np.repeat(self.p, self.n_levels) / self.n_levels
-        ordering = np.random.choice(all_levels, p=all_p, size=self.seq_len, replace=False)
+        ordering = np.random.choice(
+            all_levels, p=all_p, size=self.seq_len, replace=False
+        )
 
         # calculate the cutoff/samples for each curve
         # cutoff_per_curve = np.zeros((self.seq_len,), dtype=int)
@@ -69,7 +71,9 @@ class AllocationPrior:
         epochs_per_curve = np.bincount(ordering, minlength=self.seq_len)
 
         # 2. Counts for each curve ID only for the 'observations' (before the cutoff)
-        cutoff_per_curve = np.bincount(ordering[:single_eval_pos], minlength=self.seq_len)
+        cutoff_per_curve = np.bincount(
+            ordering[:single_eval_pos], minlength=self.seq_len
+        )
 
         return cutoff_per_curve, epochs_per_curve, ordering
 
@@ -77,8 +81,9 @@ class AllocationPrior:
         "This method is the original, unoptimized version of parse_allocation_into_sequence. "
         "It is left here for reference and testing purposes, but should not be used in production due to its inefficiency."
     )
-    def parse_allocation_into_sequence_slow(self, curve_configs, curves, num_params, single_eval_pos, allocation):
-
+    def parse_allocation_into_sequence_slow(
+        self, curve_configs, curves, num_params, single_eval_pos, allocation
+    ):
         """Determine x and y values for every curve in the sequence.
 
         Args:
@@ -95,7 +100,9 @@ class AllocationPrior:
                   for the corresponding curve.
         """
         # FIXME: THIS ENTIRE FUNCTION IS SUPER INEFFICIENT, because we loop over every single token
-        cutoff_per_curve, epochs_per_curve, ordering = allocation  # self.sample_abstract_allocation(single_eval_pos)
+        cutoff_per_curve, epochs_per_curve, ordering = (
+            allocation  # self.sample_abstract_allocation(single_eval_pos)
+        )
 
         # NOTES:
         # **curve_configs**: unit cube sampled hyperparameter configurations for every token in the sequence. Theses are
@@ -129,19 +136,19 @@ class AllocationPrior:
                 if cutoff_per_curve[cid] > 0:  # observations (if any)
                     # given the allocated budget create the fidelity level tensor for the observations we want to evaluate
                     x_[: cutoff_per_curve[cid]] = (
-                            np.arange(1, cutoff_per_curve[cid] + 1) / self.n_levels
+                        np.arange(1, cutoff_per_curve[cid] + 1) / self.n_levels
                     )
 
                 if cutoff_per_curve[cid] < epochs_per_curve[cid]:  # queries (if any)
                     # beyond the cutoff of this particular curve, we sample future fidelity levels
                     # that we want to use as query points -- and evaluate with the curves callable
-                    x_[cutoff_per_curve[cid]:] = (
-                            np.random.choice(
-                                np.arange(cutoff_per_curve[cid] + 1, self.n_levels + 1),
-                                size=epochs_per_curve[cid] - cutoff_per_curve[cid],
-                                replace=False,
-                            )
-                            / self.n_levels
+                    x_[cutoff_per_curve[cid] :] = (
+                        np.random.choice(
+                            np.arange(cutoff_per_curve[cid] + 1, self.n_levels + 1),
+                            size=epochs_per_curve[cid] - cutoff_per_curve[cid],
+                            replace=False,
+                        )
+                        / self.n_levels
                     )
 
                 curve_xs.append(x_)
@@ -171,12 +178,16 @@ class AllocationPrior:
             curve_val[i] = curve_ys[cid][curve_counters[cid]]
             curve_counters[cid] += 1
 
-        x = torch.cat([torch.stack([id_curve, epoch], dim=1), torch.from_numpy(config)], dim=1)
+        x = torch.cat(
+            [torch.stack([id_curve, epoch], dim=1), torch.from_numpy(config)], dim=1
+        )
         y = curve_val
 
         return x, y
 
-    def parse_allocation_into_sequence(self, curve_configs, curves, num_params, single_eval_pos, allocation):
+    def parse_allocation_into_sequence(
+        self, curve_configs, curves, num_params, single_eval_pos, allocation
+    ):
         cutoff_per_curve, epochs_per_curve, ordering = allocation
         seq_len = self.seq_len
 
@@ -201,11 +212,14 @@ class AllocationPrior:
                     x_[:n_cutoff] = np.arange(1, n_cutoff + 1) / self.n_levels
                 # Queries (Random - MUST be called in this order)
                 if n_cutoff < n_epochs:
-                    x_[n_cutoff:] = np.random.choice(
-                        np.arange(n_cutoff + 1, self.n_levels + 1),
-                        size=n_epochs - n_cutoff,
-                        replace=False
-                    ) / self.n_levels
+                    x_[n_cutoff:] = (
+                        np.random.choice(
+                            np.arange(n_cutoff + 1, self.n_levels + 1),
+                            size=n_epochs - n_cutoff,
+                            replace=False,
+                        )
+                        / self.n_levels
+                    )
                 curve_xs[cid] = x_
 
         # 3. Vectorized Mapping (The "Speed" Part)
@@ -213,7 +227,9 @@ class AllocationPrior:
         # We can't easily vectorize curve_xs[cid][epoch_indices] without padding,
         # but we can do it in one structured loop which is still faster than the original.
 
-        epochs = np.array([curve_xs[ordering[i]][epoch_indices[i]] for i in range(seq_len)])
+        epochs = np.array(
+            [curve_xs[ordering[i]][epoch_indices[i]] for i in range(seq_len)]
+        )
 
         # 4. Vectorized ID Curve Logic
         # Original: id_curve[i] = cid + 1 if (i < single_eval_pos or curve_counters[cid] > 0) else 0
@@ -228,7 +244,8 @@ class AllocationPrior:
         id_curve = ordering + 1
         # Mask: Is it the first time we see this CID? AND is that index >= single_eval_pos?
         query_id_mask = (first_appearance_idx[ordering] >= single_eval_pos) & (
-                np.arange(seq_len) == first_appearance_idx[ordering])
+            np.arange(seq_len) == first_appearance_idx[ordering]
+        )
         id_curve[query_id_mask] = 0
 
         # 5. Vectorized Configs and Values
@@ -237,15 +254,18 @@ class AllocationPrior:
         # Vectorized Y Evaluation (Assuming curves() handles arrays)
         curve_val = np.zeros(seq_len)
         for cid in np.where(epochs_per_curve > 0)[0]:
-            mask = (ordering == cid)
+            mask = ordering == cid
             curve_val[mask] = curves(epochs[mask], cid)
 
         # Convert to Torch
-        x = torch.cat([
-            torch.from_numpy(id_curve).float().unsqueeze(1),  # Column 0: ID
-            torch.from_numpy(epochs).float().unsqueeze(1),  # Column 1: Fidelity
-            torch.from_numpy(config).float()  # Columns 2+: Config
-        ], dim=1)
+        x = torch.cat(
+            [
+                torch.from_numpy(id_curve).float().unsqueeze(1),  # Column 0: ID
+                torch.from_numpy(epochs).float().unsqueeze(1),  # Column 1: Fidelity
+                torch.from_numpy(config).float(),  # Columns 2+: Config
+            ],
+            dim=1,
+        )
 
         y = torch.from_numpy(curve_val).float()
 

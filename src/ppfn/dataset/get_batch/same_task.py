@@ -6,28 +6,33 @@ import numpy as np
 from pfns4hpo.utils import default_device
 from pfns4hpo.priors.utils import Batch
 
-from ppfn.dataset.prior import AllocationPrior, DimensionPrior, FidelityPrior, MultiFidelityTask
+from ppfn.dataset.prior import (
+    AllocationPrior,
+    DimensionPrior,
+    FidelityPrior,
+    MultiFidelityTask,
+)
 
 
 @torch.no_grad()
 def get_batch(
-        batch_size: int,
-        seq_len: int,
-        num_features: int,
-        single_eval_pos: int,
-        share_unrelated_tasks: float = 0.0,
-        device=default_device,
-        hyperparameters=None,
-        **kwargs,
+    batch_size: int,
+    seq_len: int,
+    num_features: int,
+    single_eval_pos: int,
+    share_unrelated_tasks: float = 0.0,
+    device=default_device,
+    hyperparameters=None,
+    **kwargs,
 ):
     """
-    This variant is proving the point, that cross attention will work. 
-    This is a sanity check, because if we always are in the same task, 
+    This variant is proving the point, that cross attention will work.
+    This is a sanity check, because if we always are in the same task,
     and we have twice as much datapoints, we should be more certain!
-    
+
     For every batch, we sample a new dataset, that is the same for all tasks in the batch.
     Main difference: The sampled Trajectory (hp and budget allocation) differs across tasks
-    
+
     :param batch_size: Number of tasks in the batch
     :param seq_len: Number of total datapoints per task
     :param num_features: Number of hyperparameters
@@ -65,7 +70,9 @@ def get_batch(
         # (2) get the curves for these configurations
         allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
         # get callable to evaluate (hp, t) --> y
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())
+        curves = dataset_prior.get_marginal_curve(
+            torch.from_numpy(curve_configs).float()
+        )
 
         # (3) map the allocation to actual (x,y) values
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
@@ -81,6 +88,7 @@ def get_batch(
 
     return Batch(x=x, y=y, target_y=y, single_eval_pos=single_eval_pos, style=indicator)
 
+
 # TODO move to utils.py
 class Prior:
     def __init__(self, get_batch_fn: Callable):
@@ -88,19 +96,24 @@ class Prior:
 
 
 if __name__ == "__main__":
-
     import os
     import time
     import cloudpickle
-    from pfns4hpo.priors.utils import PriorDataLoader, DistributedPriorDataLoader, \
-        get_batch_to_dataloader, get_expon_sep_sampler
+    from pfns4hpo.priors.utils import PriorDataLoader, get_expon_sep_sampler
     from tqdm import tqdm
 
     from dotenv import load_dotenv
 
-
-    def store_batch(path, chunk_id, chunk_size, batch_size, seq_len, n_features, partition,
-                    prior_hyperparameters):
+    def store_batch(
+        path,
+        chunk_id,
+        chunk_size,
+        batch_size,
+        seq_len,
+        n_features,
+        partition,
+        prior_hyperparameters,
+    ):
         if partition:
             partition_id = chunk_id // 1000
             chunk_dir = os.path.join(path, f"partition_{partition_id}")
@@ -116,21 +129,23 @@ if __name__ == "__main__":
                 if eval_pos_sampler is None:
                     # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
                     single_eval_pos = int(
-                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1)
+                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+                    )
                 else:
                     single_eval_pos = eval_pos_sampler()
                 assert single_eval_pos < seq_len
-                b = prior.get_batch(batch_size=batch_size,
-                                    single_eval_pos=single_eval_pos,
-                                    seq_len=seq_len,
-                                    num_features=n_features,
-                                    hyperparameters=prior_hyperparameters)
+                b = prior.get_batch(
+                    batch_size=batch_size,
+                    single_eval_pos=single_eval_pos,
+                    seq_len=seq_len,
+                    num_features=n_features,
+                    hyperparameters=prior_hyperparameters,
+                )
                 chunk_data.append((single_eval_pos, b))
-            with open(chunk_file, 'wb') as file:
+            with open(chunk_file, "wb") as file:
                 cloudpickle.dump(chunk_data, file)
         else:
             print("Already done.")
-
 
     load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
 
@@ -157,8 +172,17 @@ if __name__ == "__main__":
     pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
 
     # fixme: here we will need to call multiple times to get different numbers of features!
-    pdl.store_prior(prior, local=True, chunk_size=20, batch_size=10, seq_len=1000, n_features=5,
-                    partition=True, prior_hyperparameters={}, eval_pos_sampler=eval_pos_sampler)
+    pdl.store_prior(
+        prior,
+        local=True,
+        chunk_size=20,
+        batch_size=10,
+        seq_len=1000,
+        n_features=5,
+        partition=True,
+        prior_hyperparameters={},
+        eval_pos_sampler=eval_pos_sampler,
+    )
 
     print()
 

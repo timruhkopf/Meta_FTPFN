@@ -3,7 +3,6 @@ import os
 
 from typing import Dict
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
-import subprocess
 
 import logging
 
@@ -15,11 +14,11 @@ logger.setLevel(logging.INFO)
 
 class MLflowCallback(AbstractCallback):
     def __init__(
-            self,
-            experiment_name: str = "ppfn_training",
-            run_name: str | None = None,
-            mlflow_tracking_uri: str | None = None,
-            log_system_metrics: bool = True,
+        self,
+        experiment_name: str = "ppfn_training",
+        run_name: str | None = None,
+        mlflow_tracking_uri: str | None = None,
+        log_system_metrics: bool = True,
     ):
         super().__init__()
         self.experiment_name = experiment_name
@@ -38,8 +37,7 @@ class MLflowCallback(AbstractCallback):
 
         mlflow.set_experiment(self.experiment_name)
         self.run = mlflow.start_run(
-            run_name=self.run_name,
-            log_system_metrics=self.log_system_metrics
+            run_name=self.run_name, log_system_metrics=self.log_system_metrics
         )
 
         # Log Git Metadata
@@ -49,8 +47,13 @@ class MLflowCallback(AbstractCallback):
         # Log Hydra Overrides if available
         try:
             from hydra.core.hydra_config import HydraConfig
+
             overrides = HydraConfig.get().overrides.task
-            params = {o.strip('+').split('=')[0]: o.split('=')[1] for o in overrides if '=' in o}
+            params = {
+                o.strip("+").split("=")[0]: o.split("=")[1]
+                for o in overrides
+                if "=" in o
+            }
             mlflow.log_params(params)
         except Exception:
             logger.warning("Could not log Hydra overrides.")

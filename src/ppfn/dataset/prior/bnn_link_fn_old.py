@@ -73,7 +73,6 @@ def weighted_curve_model(
             Shape matches input x. Values typically range between Y0 and Yinf.
     """
 
-
     # 1. Prepare Saturation (Transformation logic)
     def get_x_sat(idx):
         return np.where(x < Xsat[idx], x, Rpsat[idx] * (x - Xsat[idx]) + Xsat[idx])
@@ -101,7 +100,6 @@ class ECDFParameterLinker:
 
     y_samples = None  # Class-level storage for the sorted BNN outputs
     eps = None
-
 
     def __init__(self, BNNPrior):
         self.counter = 0  # To track which parameter we are processing
@@ -159,7 +157,6 @@ class ECDFParameterLinker:
         # transformations to the specific columns (via fancy indexing) at once, when we have the self.u_values ,
         # which is way more efficient!
 
-
         # Transform raw values to [0, 1] quantiles using the ECDF
         # We search where the BNN outputs fall within the global distribution
         indices = np.searchsorted(self.y_samples, bnn_outputs, side="left")
@@ -172,7 +169,9 @@ class ECDFParameterLinker:
         Y0 = y0
 
         # sample Yinf (shared by all components)
-        Yinf = self.uniform(a=Y0, b=ymax)  # 0 # these numbers indicate the BNN column index!
+        Yinf = self.uniform(
+            a=Y0, b=ymax
+        )  # 0 # these numbers indicate the BNN column index!
 
         # sample weights for basis curves (dirichlet)
         w = np.stack([self.gamma(a=1) for i in range(n_curves)]).T  # 1, 2, 3, 4
@@ -219,7 +218,7 @@ class ECDFParameterLinker:
 
         return Y0, Yinf, w, alpha, Xsat, PREC, Rpsat, sigma
 
-    def curve_factory(self, bnn_outputs, y0, ymax, noise=True)-> Callable:
+    def curve_factory(self, bnn_outputs, y0, ymax, noise=True) -> Callable:
         """
         Maps hyperparameter configurations to functional learning curve evaluators.
 
@@ -256,18 +255,17 @@ class ECDFParameterLinker:
         Returns:
             Callable: foo(x, cid) -> clipped [0, 1] performance prediction at fidelity x.
         """
-         # Using the rng4configs, we can restrict the output of the bnn to the respective parameter's support,
+        # Using the rng4configs, we can restrict the output of the bnn to the respective parameter's support,
         # by first defining the PDF for the respective curve parameter (e.g. Xsat ~ Gamma(1,1) ) and then using
         # the quantile function to map the BNNs output percentiles to the distribution's support.
 
         # more efficient batch-wise
-        NCURVES = 4 # the number of basis curves to combine is fixed here!
+        NCURVES = 4  # the number of basis curves to combine is fixed here!
 
         # Get ECDF normalized parameters from unnormalized/unbounded BNN outputs
         Y0, Yinf, w, alpha, Xsat, PREC, Rpsat, sigma = self(
             bnn_outputs, y0, ymax, n_curves=NCURVES
         )
-
 
         def parametrized_curve_model(x_, cid=0):
             y_ = weighted_curve_model(
@@ -290,14 +288,15 @@ class ECDFParameterLinker:
 
         return parametrized_curve_model
 
-
     def reset(self):
-        self.counter = 0 # This counter basically allows us to step through the parameter index of the BNN output
+        self.counter = 0  # This counter basically allows us to step through the parameter index of the BNN output
 
-    def uniform(self, a=0.0, b=1.0): # FIXME: during the call, we could just once apply this to all outputs and store the u_values matrix!. Then we just need to apply the respective ppfs for the respective parameters!
+    def uniform(
+        self, a=0.0, b=1.0
+    ):  # FIXME: during the call, we could just once apply this to all outputs and store the u_values matrix!. Then we just need to apply the respective ppfs for the respective parameters!
         u = (b - a) * self.u_values[self.counter] + a
         self.counter += 1
-        return u # FIXME: this method should actually be moved to the BNNPrior class!
+        return u  # FIXME: this method should actually be moved to the BNNPrior class!
 
     def normal(self, loc=0, scale=1):
         u = self.uniform(a=self.eps, b=1 - self.eps)
@@ -339,8 +338,4 @@ def apply_saturation_and_tail(x, y_func, Y0):
     # the calculation must still succeed without returning 'inf' or 'nan'.
     safe_exp = np.exp(np.clip(exponent, -700, 700))
 
-    return np.where(
-        x > 0,
-        y_func(x),
-        Y0 * safe_exp
-    )
+    return np.where(x > 0, y_func(x), Y0 * safe_exp)

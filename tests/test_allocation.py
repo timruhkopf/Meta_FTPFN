@@ -4,8 +4,6 @@ import time
 from ppfn.dataset.prior import AllocationPrior
 
 import pytest
-import numpy as np
-import time
 
 
 @pytest.fixture
@@ -28,7 +26,7 @@ def benchmark_data():
     return {
         "seq_len": seq_len,
         "single_eval_pos": single_eval_pos,
-        "ordering": ordering
+        "ordering": ordering,
     }
 
 
@@ -67,8 +65,12 @@ def test_bincount_performance_and_logic(benchmark_data, capsys):
         print(f"{'':=^40}\n")
 
     # --- VALIDATION ---
-    np.testing.assert_array_equal(epochs_loop, epochs_vec, err_msg="Total epochs mismatch")
-    np.testing.assert_array_equal(cutoff_loop, cutoff_vec, err_msg="Cutoff counts mismatch")
+    np.testing.assert_array_equal(
+        epochs_loop, epochs_vec, err_msg="Total epochs mismatch"
+    )
+    np.testing.assert_array_equal(
+        cutoff_loop, cutoff_vec, err_msg="Cutoff counts mismatch"
+    )
 
 
 def test_allocation_equivalence_and_bench(capsys):

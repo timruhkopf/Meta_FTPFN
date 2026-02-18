@@ -2,7 +2,6 @@
 This Script is the original FT-PFN get_batch function, but adapted to the new structure.
 """
 
-
 import torch
 import numpy as np
 
@@ -35,8 +34,6 @@ def get_batch(
     y = []
 
     for i in range(batch_size):
-        
-
         # determine the number of fidelity levels (ranging from 1: BB, up to seq_len)
         if n_levels is None:
             n_levels = FidelityPrior().sample()
@@ -45,7 +42,7 @@ def get_batch(
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing
         allocation_prior = AllocationPrior(seq_len, n_levels)
-        
+
         # fix dataset specific random variables
         # i.e. get a new relation prior
         dataset_prior.sample_task()
@@ -54,13 +51,17 @@ def get_batch(
         # (1) sample "available" hyperparameter configurations, these will later be subselected and
         # determined to be either observation or query points
         # FIXME: move this into the allocation prior, since it is basically an internal representation!
-        curve_configs = np.random.uniform(size=(seq_len, num_params)) 
+        curve_configs = np.random.uniform(size=(seq_len, num_params))
 
         # (2) get the curves for these configurations
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  # get callable to evaluate (hp, t) --> y
+        curves = dataset_prior.get_marginal_curve(
+            torch.from_numpy(curve_configs).float()
+        )  # get callable to evaluate (hp, t) --> y
 
         # (3) map the allocation to actual (x,y) values
-        x_i, y_i = allocation_prior.parse_allocation_into_sequence(curve_configs, curves, num_params, single_eval_pos)
+        x_i, y_i = allocation_prior.parse_allocation_into_sequence(
+            curve_configs, curves, num_params, single_eval_pos
+        )
 
         x.append(x_i)
         y.append(y_i)
@@ -70,11 +71,11 @@ def get_batch(
 
     return Batch(x=x, y=y, target_y=y)
 
-if __name__ == "__main__":  
 
+if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    # create plot with multiple curves based on the get_batch 
+    # create plot with multiple curves based on the get_batch
     batch = get_batch(
         batch_size=4,
         seq_len=32,

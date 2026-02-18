@@ -10,7 +10,6 @@ from ifbo.surrogate import FTPFN
 def load_frozen_model() -> nn.Module:
     """Load frozen pre-trained PPFN model from ifBO."""
 
-
     # Load from project root .env (4 levels up from this file)
     load_dotenv(dotenv_path=Path(__file__).parents[4] / ".env")
 
