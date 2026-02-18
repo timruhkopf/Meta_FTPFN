@@ -36,3 +36,6 @@ hash: ${githash:''}
 
 
 checkpoint: Null
+
+
+# testing the version bump of semantic release
