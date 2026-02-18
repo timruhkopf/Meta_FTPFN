@@ -9,8 +9,9 @@ into dedicated classes and methods. This will allow to make modifications more e
 
 import torch
 import numpy as np
+from torch import vmap
 
-from ppfn.dataset.prior.base_curves import ECDFParameterLinker
+from ppfn.dataset.prior.bnn_link_fn import VectorizedParameterLinker
 from ppfn.dataset.prior.bnn_prior import BNNPrior
 
 
@@ -25,7 +26,7 @@ class MultiFidelityTask:
         self.bnn_prior = BNNPrior(num_inputs, num_outputs)
 
         self.model = self.bnn_prior.sample()
-        self.linker = ECDFParameterLinker(self.bnn_prior)
+        self.linker = VectorizedParameterLinker(self.bnn_prior)
        
 
     def __call__(self, hyperparams, fidelities):
@@ -39,10 +40,8 @@ class MultiFidelityTask:
 
         """
         curve_model = self.get_marginal_curve(hyperparams)
-        results = []
-        for t in fidelities:
-            results.append(curve_model(t))
-        return torch.stack(results, dim=1)  # Shape: (num_configs, num_fidelities)
+        vectorized_model = vmap(curve_model)
+        return vectorized_model(fidelities)  # Shape: (num_configs, num_fidelities)
     
 
     def get_marginal_curve(self, hyperparams, noise=True):
@@ -154,7 +153,7 @@ if __name__ == '__main__':
 
 
     # Run it with alpha=0.5 for an equal mix
-    plot_blended_surfaces(alpha=0.1)
+    plot_blended_surfaces(alpha=0.5)
 
 
 
