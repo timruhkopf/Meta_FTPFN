@@ -8,7 +8,11 @@ from ppfn.model.mymodel.ft_ppfn import MyBatch
 
 
 class LatentMultiFidelityTask(MultiFidelityTask):
-    """Extension of MultiFidelityTask that uses a task latent vector."""
+    """
+    Extension of MultiFidelityTask that uses a task latent vector.
+    I.e. The bnn will get an additional input that encodes the personality of the task,
+    which allows us to have multiple tasks with different 'personalities' (curves) but shared structure.
+    """
 
     def __init__(self, num_inputs, num_outputs, latent_dim=1):
         # We increase the BNN input dimension to accommodate the latent vector
@@ -22,6 +26,10 @@ class LatentMultiFidelityTask(MultiFidelityTask):
         """Samples both BNN weights and a unique task latent."""
         super().sample_task()
         # Sample a random point in latent space (the 'personality' of this task)
+        self.current_latent = torch.randn(self.latent_dim)
+
+    def sample_latent(self):
+        """Samples a new latent vector for the current task, keeping the BNN fixed."""
         self.current_latent = torch.randn(self.latent_dim)
 
     def get_marginal_curve(self, hyperparams, latent_vec=None, noise=False):
@@ -61,6 +69,7 @@ def get_batch_latent(
     Simplified batch generation where each task identity is purely
     defined by its location in the latent space Z.
     """
+    assert batch_size % 2 == 0, "Batch size must be even to have pairs of tasks with shared BNN but different latents."
     if num_params is None:
         num_params = DimensionPrior(num_features).sample()
     if n_levels is None:
@@ -73,7 +82,7 @@ def get_batch_latent(
     latents_used = []
 
     # 2. Generate tasks
-    for i in range(batch_size):
+    for i in range(batch_size // 2):
         # We create a task instance.
         # Note: If you want all tasks in a batch to share 'physics' (BNN weights)
         # but have different 'personalities' (latents), move the Task init
@@ -93,6 +102,17 @@ def get_batch_latent(
             noise=True
         )
         parametrized_curves.append(curve_model)
+
+        task_prior.sample_latent()
+        z_i = task_prior.current_latent
+        latents_used.append(z_i)
+        curve_model = task_prior.get_marginal_curve(
+            configs_torch,
+            latent_vec=z_i,
+            noise=True
+        )
+        parametrized_curves.append(curve_model)
+
 
     # 3. Allocation mapping
     x = []
@@ -135,8 +155,12 @@ if __name__ == '__main__':
 
     )
 
+    import os
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
+    import plotly.io as pio
+
+    pio.renderers.default = "iframe"
 
 
     def plot_latent_interpolation(steps=2):
@@ -174,8 +198,15 @@ if __name__ == '__main__':
             )
 
         fig.update_layout(height=500, width=1500, title_text="Latent Space Task Morphing")
-        fig.show()
+        # fig.show()
 
+        output_path = "latent_interpolation.html"
+        fig.write_html(output_path)
+
+        # Print the absolute path so you can Ctrl+Click it in the PyCharm terminal
+        print(f"Plot saved to: {os.path.abspath(output_path)}")
+
+        del fig
 
     # Run the visualization
     plot_latent_interpolation(steps=5)
