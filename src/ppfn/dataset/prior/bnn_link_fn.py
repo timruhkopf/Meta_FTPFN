@@ -18,13 +18,6 @@ class CurveModels:
     """
 
     @staticmethod
-    def power_law(x, Y0, Yinf, prec, xsat, alpha):
-        # Multiplier can be negative if prec is small; we must ensure the base is > 0
-        multiplier = ((prec ** (1 / alpha) - 1) / (xsat + 1e-10))
-        base = multiplier * x + 1
-        return Yinf - (Yinf - Y0) * np.power(np.clip(base, 1e-10, None), -alpha)
-
-    @staticmethod
     def exponential(x, Y0, Yinf, prec, xsat, alpha):
         # 1. Clip inputs to prevent log(0) or division by zero
         prec = np.clip(prec, 1e-10, None)
@@ -52,12 +45,22 @@ class CurveModels:
         return Yinf - (Yinf - Y0) * num / (den + 1e-10)
 
     @staticmethod
-    def hill(x, Y0, Yinf, prec, xsat, alpha):
-        # Ensure the denominator (x/xsat)**alpha + 1 never hits zero or negative
-        base = np.clip(x / (xsat + 1e-10), 0, None)
-        denom = np.power(base, alpha) * (prec - 1) + 1
-        return Yinf - (Yinf - Y0) / np.clip(denom, 1e-10, None)
+    def power_law(x, Y0, Yinf, prec, xsat, alpha):
+        # Use log-space for the multiplier to handle small alpha
+        # multiplier = (exp(log(prec)/alpha) - 1) / xsat
+        ln_multiplier_top = np.log(np.clip(prec, 1e-10, None)) / np.clip(alpha, 0.1, None)
+        multiplier = np.expm1(ln_multiplier_top) / (xsat + 1e-10)
 
+        base = np.clip(multiplier * x + 1, 1e-10, None)
+        return Yinf - (Yinf - Y0) * np.power(base, -alpha)
+
+    @staticmethod
+    def hill(x, Y0, Yinf, prec, xsat, alpha):
+        base = np.clip(x / (xsat + 1e-10), 0, None)
+        # Ensure (prec - 1) is handled safely
+        term = np.power(base, alpha) * (prec - 1)
+        denom = np.clip(1 + term, 1e-10, None)
+        return Yinf - (Yinf - Y0) / denom
 
 class VectorizedParameterLinker:
     """
