@@ -1,0 +1,10 @@
+
+defaults:
+
+  - ppfn
+
+
+
+model_class:
+  frozen_model:
+    _target_: ppfn.model.baselines.ft_pfn_padding.ft_pfn_padding
