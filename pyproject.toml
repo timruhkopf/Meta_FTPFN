@@ -69,6 +69,17 @@ allowed_tags = ["feat", "feature", "fix", "hot-fix", "perf", "docs"]
 minor_tags = ["feat", "feature"]
 patch_tags = ["fix", "hot-fix", "perf"]
 
+# Define your branches and their release types
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.branches.features]
+# This matches your current branch "feature/commitzen-pre-commit"
+match = "(feature|feat)/.*"
+prerelease = true
+prerelease_token = "alpha"
+
 
 
 [tool.uv.sources]
