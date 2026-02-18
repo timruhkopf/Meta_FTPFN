@@ -95,7 +95,7 @@ class CrossFusion(nn.Module):
 
         # Handle the train/test split
         A_train, A_test = A[:sep, :, :], A[sep:, :, :]
-        B_train, B_test = B[:sep, :, :], B[sep:, :, :]
+        B_train, _ = B[:sep, :, :], B[sep:, :, :]
         # B_train, B_test = B[:sep, :, :], B[sep:, :, :]
         C_train, C_test = C[:sep, :, :], C[sep:, :, :]
 

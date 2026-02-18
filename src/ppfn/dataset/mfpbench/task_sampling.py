@@ -1,4 +1,5 @@
-# FIXME: remove this
+# ruff: noqa
+# FIXME: import error resolution, then remove this
 import sys
 from typing import Union
 
@@ -24,15 +25,16 @@ except ImportError as e:
 import mfpbench
 
 from mfpbench.taskset_tabular.benchmark import TaskSetTabularConfig_8p
-
-import os
-import torch
-import numpy as np
 from pathlib import Path
 from joblib import Parallel, delayed
 
 from pfns4hpo.evaluate import _get_normalized_values
 from pfns_hpo.run import process_taskset_mfpbench_with_step_0_prior
+
+import os
+import torch
+import numpy as np
+
 
 
 def get_benchmark(name, task_id, data_path):

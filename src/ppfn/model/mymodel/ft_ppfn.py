@@ -7,11 +7,12 @@ import torch
 import torch.nn as nn
 
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
+
 
 # TODO move to utils!
 @dataclass

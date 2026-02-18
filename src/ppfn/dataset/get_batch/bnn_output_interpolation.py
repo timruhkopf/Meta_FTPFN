@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from pathlib import Path
 import torch
 import numpy as np
 
@@ -310,246 +309,246 @@ class Prior:
     def __init__(self, get_batch_fn: Callable):
         self.get_batch = get_batch_fn
 
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import torch
-    from scipy.stats import beta as beta_dist
-
-    import torch
-    import os
-    from pathlib import Path
-
-    def plot_beta_pdf(alpha, beta):
-        """Plots the probability density of your relatedness factor."""
-        x = np.linspace(0, 1, 100)
-        y = beta_dist.pdf(x, alpha, beta)
-        plt.figure(figsize=(6, 3))
-        plt.plot(x, y, "r-", lw=2)
-        plt.fill_between(x, y, alpha=0.2, color="red")
-        plt.title(f"Relatedness Distribution: Beta(α={alpha}, β={beta})")
-        plt.xlabel("Relatedness Factor (0=Identical, 1=Independent)")
-        plt.ylabel("Density")
-        plt.grid(True, alpha=0.3)
-        plt.show()
-
-    def plot_relatedness_static(batch, pair_idx=0):
-        """
-        Standard Matplotlib 3D plot.
-        Renders directly in PyCharm's SciView or a popup window.
-        """
-        # 1. Extraction (T, B, D structure)
-        target_idx = pair_idx * 2
-        related_idx = target_idx + 1
-
-        # x: [T, B, D], y: [T, B]
-        # We take the first two dimensions of X for the ground plane
-        x_target = batch.x[:, target_idx, 1:3].detach().cpu().numpy()
-        y_target = batch.y[:, target_idx].detach().cpu().numpy()
-
-        x_related = batch.x[:, related_idx, 1:3].detach().cpu().numpy()
-        y_related = batch.y[:, related_idx].detach().cpu().numpy()
-
-        rel_val = batch.style[related_idx].item()
-
-        # 2. Setup Figure
-        fig = plt.figure(figsize=(12, 5))
-
-        # Subplot 1: The Beta Distribution (To see the "Why")
-        ax1 = fig.add_subplot(1, 2, 1)
-        x_beta = np.linspace(0, 1, 500)
-        y_beta = beta_dist.pdf(x_beta, 0.1, 20)
-        ax1.plot(x_beta, y_beta, color="red", lw=2)
-        ax1.fill_between(x_beta, y_beta, color="red", alpha=0.1)
-        ax1.axvline(
-            rel_val,
-            color="black",
-            linestyle="--",
-            label=f"Current Alpha: {rel_val:.4f}",
-        )
-        ax1.set_title("Beta(0.1, 20) Prior")
-        ax1.set_xlabel("Relatedness Factor")
-        ax1.legend()
-
-        # Subplot 2: The 3D Task Surface
-        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
-
-        # Plot Target points
-        ax2.scatter(
-            x_target[:, 0],
-            x_target[:, 1],
-            y_target,
-            c="blue",
-            label="Target Task",
-            s=10,
-            alpha=0.6,
-        )
-
-        # Plot Related points
-        ax2.scatter(
-            x_related[:, 0],
-            x_related[:, 1],
-            y_related,
-            c="red",
-            label="Related Task",
-            s=10,
-            alpha=0.6,
-        )
-
-        ax2.set_title(f"Task Comparison (α={rel_val:.6f})")
-        ax2.set_xlabel("HP 1")
-        ax2.set_ylabel("HP 2")
-        ax2.set_zlabel("Y Value")
-        ax2.legend()
-
-        plt.tight_layout()
-        plt.show()
-
-    # 1. Setup Parameters
-    batch_size = 4
-    seq_len = 50
-    num_features = 5
-    single_eval_pos = 40
-
-    # Controlled relatedness for plotting:
-    # [Very Similar, Somewhat Similar, Different, Very Different]
-    alpha = 0.1
-    beta = 20
-    # Concentration and Spread
-    # * Both > 1 (Unimodal): The distribution has a "hump" (mode). If $\alpha = \beta$, the mass
-    # is perfectly centered at $0.5$.
-    # * Both < 1 (U-Shaped): The mass pushes toward the boundaries ($0$ and $1$),
-    # making extreme values more likely than middle values.
-    # * One < 1 and One > 1: The mass accumulates aggressively
-    # at one of the boundaries. In your specific case ($\alpha=0.1, \beta=20$), you have an L-shaped distribution
-    # where the density spikes at 0 and decays rapidly.
-    relatedness = np.random.beta(alpha, beta, size=(batch_size // 2,))
-
-    # 2. Generate Batch
-    # Note: Modify your get_batch_train to accept 'fixed_relatedness' if desired,
-    # or just use the logic below to visualize a standard sample.
-    batch = get_batch_train(
-        batch_size=batch_size,
-        seq_len=seq_len,
-        num_features=num_features,
-        single_eval_pos=single_eval_pos,
-        # alpha=0.1,
-        # beta=20
-        relatedness=relatedness,
-        y0=0.5,
-        ymax=1,
-    )
-
-    plot_relatedness_static(batch, pair_idx=1)
-    # 4. Plot the Distribution PDF for Context
-    x = np.linspace(0, 1, 100)
-    y = beta_dist.pdf(x, 0.1, 20)
-
-    plt.figure(figsize=(6, 4))
-    plt.plot(x, y, color="green")
-    plt.fill_between(x, y, alpha=0.2, color="green")
-    plt.title("Beta(0.1, 20) Distribution PDF")
-    plt.xlabel("Relatedness Factor (alpha)")
-    plt.ylabel("Density")
-    plt.show()
-
-    get_batch_mixed(
-        batch_size=12,
-        seq_len=100,
-        num_features=5,
-        single_eval_pos=50,
-        share_unrelated_tasks=0.3,
-    )
-
-    import time
-    import cloudpickle
-    from pfns4hpo.priors.utils import PriorDataLoader, get_expon_sep_sampler
-    from tqdm import tqdm
-
-    from dotenv import load_dotenv
-
-    def store_batch(
-        path,
-        chunk_id,
-        chunk_size,
-        batch_size,
-        seq_len,
-        n_features,
-        partition,
-        prior_hyperparameters,
-    ):
-        if partition:
-            partition_id = chunk_id // 1000
-            chunk_dir = os.path.join(path, f"partition_{partition_id}")
-            chunk_file = os.path.join(chunk_dir, f"chunk_{chunk_id}.pkl")
-            os.makedirs(chunk_dir, exist_ok=True)
-        else:
-            chunk_file = os.path.join(path, f"chunk_{chunk_id}.pkl")
-
-        if not os.path.exists(chunk_file):
-            np.random.seed((os.getpid() * int(time.time())) % 123456789)
-            chunk_data = []
-            for bid in tqdm(range(chunk_size // batch_size)):
-                if eval_pos_sampler is None:
-                    # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-                    single_eval_pos = int(
-                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
-                    )
-                else:
-                    single_eval_pos = eval_pos_sampler()
-                assert single_eval_pos < seq_len
-                b = prior.get_batch(
-                    batch_size=batch_size,
-                    single_eval_pos=single_eval_pos,
-                    seq_len=seq_len,
-                    num_features=n_features,
-                    hyperparameters=prior_hyperparameters,
-                )
-                chunk_data.append((single_eval_pos, b))
-            with open(chunk_file, "wb") as file:
-                cloudpickle.dump(chunk_data, file)
-        else:
-            print("Already done.")
-
-    load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
-
-    path = os.getenv("DATADIR") + "priors/same_task_new_sample_prior/"
-    os.makedirs(path, exist_ok=True)
-
-    # dl = get_batch_to_dataloader(sampler.get_batch)
-    prior = sampler
-    eval_pos_sampler = get_expon_sep_sampler(seq_len=1000, base=2.0, min_eval_pos=1)
-
-    # Test the raw store batch call  -------------
-    store_batch(
-        path=path,
-        chunk_id=0,
-        chunk_size=1000,
-        batch_size=25,
-        seq_len=1000,
-        n_features=5,
-        partition=True,
-        prior_hyperparameters={},
-    )
-
-    # test storing via the PriorDataLoader interface ------------
-    pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
-
-    # fixme: here we will need to call multiple times to get different numbers of features!
-    pdl.store_prior(
-        prior,
-        local=True,
-        chunk_size=20,
-        batch_size=10,
-        seq_len=1000,
-        n_features=5,
-        partition=True,
-        prior_hyperparameters={},
-        eval_pos_sampler=eval_pos_sampler,
-    )
-
-    print()
+#
+# if __name__ == "__main__":
+#     import matplotlib.pyplot as plt
+#     import numpy as np
+#     import torch
+#     from scipy.stats import beta as beta_dist
+#
+#     import torch
+#     import os
+#     from pathlib import Path
+#
+#     def plot_beta_pdf(alpha, beta):
+#         """Plots the probability density of your relatedness factor."""
+#         x = np.linspace(0, 1, 100)
+#         y = beta_dist.pdf(x, alpha, beta)
+#         plt.figure(figsize=(6, 3))
+#         plt.plot(x, y, "r-", lw=2)
+#         plt.fill_between(x, y, alpha=0.2, color="red")
+#         plt.title(f"Relatedness Distribution: Beta(α={alpha}, β={beta})")
+#         plt.xlabel("Relatedness Factor (0=Identical, 1=Independent)")
+#         plt.ylabel("Density")
+#         plt.grid(True, alpha=0.3)
+#         plt.show()
+#
+#     def plot_relatedness_static(batch, pair_idx=0):
+#         """
+#         Standard Matplotlib 3D plot.
+#         Renders directly in PyCharm's SciView or a popup window.
+#         """
+#         # 1. Extraction (T, B, D structure)
+#         target_idx = pair_idx * 2
+#         related_idx = target_idx + 1
+#
+#         # x: [T, B, D], y: [T, B]
+#         # We take the first two dimensions of X for the ground plane
+#         x_target = batch.x[:, target_idx, 1:3].detach().cpu().numpy()
+#         y_target = batch.y[:, target_idx].detach().cpu().numpy()
+#
+#         x_related = batch.x[:, related_idx, 1:3].detach().cpu().numpy()
+#         y_related = batch.y[:, related_idx].detach().cpu().numpy()
+#
+#         rel_val = batch.style[related_idx].item()
+#
+#         # 2. Setup Figure
+#         fig = plt.figure(figsize=(12, 5))
+#
+#         # Subplot 1: The Beta Distribution (To see the "Why")
+#         ax1 = fig.add_subplot(1, 2, 1)
+#         x_beta = np.linspace(0, 1, 500)
+#         y_beta = beta_dist.pdf(x_beta, 0.1, 20)
+#         ax1.plot(x_beta, y_beta, color="red", lw=2)
+#         ax1.fill_between(x_beta, y_beta, color="red", alpha=0.1)
+#         ax1.axvline(
+#             rel_val,
+#             color="black",
+#             linestyle="--",
+#             label=f"Current Alpha: {rel_val:.4f}",
+#         )
+#         ax1.set_title("Beta(0.1, 20) Prior")
+#         ax1.set_xlabel("Relatedness Factor")
+#         ax1.legend()
+#
+#         # Subplot 2: The 3D Task Surface
+#         ax2 = fig.add_subplot(1, 2, 2, projection="3d")
+#
+#         # Plot Target points
+#         ax2.scatter(
+#             x_target[:, 0],
+#             x_target[:, 1],
+#             y_target,
+#             c="blue",
+#             label="Target Task",
+#             s=10,
+#             alpha=0.6,
+#         )
+#
+#         # Plot Related points
+#         ax2.scatter(
+#             x_related[:, 0],
+#             x_related[:, 1],
+#             y_related,
+#             c="red",
+#             label="Related Task",
+#             s=10,
+#             alpha=0.6,
+#         )
+#
+#         ax2.set_title(f"Task Comparison (α={rel_val:.6f})")
+#         ax2.set_xlabel("HP 1")
+#         ax2.set_ylabel("HP 2")
+#         ax2.set_zlabel("Y Value")
+#         ax2.legend()
+#
+#         plt.tight_layout()
+#         plt.show()
+#
+#     # 1. Setup Parameters
+#     batch_size = 4
+#     seq_len = 50
+#     num_features = 5
+#     single_eval_pos = 40
+#
+#     # Controlled relatedness for plotting:
+#     # [Very Similar, Somewhat Similar, Different, Very Different]
+#     alpha = 0.1
+#     beta = 20
+#     # Concentration and Spread
+#     # * Both > 1 (Unimodal): The distribution has a "hump" (mode). If $\alpha = \beta$, the mass
+#     # is perfectly centered at $0.5$.
+#     # * Both < 1 (U-Shaped): The mass pushes toward the boundaries ($0$ and $1$),
+#     # making extreme values more likely than middle values.
+#     # * One < 1 and One > 1: The mass accumulates aggressively
+#     # at one of the boundaries. In your specific case ($\alpha=0.1, \beta=20$), you have an L-shaped distribution
+#     # where the density spikes at 0 and decays rapidly.
+#     relatedness = np.random.beta(alpha, beta, size=(batch_size // 2,))
+#
+#     # 2. Generate Batch
+#     # Note: Modify your get_batch_train to accept 'fixed_relatedness' if desired,
+#     # or just use the logic below to visualize a standard sample.
+#     batch = get_batch_train(
+#         batch_size=batch_size,
+#         seq_len=seq_len,
+#         num_features=num_features,
+#         single_eval_pos=single_eval_pos,
+#         # alpha=0.1,
+#         # beta=20
+#         relatedness=relatedness,
+#         y0=0.5,
+#         ymax=1,
+#     )
+#
+#     plot_relatedness_static(batch, pair_idx=1)
+#     # 4. Plot the Distribution PDF for Context
+#     x = np.linspace(0, 1, 100)
+#     y = beta_dist.pdf(x, 0.1, 20)
+#
+#     plt.figure(figsize=(6, 4))
+#     plt.plot(x, y, color="green")
+#     plt.fill_between(x, y, alpha=0.2, color="green")
+#     plt.title("Beta(0.1, 20) Distribution PDF")
+#     plt.xlabel("Relatedness Factor (alpha)")
+#     plt.ylabel("Density")
+#     plt.show()
+#
+#     get_batch_mixed(
+#         batch_size=12,
+#         seq_len=100,
+#         num_features=5,
+#         single_eval_pos=50,
+#         share_unrelated_tasks=0.3,
+#     )
+#
+#     import time
+#     import cloudpickle
+#     from pfns4hpo.priors.utils import PriorDataLoader, get_expon_sep_sampler
+#     from tqdm import tqdm
+#
+#     from dotenv import load_dotenv
+#
+#     def store_batch(
+#         path,
+#         chunk_id,
+#         chunk_size,
+#         batch_size,
+#         seq_len,
+#         n_features,
+#         partition,
+#         prior_hyperparameters,
+#     ):
+#         if partition:
+#             partition_id = chunk_id // 1000
+#             chunk_dir = os.path.join(path, f"partition_{partition_id}")
+#             chunk_file = os.path.join(chunk_dir, f"chunk_{chunk_id}.pkl")
+#             os.makedirs(chunk_dir, exist_ok=True)
+#         else:
+#             chunk_file = os.path.join(path, f"chunk_{chunk_id}.pkl")
+#
+#         if not os.path.exists(chunk_file):
+#             np.random.seed((os.getpid() * int(time.time())) % 123456789)
+#             chunk_data = []
+#             for bid in tqdm(range(chunk_size // batch_size)):
+#                 if eval_pos_sampler is None:
+#                     # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
+#                     single_eval_pos = int(
+#                         np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+#                     )
+#                 else:
+#                     single_eval_pos = eval_pos_sampler()
+#                 assert single_eval_pos < seq_len
+#                 b = prior.get_batch(
+#                     batch_size=batch_size,
+#                     single_eval_pos=single_eval_pos,
+#                     seq_len=seq_len,
+#                     num_features=n_features,
+#                     hyperparameters=prior_hyperparameters,
+#                 )
+#                 chunk_data.append((single_eval_pos, b))
+#             with open(chunk_file, "wb") as file:
+#                 cloudpickle.dump(chunk_data, file)
+#         else:
+#             print("Already done.")
+#
+#     load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
+#
+#     path = os.getenv("DATADIR") + "priors/same_task_new_sample_prior/"
+#     os.makedirs(path, exist_ok=True)
+#
+#     # dl = get_batch_to_dataloader(sampler.get_batch)
+#     # prior = sampler
+#     eval_pos_sampler = get_expon_sep_sampler(seq_len=1000, base=2.0, min_eval_pos=1)
+#
+#     # Test the raw store batch call  -------------
+#     store_batch(
+#         path=path,
+#         chunk_id=0,
+#         chunk_size=1000,
+#         batch_size=25,
+#         seq_len=1000,
+#         n_features=5,
+#         partition=True,
+#         prior_hyperparameters={},
+#     )
+#
+#     # test storing via the PriorDataLoader interface ------------
+#     pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
+#
+    # # fixme: here we will need to call multiple times to get different numbers of features!
+    # pdl.store_prior(
+    #     prior,
+    #     local=True,
+    #     chunk_size=20,
+    #     batch_size=10,
+    #     seq_len=1000,
+    #     n_features=5,
+    #     partition=True,
+    #     prior_hyperparameters={},
+    #     eval_pos_sampler=eval_pos_sampler,
+    # )
+    #
+    # print()
 
     # # taken from pfns4hpo.main ----------------------------------------
 

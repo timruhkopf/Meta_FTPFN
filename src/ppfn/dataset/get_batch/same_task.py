@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from pathlib import Path
 import torch
 import numpy as np
 
@@ -95,96 +94,95 @@ class Prior:
         self.get_batch = get_batch_fn
 
 
-if __name__ == "__main__":
-    import os
-    import time
-    import cloudpickle
-    from pfns4hpo.priors.utils import PriorDataLoader, get_expon_sep_sampler
-    from tqdm import tqdm
-
-    from dotenv import load_dotenv
-
-    def store_batch(
-        path,
-        chunk_id,
-        chunk_size,
-        batch_size,
-        seq_len,
-        n_features,
-        partition,
-        prior_hyperparameters,
-    ):
-        if partition:
-            partition_id = chunk_id // 1000
-            chunk_dir = os.path.join(path, f"partition_{partition_id}")
-            chunk_file = os.path.join(chunk_dir, f"chunk_{chunk_id}.pkl")
-            os.makedirs(chunk_dir, exist_ok=True)
-        else:
-            chunk_file = os.path.join(path, f"chunk_{chunk_id}.pkl")
-
-        if not os.path.exists(chunk_file):
-            np.random.seed((os.getpid() * int(time.time())) % 123456789)
-            chunk_data = []
-            for bid in tqdm(range(chunk_size // batch_size)):
-                if eval_pos_sampler is None:
-                    # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-                    single_eval_pos = int(
-                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
-                    )
-                else:
-                    single_eval_pos = eval_pos_sampler()
-                assert single_eval_pos < seq_len
-                b = prior.get_batch(
-                    batch_size=batch_size,
-                    single_eval_pos=single_eval_pos,
-                    seq_len=seq_len,
-                    num_features=n_features,
-                    hyperparameters=prior_hyperparameters,
-                )
-                chunk_data.append((single_eval_pos, b))
-            with open(chunk_file, "wb") as file:
-                cloudpickle.dump(chunk_data, file)
-        else:
-            print("Already done.")
-
-    load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
-
-    path = os.getenv("DATADIR") + "priors/same_task_new_sample_prior/"
-    os.makedirs(path, exist_ok=True)
+# if __name__ == "__main__":
+    # import os
+    # import time
+    # import cloudpickle
+    # from tqdm import tqdm
+    #
+    # from dotenv import load_dotenv
+    #
+    # def store_batch(
+    #     path,
+    #     chunk_id,
+    #     chunk_size,
+    #     batch_size,
+    #     seq_len,
+    #     n_features,
+    #     partition,
+    #     prior_hyperparameters,
+    # ):
+    #     if partition:
+    #         partition_id = chunk_id // 1000
+    #         chunk_dir = os.path.join(path, f"partition_{partition_id}")
+    #         chunk_file = os.path.join(chunk_dir, f"chunk_{chunk_id}.pkl")
+    #         os.makedirs(chunk_dir, exist_ok=True)
+    #     else:
+    #         chunk_file = os.path.join(path, f"chunk_{chunk_id}.pkl")
+    #
+    #     if not os.path.exists(chunk_file):
+    #         np.random.seed((os.getpid() * int(time.time())) % 123456789)
+    #         chunk_data = []
+    #         for bid in tqdm(range(chunk_size // batch_size)):
+    #             if eval_pos_sampler is None:
+    #                 # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
+    #                 single_eval_pos = int(
+    #                     np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+    #                 )
+    #             else:
+    #                 single_eval_pos = eval_pos_sampler()
+    #             assert single_eval_pos < seq_len
+    #             b = prior.get_batch(
+    #                 batch_size=batch_size,
+    #                 single_eval_pos=single_eval_pos,
+    #                 seq_len=seq_len,
+    #                 num_features=n_features,
+    #                 hyperparameters=prior_hyperparameters,
+    #             )
+    #             chunk_data.append((single_eval_pos, b))
+    #         with open(chunk_file, "wb") as file:
+    #             cloudpickle.dump(chunk_data, file)
+    #     else:
+    #         print("Already done.")
+    #
+    # load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
+    #
+    # path = os.getenv("DATADIR") + "priors/same_task_new_sample_prior/"
+    # os.makedirs(path, exist_ok=True)
 
     # dl = get_batch_to_dataloader(sampler.get_batch)
-    prior = sampler
-    eval_pos_sampler = get_expon_sep_sampler(seq_len=1000, base=2.0, min_eval_pos=1)
-
-    # Test the raw store batch call  -------------
-    store_batch(
-        path=path,
-        chunk_id=0,
-        chunk_size=1000,
-        batch_size=25,
-        seq_len=1000,
-        n_features=5,
-        partition=True,
-        prior_hyperparameters={},
-    )
-
-    # test storing via the PriorDataLoader interface ------------
-    pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
-
-    # fixme: here we will need to call multiple times to get different numbers of features!
-    pdl.store_prior(
-        prior,
-        local=True,
-        chunk_size=20,
-        batch_size=10,
-        seq_len=1000,
-        n_features=5,
-        partition=True,
-        prior_hyperparameters={},
-        eval_pos_sampler=eval_pos_sampler,
-    )
-
-    print()
+    # prior = sampler
+    # eval_pos_sampler = get_expon_sep_sampler(seq_len=1000, base=2.0, min_eval_pos=1)
+    #
+    # # Test the raw store batch call  -------------
+    # store_batch(
+    #     path=path,
+    #     chunk_id=0,
+    #     chunk_size=1000,
+    #     batch_size=25,
+    #     seq_len=1000,
+    #     n_features=5,
+    #     partition=True,
+    #     prior_hyperparameters={},
+    # )
+    #
+    # # test storing via the PriorDataLoader interface ------------
+    # pdl = PriorDataLoader(load_path=path, subsample=1, n_chunks=10)
+    #
+    # # fixme: here we will need to call multiple times to get different numbers of features!
+    # pdl.store_prior(
+    #     prior,
+    #     local=True,
+    #     chunk_size=20,
+    #     batch_size=10,
+    #     seq_len=1000,
+    #     n_features=5,
+    #     partition=True,
+    #     prior_hyperparameters={},
+    #     eval_pos_sampler=eval_pos_sampler,
+    # )
+    #
+    # print()
 
     # # taken from pfns4hpo.main ----------------------------------------
 

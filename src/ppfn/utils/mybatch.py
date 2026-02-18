@@ -31,7 +31,7 @@ class MyBatch(Batch):
             )
 
         # Create the new instance
-        return MyBatch(x=new_x, y=new_y, target_y=new_target_y, style=new_style)
+        return MyBatch(x=new_x, y=new_y, target_y=new_target_y, style=new_style, src_key_padding_mask=new_src_key_padding_mask)
 
     def to(self, device: torch.device) -> "MyBatch":
         """Move all tensors in the batch to the specified device."""

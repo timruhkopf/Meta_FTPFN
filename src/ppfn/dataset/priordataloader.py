@@ -1,6 +1,9 @@
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
+
+from typing import Callable
 import os
 import pathlib
-from typing import Callable
 
 import numpy as np
 import cloudpickle
@@ -12,7 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-import torch.distributed as dist
+
 
 
 class StoredPriorDataset(torch.utils.data.Dataset):
@@ -155,11 +158,6 @@ class StoredPriorDataset(torch.utils.data.Dataset):
 
 
 # FIXME: Untested DDP dataloader preparation
-import torch
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
-
-
 def prepare_dataloader(
     dataset: Dataset, batch_size: int, pin_memory: bool = True, num_workers=4
 ) -> DataLoader:

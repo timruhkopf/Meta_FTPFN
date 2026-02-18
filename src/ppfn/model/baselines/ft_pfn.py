@@ -16,6 +16,5 @@ def ft_pfn():
         target_path=Path(model_path), version="0.0.1", device="cpu"
     ).model
 
-    criterion = frozen_model.criterion
 
     return frozen_model
