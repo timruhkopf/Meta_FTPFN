@@ -28,7 +28,7 @@ class SameTaskTransform(TaskTransform):
         related_task = target_task.clone()  # Create a separate instance to avoid side effects
         if self.resample_y0_ymax:
             related_task.sample_y0_ymax()
-        return related_task
+        return related_task, 1.0  # Return the related task and a relatedness score of 1.0
 
 
 class InputWarpingTransform(TaskTransform):
@@ -55,7 +55,7 @@ class InputWarpingTransform(TaskTransform):
 
         # 3. Patch the method onto the cloned instance
         related_task.get_marginal_curve = warped_get_marginal_curve
-        return related_task
+        return related_task, 1.0 - abs(warp_power - 1)  # Relatedness score based on how much warping was applied
 
 
 class FidelityWarpTransform:
@@ -105,7 +105,7 @@ class FidelityWarpTransform:
 
         # 3. Patch the instance
         related_task.get_marginal_curve = warped_get_marginal_curve
-        return related_task
+        return related_task, 1.0 - abs(alpha - 1)  # Relatedness score based on how much warping was applied
 
 
 class LatentInputTransform(TaskTransform):
@@ -162,7 +162,7 @@ class LatentInputTransform(TaskTransform):
 
         # target_task.num_inputs is still the original value!
         # Plotting will work, and the BNN is safely wide.
-        return related_task
+        return related_task, 1.0 - abs(latent_target - latent_related)  # Relatedness score based on latent distance
 
 
 class OutputInterpolationTransform(TaskTransform):
@@ -207,7 +207,7 @@ class OutputInterpolationTransform(TaskTransform):
 
         # Patch the related_task instance
         related_task.get_marginal_curve = interpolated_get_marginal_curve
-        return related_task
+        return related_task, 1.0 - abs(alpha - 0.5) * 2  # Relatedness score based on how close alpha is to 0.5 (equal blend)
 
 
 if __name__ == '__main__':

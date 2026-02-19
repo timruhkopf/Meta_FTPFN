@@ -21,6 +21,7 @@ def get_batch(
 
     x_list, y_list = [], []
 
+    relation = []
     for i in range(batch_size // 2):
 
         # 1. Initialize the base state
@@ -30,11 +31,14 @@ def get_batch(
         # 2. Apply transform to get two related functional states
         # target_task and related_m are callables (BNNs)
         if transform:
-            related_m = transform(target_task)
+            related_m, relatedness = transform(target_task)
         else:
             # independent sampling of related task, no relation to target task
             related_m = target_task.clone()
             related_m.sample_task()
+            relatedness = 0
+
+        relation.append(relatedness)
 
         # 3. Generate data for both models in the pair
         for current_task in [target_task, related_m]:
@@ -62,8 +66,10 @@ def get_batch(
     x = torch.stack(x_list, dim=1).to(device).float()
     y = torch.stack(y_list, dim=1).to(device).float()
 
-    # fixme: other attributes like single_eval_pos and style
-    return MyBatch(x=x, y=y, target_y=y)
+    stlye = torch.tensor(relation, device=device).float().unsqueeze(1).repeat(1, 2).view(-1)  # Shape: (batch_size * 2,)
+
+    # fixme: src_key_padding_mask
+    return MyBatch(x=x, y=y, target_y=y, style=stlye, src_key_padding_mask=None, single_eval_pos=single_eval_pos)
 
 if __name__ == '__main__':
 

@@ -31,7 +31,11 @@ class MyBatch(Batch):
             )
 
         # Create the new instance
-        return MyBatch(x=new_x, y=new_y, target_y=new_target_y, style=new_style, src_key_padding_mask=new_src_key_padding_mask)
+        return MyBatch(
+            x=new_x, y=new_y, target_y=new_target_y,
+            style=new_style, src_key_padding_mask=new_src_key_padding_mask,
+            single_eval_pos=self.single_eval_pos  # Assuming single_eval_pos is the same for both batches
+        )
 
     def to(self, device: torch.device) -> "MyBatch":
         """Move all tensors in the batch to the specified device."""
@@ -40,4 +44,6 @@ class MyBatch(Batch):
             y=self.y.to(device),
             target_y=self.target_y.to(device),
             style=self.style.to(device) if self.style is not None else None,
-        )
+            src_key_padding_mask=self.src_key_padding_mask.to(device) if self.src_key_padding_mask is not None else None,
+            single_eval_pos=self.single_eval_pos
+       )
