@@ -1,4 +1,3 @@
-dataset_name: task_latent
 sample_prior: False
 dataset_class:
 
@@ -7,9 +6,7 @@ dataset_class:
 
 
 store_prior: # method call
-  get_batch_fn:
-    _target_: ppfn.dataset.get_batch.task_latent.get_batch_latent
-    _partial_: True
+  get_batch_fn: ???
 
   n_chunks: 300 # 400  # array size
   chunk_size: 6660 # 5000 # number of items (tasks) per file

@@ -1,0 +1,17 @@
+defaults:
+    - default
+    - _self_
+
+dataset_name: bnn_interpolation
+
+store_prior:
+#  prior:
+#    _target_: ppfn.dataset.get_batch.same_task.Prior
+  get_batch_fn:
+    _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
+    _partial_: True
+    transform:
+      _target_: ppfn.dataset.get_batch.task_transforms.OutputInterpolationTransform
+      alpha: Null
+      sample_alpha_fn: Null
+      resample_y0_ymax: False
