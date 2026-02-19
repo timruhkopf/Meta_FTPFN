@@ -12,7 +12,7 @@ from ppfn.dataset.prior import (
     MultiFidelityTask,
 )
 
-from ppfn.dataset.get_batch.ftpfn import get_batch as ftpfn_get_batch
+from ppfn.dataset.get_batch.deprec.ftpfn import get_batch as ftpfn_get_batch
 from ppfn.model.mymodel.ft_ppfn import MyBatch
 
 

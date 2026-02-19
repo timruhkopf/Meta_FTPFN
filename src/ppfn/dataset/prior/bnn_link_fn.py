@@ -239,7 +239,7 @@ class VectorizedParameterLinker:
 
         return w @ y_final
 
-    def curve_factory(self, bnn_outputs, y0, ymax, noise=True) -> Callable:
+    def curve_factory(self, bnn_outputs, y0, ymax) -> Callable:
         """
         Maps hyperparameter configurations to functional learning curve evaluators.
 
@@ -288,7 +288,7 @@ class VectorizedParameterLinker:
             bnn_outputs, y0, ymax, n_curves=NCURVES
         )
 
-        def parametrized_curve_model(x_, cid=0):
+        def parametrized_curve_model(x_, cid=0, noise=True):
             y_ = self.weighted_curve_model_vectorized(
                 x_,
                 Y0=Y0,
@@ -302,6 +302,9 @@ class VectorizedParameterLinker:
                 PREC=PREC[cid],
             )
             # y_ = comb(x_, Y0=Y0, Yinf=Yinf[cid], sigma=sigma_x[cid], L=L[cid], Xsat=Xsat[cid], alpha=alpha[cid], Rpsat=Rpsat[cid], w=w[cid], PREC=PREC[cid])
+            if not noise:
+                return np.clip(y_, 0.0, 1.0)
+
             y_noise = np.random.normal(size=x_.shape, scale=sigma[cid])
             # y_noise = progress_noise(x_,1,L)
             # y_noise *= np.minimum(y_,1.0-y_)/4*sigma_y_scaler[cid]

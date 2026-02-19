@@ -5,7 +5,7 @@ import cloudpickle
 from torch.utils.data import IterableDataset
 
 from pfns4hpo.priors.utils import PriorDataLoader
-from ppfn.dataset.get_batch.same_task import get_batch as same_task_get_batch, Prior
+from ppfn.dataset.get_batch.deprec.same_task import get_batch as same_task_get_batch, Prior
 from ppfn.model.mymodel.ft_ppfn import MyBatch
 
 
@@ -98,7 +98,7 @@ if __name__ == "__main__":
 
     next(iter(same_task_dataset))
 
-    from ppfn.dataset.get_batch.ftpfn import get_batch as unrelated_task_get_batch
+    from ppfn.dataset.get_batch.deprec.ftpfn import get_batch as unrelated_task_get_batch
 
     unrelated_task_dataset = SyntheticTaskMetaTestDataset(
         data_path="/home/ruhkopf/PycharmProjects/Meta_FTPFN/data/validation",

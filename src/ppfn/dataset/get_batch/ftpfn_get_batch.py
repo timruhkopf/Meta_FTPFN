@@ -54,13 +54,14 @@ def get_batch(
         curve_configs = np.random.uniform(size=(seq_len, num_params))
 
         # (2) get the curves for these configurations
+        allocation = allocation_prior.sample_abstract_allocation(single_eval_pos)
         curves = dataset_prior.get_marginal_curve(
             torch.from_numpy(curve_configs).float()
         )  # get callable to evaluate (hp, t) --> y
 
         # (3) map the allocation to actual (x,y) values
         x_i, y_i = allocation_prior.parse_allocation_into_sequence(
-            curve_configs, curves, num_params, single_eval_pos
+            curve_configs, curves, num_params, single_eval_pos, allocation
         )
 
         x.append(x_i)

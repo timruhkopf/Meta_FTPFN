@@ -109,6 +109,28 @@ def test_curve_factory_equivalence(test_setup):
                 f"Curve mismatch at cid {cid}"
             )
 
+def test_vectorized_curve_factory_no_noise(test_setup):
+    """Specifically test that the vectorized curve factory produces the same output as the original when noise is disabled."""
+    prior, bnn_outputs, y0, ymax, x_eval = test_setup
+
+    vect_linker = VectorizedParameterLinker(prior)
+
+    # with patch("numpy.random.normal", return_value=np.zeros_like(x_eval)):
+    vect_curve_fn = vect_linker.curve_factory(bnn_outputs, y0, ymax)
+
+    for cid in range(bnn_outputs.shape[0]):
+        y_orig = vect_curve_fn(x_eval, cid=cid, noise=False)
+        y_vect = vect_curve_fn(x_eval, cid=cid, noise=False)
+        y_noise = vect_curve_fn(x_eval, cid=cid, noise=True)
+
+        assert not np.allclose(y_orig, y_noise, atol=1e-9), (
+            f"Noise should affect the output at cid {cid}"
+        )
+
+        assert np.allclose(y_orig, y_vect, atol=1e-9), (
+            f"Curve mismatch at cid {cid} with noise disabled"
+        )
+
 
 def test_noise_scaling_consistency(test_setup):
     """Verifies that the sigma parameter is being indexed correctly for noise."""

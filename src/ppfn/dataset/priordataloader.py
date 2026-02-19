@@ -177,7 +177,7 @@ def prepare_dataloader(
 
 if __name__ == "__main__":
     from tempfile import TemporaryDirectory
-    from ppfn.dataset.get_batch.bnn_output_interpolation import get_batch_mixed
+    from ppfn.dataset.get_batch.deprec.bnn_output_interpolation import get_batch_mixed
 
     import os
     import torch.distributed as dist

@@ -13,13 +13,13 @@ from torch import vmap
 
 from ppfn.dataset.prior.bnn_link_fn import VectorizedParameterLinker
 from ppfn.dataset.prior.bnn_prior import BNNPrior
-
+from copy import deepcopy
 
 class MultiFidelityTask:
     """Container for a single MLP-based synthetic problem."""
 
     def __init__(self, num_inputs, num_outputs):
-        self.num_inputs = num_inputs
+        self._num_inputs = num_inputs
         self.num_outputs = num_outputs
         self.y0 = None
         self.ymax = None
@@ -28,6 +28,19 @@ class MultiFidelityTask:
 
         self.model = self.bnn_prior.sample()
         self.linker = VectorizedParameterLinker(self.bnn_prior)
+
+    @property
+    def num_inputs(self):
+        return self._num_inputs
+
+    @num_inputs.setter
+    def num_inputs(self, value):
+        self._num_inputs = value
+        # Whenever num_inputs changes, we need to reinitialize the BNN prior and model
+        self.bnn_prior = BNNPrior(self._num_inputs, self.num_outputs)
+        self.model = self.bnn_prior.sample()
+        self.linker = VectorizedParameterLinker(self.bnn_prior)
+
 
     def __call__(self, hyperparams, fidelities):
         """
@@ -43,7 +56,7 @@ class MultiFidelityTask:
         vectorized_model = vmap(curve_model)
         return vectorized_model(fidelities)  # Shape: (num_configs, num_fidelities)
 
-    def get_marginal_curve(self, hyperparams, noise=True):
+    def get_marginal_curve(self, hyperparams):
         """
         Maps hyperparameter configurations to functional learning curve evaluators.
 
@@ -62,7 +75,7 @@ class MultiFidelityTask:
             )  # unbounded Bnn outputs are need to be bounded to the parameter ranges (and looked up in the y ecdf)
 
         parametrized_curve_model = self.linker.curve_factory(
-            bnn_outputs.numpy(), self.y0, self.ymax, noise=noise
+            bnn_outputs.numpy(), self.y0, self.ymax,
         )
 
         return parametrized_curve_model
@@ -89,110 +102,71 @@ class MultiFidelityTask:
         self.y0 = min(u1, u2)
         self.ymax = max(u1, u2) if np.random.uniform() < 0.25 else 1.0
 
+    def clone(self):
+        """Creates a deep copy of the task state."""
+        # We use a trick to create a new instance without re-initializing everything
+        cls = self.__class__
+        new_task = cls.__new__(cls)
+        new_task.__dict__.update( deepcopy(self.__dict__))
+        return new_task
+
+    def plot_surface(self, ax=None, num_hp=40, num_fid=60, title="Task Surface"):
+        """
+        Plots the HP-Fidelity-Performance surface.
+        Works even if the task is wrapped by a Transform.
+        """
+        if ax is None:
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111, projection='3d')
+
+        # 1. Define Grids (Assume we plot the first HP dimension)
+        hp_axis = np.linspace(0, 1, num_hp)
+        fid_axis = np.linspace(0.01, 1.0, num_fid)
+        HP, FID = np.meshgrid(hp_axis, fid_axis)
+
+        # 2. Prepare HP tensor for BNN (shape: num_hp, num_inputs)
+        # We fill other dimensions with 0.5 if num_inputs > 1
+        # FIXME: this is a hack to handle the case when num_inputs > 1, we should ideally have a more systematic way to visualize in that case (e.g. fix other HPs to some value or plot multiple surfaces)
+        hp_configs = np.full((num_hp, self.num_inputs), 0.5)
+        hp_configs[:, 0] = hp_axis
+        hp_tensor = torch.from_numpy(hp_configs).float()
+
+        # 3. Get curves (this triggers the wrapped logic if transformed!)
+        # Disable noise for a clean surface plot
+        curve_fn = self.get_marginal_curve(hp_tensor)
+
+        # 4. Evaluate surface
+        Z = np.zeros((num_fid, num_hp))
+        for i in range(num_hp):
+            Z[:, i] = curve_fn(fid_axis, cid=i)
+
+        # 5. Visualization
+        ax.plot_surface(
+            HP, FID, Z,
+            cmap="turbo",
+            antialiased=True,
+            alpha=0.8,
+            rcount=num_fid, ccount=num_hp
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel("HP[0]")
+        ax.set_ylabel("Fidelity")
+        ax.set_zlabel("Perf")
+        ax.set_zlim(0, 1)
+        ax.view_init(elev=25, azim=-130)
+
+        return ax
+
 
 if __name__ == "__main__":
-    import numpy as np
-    import torch
-    import plotly.graph_objects as go
     import matplotlib.pyplot as plt
 
-    from plotly.subplots import make_subplots
+    task = MultiFidelityTask(num_inputs=1, num_outputs=23)
+    task.sample_task()
 
-    def plot_blended_surfaces(linspace=np.linspace(0, 1, 50), alpha=0.5):
-        # 1. Setup - Generate two distinct tasks
-        def get_surface_data(linspace):
-            task = MultiFidelityTask(num_inputs=1, num_outputs=23)
-            task.sample_task()
-            curve_model = task.get_marginal_curve(
-                torch.from_numpy(linspace).float().view(-1, 1), noise=False
-            )
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    task.plot_surface(ax=ax, title="Sampled Multi-Fidelity Task Surface")
+    plt.show()
 
-            z = np.zeros((len(linspace), len(linspace)))
-            for i in range(len(linspace)):
-                with torch.no_grad():
-                    preds = curve_model(torch.from_numpy(linspace).float(), i)
-                    z[:, i] = np.array(preds).flatten()
-            return z
-
-        z1 = get_surface_data(linspace)
-        z2 = get_surface_data(linspace)
-
-        # 2. Compute the weighted average (the blend)
-        # Equation: $Z_{blend} = (1 - \alpha)Z_1 + \alpha Z_2$
-        z_blend = (1 - alpha) * z1 + alpha * z2
-
-        # 3. Create Subplots (1 row, 3 columns)
-        fig = make_subplots(
-            rows=1,
-            cols=3,
-            specs=[[{"type": "surface"}, {"type": "surface"}, {"type": "surface"}]],
-            subplot_titles=("Task A", f"Blended (α={alpha})", "Task B"),
-        )
-
-        # Helper to add surfaces easily
-        surfaces = [z1, z_blend, z2]
-        for idx, z in enumerate(surfaces, start=1):
-            fig.add_trace(
-                go.Surface(
-                    z=z, x=linspace, y=linspace, colorscale="Viridis", showscale=False
-                ),
-                row=1,
-                col=idx,
-            )
-
-        # 4. Layout Updates
-        fig.update_layout(
-            title_text="Multi-Fidelity Task Blending",
-            height=600,
-            width=1500,
-            scene=dict(xaxis_title="HP", yaxis_title="Fid", zaxis_title="Perf"),
-            scene2=dict(xaxis_title="HP", yaxis_title="Fid", zaxis_title="Perf"),
-            scene3=dict(xaxis_title="HP", yaxis_title="Fid", zaxis_title="Perf"),
-        )
-
-        fig.show()
-
-    # Run it with alpha=0.5 for an equal mix
-    plot_blended_surfaces(alpha=0.5)
-
-    def plot_linesurface_2d_interactive(linspace=np.linspace(0, 1, 50)):
-        # 1. Setup grids and task
-        task = MultiFidelityTask(num_inputs=1, num_outputs=23)
-        task.sample_task()
-        curve_model = task.get_marginal_curve(
-            torch.from_numpy(linspace).float().view(-1, 1), noise=False
-        )
-        # Initialize Z matrix: rows = fidelity, cols = hyperparameters
-        z_values = np.zeros((len(linspace), len(linspace)))
-        # 2. Evaluate the model
-        for i in range(len(linspace)):
-            with torch.no_grad():
-                preds = curve_model(torch.from_numpy(linspace).float(), i)
-                # Ensure we handle both tensor and numpy returns
-                z_values[:, i] = np.array(preds).flatten()
-        # 3. Create the Interactive Plot
-        fig = go.Figure(
-            data=[
-                go.Surface(
-                    z=z_values,
-                    x=linspace,  # Hyperparameters
-                    y=linspace,  # Fidelities
-                    colorscale="Viridis",
-                    colorbar_title="Performance",
-                )
-            ]
-        )
-        fig.update_layout(
-            title="Multi-Fidelity Performance Surface",
-            scene=dict(
-                xaxis_title="Hyperparameter",
-                yaxis_title="Fidelity",
-                zaxis_title="Predicted Performance",
-            ),
-            margin=dict(l=0, r=0, b=0, t=40),
-        )
-        fig.show()
-        # plot(fig)
-        plt.clf()
-
-    plot_linesurface_2d_interactive()

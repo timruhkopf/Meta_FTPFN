@@ -77,114 +77,6 @@ class AllocationPrior:
 
         return cutoff_per_curve, epochs_per_curve, ordering
 
-    @deprecated(
-        "This method is the original, unoptimized version of parse_allocation_into_sequence. "
-        "It is left here for reference and testing purposes, but should not be used in production due to its inefficiency."
-    )
-    def parse_allocation_into_sequence_slow(
-        self, curve_configs, curves, num_params, single_eval_pos, allocation
-    ):
-        """Determine x and y values for every curve in the sequence.
-
-        Args:
-            curve_configs (np.ndarray): Array of shape (self.seq_len, num_params) containing hyperparameter
-                configurations for each token in the sequence.
-            curves (callable): A function that takes x values and a curve index, returning y values.
-            single_eval_pos (int, optional): The cutoff position separating observations from queries.
-                Defaults to 0.
-        Returns:
-            tuple: A tuple containing:
-                - curve_xs (list): List of length seq_len, where each element is an array of x values
-                  for the corresponding curve.
-                - curve_ys (list): List of length seq_len, where each element is an array of y values
-                  for the corresponding curve.
-        """
-        # FIXME: THIS ENTIRE FUNCTION IS SUPER INEFFICIENT, because we loop over every single token
-        cutoff_per_curve, epochs_per_curve, ordering = (
-            allocation  # self.sample_abstract_allocation(single_eval_pos)
-        )
-
-        # NOTES:
-        # **curve_configs**: unit cube sampled hyperparameter configurations for every token in the sequence. Theses are
-        # candidate configs, from which we can draw observations and queries (repeatedly if more epochs are allocated
-        # or none if cutoff is zero for this curve)
-        # **cutoff_per_curve**: a mostly empty tensor, which is in reference to the sequence length curve_configs tensor.
-        # It tells us (=0) that we don't use this config at all, or (=k) that this particular config will have k epochs
-        # visible in the context (observations)
-        # **epochs_per_curve**: similar to cutoff_per_curve, but tells us how many total epochs (observations + queries)
-        # are allocated to this curve/config in the sequence; i.e. their difference will tell us how many query tokens
-        # will be in the future of this curve/config in the sequence.
-        # **curves**: callable that maps (x, curve_id) --> y values, where x are fidelity levels in [0, 1] and curve_id
-        # is the size of seq_len; i.e. each of the curve_configs has a corresponding curve mapping x --> y (even if not used)
-        # **ordering**: a tensor of shape (seq_len,) that tells us which token id is used at every token position in
-        # the sequence. To doing a count over the id from left to right tells us which epoch that token corresponds to.
-        # Notice, that len(np.unique(ordering)) is the number of unique configs in the sequence (incl. queries)
-
-        epoch = torch.zeros(self.seq_len)
-        id_curve = torch.zeros(self.seq_len)
-        curve_val = torch.zeros(self.seq_len)
-
-        # Based on the abstract allocation, which merely tells us how many epochs there are for an abstract unique
-        # hyperparameter index (which we can look up in curve_configs), we will now collect the fidelity array
-        curve_xs = []
-        curve_ys = []
-        for cid in range(self.seq_len):  # loop over every token
-            if epochs_per_curve[cid] > 0:
-                # create empty tensor that will hold the fidelity levels at which we want to evaluate a particular
-                # curve (hyperparameter config  )
-                x_ = np.zeros((epochs_per_curve[cid],))
-                if cutoff_per_curve[cid] > 0:  # observations (if any)
-                    # given the allocated budget create the fidelity level tensor for the observations we want to evaluate
-                    x_[: cutoff_per_curve[cid]] = (
-                        np.arange(1, cutoff_per_curve[cid] + 1) / self.n_levels
-                    )
-
-                if cutoff_per_curve[cid] < epochs_per_curve[cid]:  # queries (if any)
-                    # beyond the cutoff of this particular curve, we sample future fidelity levels
-                    # that we want to use as query points -- and evaluate with the curves callable
-                    x_[cutoff_per_curve[cid] :] = (
-                        np.random.choice(
-                            np.arange(cutoff_per_curve[cid] + 1, self.n_levels + 1),
-                            size=epochs_per_curve[cid] - cutoff_per_curve[cid],
-                            replace=False,
-                        )
-                        / self.n_levels
-                    )
-
-                curve_xs.append(x_)
-
-                # determine y's, by evaluating this curve at the fidelity levels x_
-                y_ = curves(x_, cid)
-                curve_ys.append(y_)
-
-            # an unused curve/config
-            else:
-                curve_xs.append(None)
-                curve_ys.append(None)
-
-        # construct the sequence tensors x and y based on the sampled ordering
-        # read the note on ordering above for details!
-        config = np.zeros((self.seq_len, num_params))
-        curve_counters = torch.zeros(self.seq_len).type(torch.int64)
-
-        for i in range(self.seq_len):
-            cid = ordering[i]
-            if i < single_eval_pos or curve_counters[cid] > 0:
-                id_curve[i] = cid + 1  # reserve ID 0 for queries
-            else:
-                id_curve[i] = 0  # queries for unseen curves always have ID 0
-            epoch[i] = curve_xs[cid][curve_counters[cid]]
-            config[i] = curve_configs[cid]
-            curve_val[i] = curve_ys[cid][curve_counters[cid]]
-            curve_counters[cid] += 1
-
-        x = torch.cat(
-            [torch.stack([id_curve, epoch], dim=1), torch.from_numpy(config)], dim=1
-        )
-        y = curve_val
-
-        return x, y
-
     def parse_allocation_into_sequence(
         self, curve_configs, curves, num_params, single_eval_pos, allocation
     ):
@@ -268,5 +160,114 @@ class AllocationPrior:
         )
 
         y = torch.from_numpy(curve_val).float()
+
+        return x, y
+
+    @deprecated(
+        "This method is the original, unoptimized version of parse_allocation_into_sequence. "
+        "It is left here for reference and testing purposes, but should not be used in production due to its inefficiency."
+    )
+    def parse_allocation_into_sequence_slow(
+        self, curve_configs, curves, num_params, single_eval_pos, allocation
+    ):
+        """Determine x and y values for every curve in the sequence.
+
+        Args:
+            curve_configs (np.ndarray): Array of shape (self.seq_len, num_params) containing hyperparameter
+                configurations for each token in the sequence.
+            curves (callable): A function that takes x values and a curve index, returning y values.
+            single_eval_pos (int, optional): The cutoff position separating observations from queries.
+                Defaults to 0.
+        Returns:
+            tuple: A tuple containing:
+                - curve_xs (list): List of length seq_len, where each element is an array of x values
+                  for the corresponding curve.
+                - curve_ys (list): List of length seq_len, where each element is an array of y values
+                  for the corresponding curve.
+        """
+        # FIXME: THIS ENTIRE FUNCTION IS SUPER INEFFICIENT, because we loop over every single token
+        cutoff_per_curve, epochs_per_curve, ordering = (
+            allocation  # self.sample_abstract_allocation(single_eval_pos)
+        )
+
+        # NOTES:
+        # **curve_configs**: unit cube sampled hyperparameter configurations for every token in the sequence. Theses are
+        # candidate configs, from which we can draw observations and queries (repeatedly if more epochs are allocated
+        # or none if cutoff is zero for this curve)
+        # **cutoff_per_curve**: a mostly empty tensor, which is in reference to the sequence length curve_configs tensor.
+        # It tells us (=0) that we don't use this config at all, or (=k) that this particular config will have k epochs
+        # visible in the context (observations)
+        # **epochs_per_curve**: similar to cutoff_per_curve, but tells us how many total epochs (observations + queries)
+        # are allocated to this curve/config in the sequence; i.e. their difference will tell us how many query tokens
+        # will be in the future of this curve/config in the sequence.
+        # **curves**: callable that maps (x, curve_id) --> y values, where x are fidelity levels in [0, 1] and curve_id
+        # is the size of seq_len; i.e. each of the curve_configs has a corresponding curve mapping x --> y (even if not used)
+        # **ordering**: a tensor of shape (seq_len,) that tells us which token id is used at every token position in
+        # the sequence. To doing a count over the id from left to right tells us which epoch that token corresponds to.
+        # Notice, that len(np.unique(ordering)) is the number of unique configs in the sequence (incl. queries)
+
+        epoch = torch.zeros(self.seq_len)
+        id_curve = torch.zeros(self.seq_len)
+        curve_val = torch.zeros(self.seq_len)
+
+        # Based on the abstract allocation, which merely tells us how many epochs there are for an abstract unique
+        # hyperparameter index (which we can look up in curve_configs), we will now collect the fidelity array
+        curve_xs = []
+        curve_ys = []
+        for cid in range(self.seq_len):  # loop over every token
+            if epochs_per_curve[cid] > 0:
+                # create empty tensor that will hold the fidelity levels at which we want to evaluate a particular
+                # curve (hyperparameter config  )
+                x_ = np.zeros((epochs_per_curve[cid],))
+                if cutoff_per_curve[cid] > 0:  # observations (if any)
+                    # given the allocated budget create the fidelity level tensor for the observations we want to evaluate
+                    x_[: cutoff_per_curve[cid]] = (
+                        np.arange(1, cutoff_per_curve[cid] + 1) / self.n_levels
+                    )
+
+                if cutoff_per_curve[cid] < epochs_per_curve[cid]:  # queries (if any)
+                    # beyond the cutoff of this particular curve, we sample future fidelity levels
+                    # that we want to use as query points -- and evaluate with the curves callable
+                    x_[cutoff_per_curve[cid] :] = (
+                        np.random.choice(
+                            np.arange(cutoff_per_curve[cid] + 1, self.n_levels + 1),
+                            size=epochs_per_curve[cid] - cutoff_per_curve[cid],
+                            replace=False,
+                        )
+                        / self.n_levels
+                    )
+
+                curve_xs.append(x_)
+
+                # determine y's, by evaluating this curve at the fidelity levels x_
+                # FIXME: the curves call here could be vmaped to be more efficient, but it would require changing the curves callable to handle arrays of x values instead of just one at a time
+                y_ = curves(x_, cid)
+                curve_ys.append(y_)
+
+            # an unused curve/config
+            else:
+                curve_xs.append(None)
+                curve_ys.append(None)
+
+        # construct the sequence tensors x and y based on the sampled ordering
+        # read the note on ordering above for details!
+        config = np.zeros((self.seq_len, num_params))
+        curve_counters = torch.zeros(self.seq_len).type(torch.int64)
+
+        for i in range(self.seq_len):
+            cid = ordering[i]
+            if i < single_eval_pos or curve_counters[cid] > 0:
+                id_curve[i] = cid + 1  # reserve ID 0 for queries
+            else:
+                id_curve[i] = 0  # queries for unseen curves always have ID 0
+            epoch[i] = curve_xs[cid][curve_counters[cid]]
+            config[i] = curve_configs[cid]
+            curve_val[i] = curve_ys[cid][curve_counters[cid]]
+            curve_counters[cid] += 1
+
+        x = torch.cat(
+            [torch.stack([id_curve, epoch], dim=1), torch.from_numpy(config)], dim=1
+        )
+        y = curve_val
 
         return x, y
