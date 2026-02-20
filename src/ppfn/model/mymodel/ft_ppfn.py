@@ -4,8 +4,10 @@ import os
 from pathlib import Path
 
 from typing import Mapping
-
+from ppfn.utils.load_ftpfn import load_frozen_model
+from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
 from ppfn.utils.mybatch import MyBatch
+
 import torch
 import torch.nn as nn
 
@@ -145,7 +147,7 @@ class FT_PPFN(HierarchicalPFN):
 
     @property
     def criterion(self):
-        return self.frozen_model.criterion 
+        return self.frozen_model.criterion
 
 
 if __name__ == "__main__":
