@@ -1,6 +1,6 @@
 from ppfn.model.baselines.ft_pfn_padding import PaddableTransformerModel
 
-from typing import Mapping
+from typing import Mapping, Optional
 from ppfn.utils.load_ftpfn import load_frozen_model
 from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
 from ppfn.utils.mybatch import MyBatch
@@ -47,7 +47,7 @@ class FT_PPFN(HierarchicalPFN):
 
     def parse_train_batch(
         self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None
-    ) -> MyBatch:
+    ) -> tuple[MyBatch, Optional[torch.Tensor]]:
         """
         Modify the batch for cross-fusion training.
         In training mode, we expect triplets of tasks in the batch:
@@ -105,7 +105,7 @@ class FT_PPFN(HierarchicalPFN):
 
     def parse_eval_batch(
         self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None
-    ) -> MyBatch:
+    ) -> tuple[MyBatch, Optional[torch.Tensor]]:
         """
         Modify the batch for cross-fusion evaluation.
         In evaluation mode, we expect:
@@ -186,7 +186,14 @@ class FT_PPFN(HierarchicalPFN):
             src_key_padding_mask=kwargs.get("src_key_padding_mask", None),
         )
 
+        # Remove any caller-provided mask from kwargs to avoid accidentally
+        # forwarding an unparsed src_key_padding_mask to frozen models that
+        # don't support padding. We'll re-insert the parsed mask only when
+        # the frozen model supports it.
+        kwargs.pop("src_key_padding_mask", None)
+
         if isinstance(self.frozen_model, PaddableTransformerModel):
+            # Insert the parsed/expanded mask that matches the batch joining
             kwargs.update(
                 {
                     "src_key_padding_mask": src_key_padding_mask,
@@ -194,14 +201,25 @@ class FT_PPFN(HierarchicalPFN):
                 }
             )
         else:
-            kwargs.update({"single_eval_pos": single_eval_pos})
+            if src_key_padding_mask is not None:
+                logger.warning(
+                    "Parsed a src_key_padding_mask for a frozen model that does not support padding. Ignoring the mask."
+                )
+            # Ensure single_eval_pos is still passed downstream and explicitly
+            # clear any src_key_padding_mask to avoid accidental forwarding.
+            kwargs.update({"single_eval_pos": single_eval_pos, "src_key_padding_mask": None})
+
+        logger.debug(f"FT_PPFN.forward calling super with kwargs keys={list(kwargs.keys())}")
+        if "src_key_padding_mask" in kwargs:
+            mask = kwargs["src_key_padding_mask"]
+            logger.debug(f"FT_PPFN.forward src_key_padding_mask shape={getattr(mask, 'shape', None)} type={type(mask)}")
 
         output = super().forward(batch, **kwargs)
         return output
 
     def parse_batch(
         self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None
-    ) -> MyBatch:
+    ) -> tuple[MyBatch, Optional[torch.Tensor]]:
         """
         Override parse_batch to handle both train and eval parsing.
         """

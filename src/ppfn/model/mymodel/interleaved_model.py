@@ -5,7 +5,10 @@ import torch.nn as nn
 
 from pfns4hpo.priors.prior import Batch
 
+from ifbo.transformer import TransformerModel
 import logging
+
+from ppfn.model.baselines.ft_pfn_padding import PaddableTransformerModel
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -42,6 +45,14 @@ class HierarchicalPFN(nn.Module):
 
         super().__init__()
         self.frozen_model = frozen_model
+        self.paddable = True
+        # check if frozen_model knows the src_key_padding_mask argument, if not, we need to make sure to propagate it to the interleaved layers
+        if isinstance(self.frozen_model, TransformerModel):
+            logger.info(
+                "Frozen model is a TransformerModel, will not be able to propagate src_key_padding_mask to interleaved layers if needed."
+            )
+            self.paddable = False
+
 
         for param in self.frozen_model.parameters():
             param.requires_grad = False  # Freeze the pre-trained model
@@ -85,6 +96,7 @@ class HierarchicalPFN(nn.Module):
 
         self._single_eval_pos = None
 
+
     @property
     def single_eval_pos(self):
         return self._single_eval_pos
@@ -121,6 +133,10 @@ class HierarchicalPFN(nn.Module):
         self.single_eval_pos = single_eval_pos  # propagate to interleaved layers
 
         kwargs["single_eval_pos"] = single_eval_pos
+        if not self.paddable and "src_key_padding_mask" in kwargs:
+
+            kwargs.pop("src_key_padding_mask")
+
         value = self.frozen_model(x, **kwargs)
         self.single_eval_pos = None  # reset after forward
 
