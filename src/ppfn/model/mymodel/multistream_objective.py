@@ -28,7 +28,7 @@ class MultiStreamObjective(nn.Module):
         targets: torch.Tensor,
         single_eval_pos,
         batch=None,
-        # src_key_padding_mask=None,
+        src_key_padding_mask=None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # 1. Compute raw loss for all streams
@@ -38,7 +38,7 @@ class MultiStreamObjective(nn.Module):
             # FIXME: depreciate this with the model reference
             parser = self.model.parse_batch
             b, _ = parser(
-                batch, single_eval_pos, #src_key_padding_mask=src_key_padding_mask
+                batch, single_eval_pos, src_key_padding_mask=src_key_padding_mask
             )
             targets = b.y[single_eval_pos:, ...]
 
