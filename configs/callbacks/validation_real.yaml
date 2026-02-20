@@ -10,7 +10,7 @@ lcbench:
     device: ${device}
 
 taskset:
-  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
   dataset:
     _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
@@ -21,7 +21,7 @@ taskset:
     device: ${device}
 
 pd1:
-  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
   dataset:
     _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
