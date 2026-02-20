@@ -2,10 +2,7 @@
 epochs: ${dataset.store_prior.n_chunks }
 steps:  ${div:${dataset.store_prior.chunk_size},${dataset.store_prior.batch_size}}
 # number of batches assuming chunk_size=1008 and batch_size=16
-
-objective:
-  _target_: ppfn.model.mymodel.multistream_objective.MultiStreamObjective
-
+objective: ???
 trainer_class:
   _target_: ppfn.trainer.PPFNTrainer
   use_amp: false

@@ -9,7 +9,7 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine_with_warmup
   - trainer: default
-  - experiment: debug
+  - experiment: slurm
   - callbacks:
       - mlflow
   - _self_

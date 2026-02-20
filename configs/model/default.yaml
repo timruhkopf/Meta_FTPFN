@@ -1,15 +1,21 @@
+# @package _global_
 # Default model configuration
-frozen_version: "0.0.1"
-model_class:
-  _target_: ppfn.model.mymodel.ppfn_wrapper.PPFN
-  _convert_: partial
-  pre_hook: true
-  frozen_model: #ft-pfn
-    _target_: ppfn.model.mymodel.ppfn_wrapper.load_frozen_model
-  interleaved_layers:
-    "transformer_encoder.layers.0":
-   
-      _target_: ppfn.model.mymodel.crossfusion.CrossFusion
-      num_heads: 4
-      dropout: 0.1
-      d_model: 512
+
+trainer:
+  objective: ??? # fixme: the frozen model provides its own objective. we need to load it!
+
+model:
+  frozen_version: "0.0.1"
+  model_class:
+    _target_: ppfn.model.mymodel.ppfn_wrapper.PPFN
+    _convert_: partial
+    pre_hook: true
+    frozen_model: #ft-pfn
+      _target_: ppfn.model.mymodel.ppfn_wrapper.load_frozen_model
+    interleaved_layers:
+      "transformer_encoder.layers.0":
+
+        _target_: ppfn.model.mymodel.crossfusion.CrossFusion
+        num_heads: 4
+        dropout: 0.1
+        d_model: 512

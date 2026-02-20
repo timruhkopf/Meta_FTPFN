@@ -1,10 +1,13 @@
-
+# @package _global_
 defaults:
 
   - ppfn
 
+trainer:
+  objective:
+    _target_: ppfn.model.mymodel.multistream_objective.MultiStreamObjective
 
-
-model_class:
-  frozen_model:
-    _target_: ppfn.model.baselines.ft_pfn_padding.ft_pfn_padding
+model:
+  model_class:
+    frozen_model:
+      _target_: ppfn.model.baselines.ft_pfn_padding.ft_pfn_padding
