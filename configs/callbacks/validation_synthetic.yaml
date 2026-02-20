@@ -21,7 +21,7 @@ same_task_128:
 
 
 unrelated_128:
-  _target_: ppfn.trainer.callbacks.meta_test_callback.MetaTestCallback
+  _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
   switch_to_eval: False
   dataset:
