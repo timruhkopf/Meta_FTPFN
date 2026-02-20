@@ -32,7 +32,8 @@ class CheckpointCallback(AbstractCallback):
         name: str = "nll_best",
         resume_from: Optional[Union[str, Path]] = None,  # New: Path to checkpoint
         read_only: bool = False,  # New: If True, skip saving
-        min_save_interval: int = 600,
+        min_save_interval: int = 600, # New: Minimum seconds between disk saves
+        min_save_epoch: int = 10, # New: Don't save to disk until after this epoch
         **kwargs,
     ):
         """
@@ -61,6 +62,7 @@ class CheckpointCallback(AbstractCallback):
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
         self.min_save_interval = min_save_interval
+        self.min_epoch = min_save_epoch
         self.last_save_time = 0
         self._executor = ThreadPoolExecutor(
             max_workers=1
@@ -140,7 +142,7 @@ class CheckpointCallback(AbstractCallback):
             # Always snapshot the best state to CPU memory immediately
             # This ensures we have the best version even if we don't write to disk yet
             self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
-            self._needs_saving = True  # <--- Mark as "dirty" (needs disk sync)
+            self._needs_saving = True if epoch > self.min_epoch else False # <--- Mark as "dirty" (needs disk sync)
             logger.info(
                 f"✨ New best captured in memory (Epoch {epoch}: {current_score:.4f})"
             )
