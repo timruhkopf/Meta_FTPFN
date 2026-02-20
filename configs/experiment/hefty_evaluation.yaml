@@ -11,7 +11,7 @@ checkpoint: ???
 
 experiment_name: ???
 run_name: ???
-
+mlflow_tracking_uri: 'file:///bigwork/nhwpruht/Meta_FTPFN/mlruns'
 callbacks:
   nll_avg_ckpt:
     resume_from: ${checkpoint}

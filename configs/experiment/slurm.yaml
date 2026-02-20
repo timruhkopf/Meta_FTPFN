@@ -10,4 +10,6 @@ defaults:
 
 
 experiment_name: ???
-run_name: 2
+run_name: Null
+
+mlflow_tracking_uri: 'file:///bigwork/nhwpruht/Meta_FTPFN/mlruns'
