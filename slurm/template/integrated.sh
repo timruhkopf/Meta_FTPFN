@@ -14,6 +14,7 @@
 
 # sbatch --partition=gpu --gres=gpu:1 --time=24:00:00 slurm/template/integrated.sh dataset=task_latent dataset.dataset_name=task_latent dataset.sample_prior=False device=cuda
 
+# salloc --partition=gpu.test --gres=gpu:1 --time=02:00:00 --job-name=sy.gpu.test
 
 # (README) --------------------
 # This Slurm script uv runs train.py with with mlflow and hydra.
