@@ -1,0 +1,48 @@
+#version: "3.8"
+# source: https://github.com/violincoding/mlflow-setup with-postgresql-and-minio
+
+services:
+
+
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    restart: always
+    healthcheck: # ensuring that Postgres is ready before starting MLflow (otherwise crashes)
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports: # exposes Postgres to host machine
+      - "5432:5432"
+    volumes: # Data persistence and initialization script for the db (could add tables there)
+      - postgres_data:/var/lib/postgresql
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    build: # solves the docker desktop visibility issue
+      context: ./mlflow  # Points to the folder containing the Dockerfile; will allow DockerDesktop to see the images
+    container_name: mlflow_server
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy # ensures Postgres is healthy before starting MLflow
+    ports:  # exposes MLflow to host machine on localhost:5001
+      - "5001:5000"
+
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      --host 0.0.0.0
+#      --port 5000
+#               --default-artifact-root /shared/path/to/mlruns
+
+# Important for data persistence
+volumes:
+    postgres_data:

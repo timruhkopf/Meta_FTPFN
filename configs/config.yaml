@@ -1,14 +1,40 @@
+# @package _global_
+
 # Default configuration for PPFN training
 # Override with specific experiments via configs/experiment/
 
 defaults:
   - model: ppfn
-  - dataset: same_task_new_sample
+  - dataset: task_latent
   - optimizer: adamw
-  - scheduler: cosine
+  - scheduler: cosine_with_warmup
   - trainer: default
+  - experiment: debug
+  - callbacks:
+      - mlflow
   - _self_
 
 device: "cuda"
-experiment_name: "ppfn:same_task_new_sample"
-run_name: null
+experiment_name: ???
+run_name: ${oc.env:SLURM_JOB_ID, Null} #  will be set by mlflow at random
+mlflow_tracking_uri: Null
+
+trainer:
+  trainer_class:
+    callbacks: ${callbacks}
+
+
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}_${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}_${run_name}
+
+seed: 42
+hash: ${githash:''}
+
+
+checkpoint: Null
+
+

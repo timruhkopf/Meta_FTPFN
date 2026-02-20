@@ -1,4 +1,5 @@
-import  numpy as np 
+import numpy as np
+
 
 class DimensionPrior:
     def __init__(self, maxnum_dimensions):
@@ -7,9 +8,10 @@ class DimensionPrior:
         self.maxnum_dimensions = maxnum_dimensions
 
     def sample(self):
-         # beware upper bound is exclusive!
-        return np.random.randint( 1, self.maxnum_dimensions - 1 ) 
-    
+        # beware upper bound is exclusive!
+        return np.random.randint(1, self.maxnum_dimensions - 1)
+
+
 class FidelityPrior:
     def __init__(self) -> None:
         """Determine the number of fidelity levels for the current dataset."""

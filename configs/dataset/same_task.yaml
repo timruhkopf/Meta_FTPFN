@@ -1,0 +1,15 @@
+defaults:
+  - default
+  - _self_
+
+dataset_name: same_task
+
+store_prior:
+#  prior:
+#    _target_: ppfn.dataset.get_batch.same_task.Prior
+  get_batch_fn:
+    _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
+    _partial_: True
+    transform:
+      _target_: ppfn.dataset.get_batch.task_transforms.SameTaskTransform
+      resample_y0_ymax: False

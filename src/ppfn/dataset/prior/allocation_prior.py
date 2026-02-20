@@ -1,5 +1,7 @@
-import torch 
+import torch
 import numpy as np
+
+from ppfn.utils.deprecate import deprecated
 
 
 class AllocationPrior:
@@ -29,10 +31,11 @@ class AllocationPrior:
         Returns:
             tuple: A tuple containing:
                 - cutoff_per_curve (np.ndarray): Integer array of shape (seq_len,) indicating the number
-                  of observations allocated to each curve. Values are cumulative counts of positions
-                  before single_eval_pos.
+                  of (visibile/training context)observations allocated to each curve.
+                  Values are cumulative counts of positions before single_eval_pos.
                 - epochs_per_curve (np.ndarray): Integer array of shape (seq_len,) indicating the total
-                  number of epochs (observations + queries) allocated to each curve.
+                  number of epochs (observations + queries) allocated to each curve (including budget tokens
+                  after the cutoff -- i.e. the queries).
                 - ordering (np.ndarray): Integer array of shape (seq_len,) representing the sampled
                   ordering of curve indices for each position in the sequence. Will be used to map positions
                   to curves.
@@ -42,14 +45,16 @@ class AllocationPrior:
             - Uses self.p to define base probabilities for each position
             - The method samples positions without replacement according to weighted probabilities
         """
-        
+
         # determine # observations/queries per curve
         # TODO: also make this a dirichlet thing
 
         ids = np.arange(self.seq_len)
         all_levels = np.repeat(ids, self.n_levels)
         all_p = np.repeat(self.p, self.n_levels) / self.n_levels
-        ordering = np.random.choice(all_levels, p=all_p, size=self.seq_len, replace=False)
+        ordering = np.random.choice(
+            all_levels, p=all_p, size=self.seq_len, replace=False
+        )
 
         # calculate the cutoff/samples for each curve
         # cutoff_per_curve = np.zeros((self.seq_len,), dtype=int)
@@ -66,19 +71,110 @@ class AllocationPrior:
         epochs_per_curve = np.bincount(ordering, minlength=self.seq_len)
 
         # 2. Counts for each curve ID only for the 'observations' (before the cutoff)
-        cutoff_per_curve = np.bincount(ordering[:single_eval_pos], minlength=self.seq_len)
+        cutoff_per_curve = np.bincount(
+            ordering[:single_eval_pos], minlength=self.seq_len
+        )
 
         return cutoff_per_curve, epochs_per_curve, ordering
-    
 
+    def parse_allocation_into_sequence(
+        self, curve_configs, curves, num_params, single_eval_pos, allocation
+    ):
+        cutoff_per_curve, epochs_per_curve, ordering = allocation
+        seq_len = self.seq_len
 
-    def parse_allocation_into_sequence(self, curve_configs, curves, num_params, single_eval_pos, allocation):
+        # 1. Pre-calculate epoch indices (k-th appearance of each ID)
+        # We use a dictionary or a small loop to match the original's curve_counters
+        epoch_indices = np.zeros(seq_len, dtype=int)
+        counters = np.zeros(seq_len, dtype=int)
+        for i, cid in enumerate(ordering):
+            epoch_indices[i] = counters[cid]
+            counters[cid] += 1
 
+        # 2. Replicate the EXACT random sampling order for Fidelities (x)
+        # To pass the test, we must loop through cid 0...seq_len just like the original
+        curve_xs = [None] * seq_len
+        for cid in range(seq_len):
+            n_epochs = epochs_per_curve[cid]
+            if n_epochs > 0:
+                x_ = np.zeros(n_epochs)
+                n_cutoff = cutoff_per_curve[cid]
+                # Observations (Deterministic)
+                if n_cutoff > 0:
+                    x_[:n_cutoff] = np.arange(1, n_cutoff + 1) / self.n_levels
+                # Queries (Random - MUST be called in this order)
+                if n_cutoff < n_epochs:
+                    x_[n_cutoff:] = (
+                        np.random.choice(
+                            np.arange(n_cutoff + 1, self.n_levels + 1),
+                            size=n_epochs - n_cutoff,
+                            replace=False,
+                        )
+                        / self.n_levels
+                    )
+                curve_xs[cid] = x_
+
+        # 3. Vectorized Mapping (The "Speed" Part)
+        # Now that we have curve_xs, we map them to the sequence using 'ordering'
+        # We can't easily vectorize curve_xs[cid][epoch_indices] without padding,
+        # but we can do it in one structured loop which is still faster than the original.
+
+        epochs = np.array(
+            [curve_xs[ordering[i]][epoch_indices[i]] for i in range(seq_len)]
+        )
+
+        # 4. Vectorized ID Curve Logic
+        # Original: id_curve[i] = cid + 1 if (i < single_eval_pos or curve_counters[cid] > 0) else 0
+        # Translation: A query gets ID 0 ONLY if it's the very first time we see that curve
+        # AND it appears at or after the single_eval_pos.
+
+        first_appearance_idx = np.full(seq_len, -1)
+        for i, cid in enumerate(ordering):
+            if first_appearance_idx[cid] == -1:
+                first_appearance_idx[cid] = i
+
+        id_curve = ordering + 1
+        # Mask: Is it the first time we see this CID? AND is that index >= single_eval_pos?
+        query_id_mask = (first_appearance_idx[ordering] >= single_eval_pos) & (
+            np.arange(seq_len) == first_appearance_idx[ordering]
+        )
+        id_curve[query_id_mask] = 0
+
+        # 5. Vectorized Configs and Values
+        config = curve_configs[ordering]
+
+        # Vectorized Y Evaluation (Assuming curves() handles arrays)
+        curve_val = np.zeros(seq_len)
+        for cid in np.where(epochs_per_curve > 0)[0]:
+            mask = ordering == cid
+            curve_val[mask] = curves(epochs[mask], cid)
+
+        # Convert to Torch
+        x = torch.cat(
+            [
+                torch.from_numpy(id_curve).float().unsqueeze(1),  # Column 0: ID
+                torch.from_numpy(epochs).float().unsqueeze(1),  # Column 1: Fidelity
+                torch.from_numpy(config).float(),  # Columns 2+: Config
+            ],
+            dim=1,
+        )
+
+        y = torch.from_numpy(curve_val).float()
+
+        return x, y
+
+    @deprecated(
+        "This method is the original, unoptimized version of parse_allocation_into_sequence. "
+        "It is left here for reference and testing purposes, but should not be used in production due to its inefficiency."
+    )
+    def parse_allocation_into_sequence_slow(
+        self, curve_configs, curves, num_params, single_eval_pos, allocation
+    ):
         """Determine x and y values for every curve in the sequence.
 
         Args:
             curve_configs (np.ndarray): Array of shape (self.seq_len, num_params) containing hyperparameter
-                configurations for each curve in the sequence.
+                configurations for each token in the sequence.
             curves (callable): A function that takes x values and a curve index, returning y values.
             single_eval_pos (int, optional): The cutoff position separating observations from queries.
                 Defaults to 0.
@@ -89,25 +185,49 @@ class AllocationPrior:
                 - curve_ys (list): List of length seq_len, where each element is an array of y values
                   for the corresponding curve.
         """
-        # FIXME: THIS ENTIRE FUNCTION IS SUPER INEFFICIENT, because we loop over every single token 
-        cutoff_per_curve, epochs_per_curve, ordering = allocation # self.sample_abstract_allocation(single_eval_pos)
+        # FIXME: THIS ENTIRE FUNCTION IS SUPER INEFFICIENT, because we loop over every single token
+        cutoff_per_curve, epochs_per_curve, ordering = (
+            allocation  # self.sample_abstract_allocation(single_eval_pos)
+        )
+
+        # NOTES:
+        # **curve_configs**: unit cube sampled hyperparameter configurations for every token in the sequence. Theses are
+        # candidate configs, from which we can draw observations and queries (repeatedly if more epochs are allocated
+        # or none if cutoff is zero for this curve)
+        # **cutoff_per_curve**: a mostly empty tensor, which is in reference to the sequence length curve_configs tensor.
+        # It tells us (=0) that we don't use this config at all, or (=k) that this particular config will have k epochs
+        # visible in the context (observations)
+        # **epochs_per_curve**: similar to cutoff_per_curve, but tells us how many total epochs (observations + queries)
+        # are allocated to this curve/config in the sequence; i.e. their difference will tell us how many query tokens
+        # will be in the future of this curve/config in the sequence.
+        # **curves**: callable that maps (x, curve_id) --> y values, where x are fidelity levels in [0, 1] and curve_id
+        # is the size of seq_len; i.e. each of the curve_configs has a corresponding curve mapping x --> y (even if not used)
+        # **ordering**: a tensor of shape (seq_len,) that tells us which token id is used at every token position in
+        # the sequence. To doing a count over the id from left to right tells us which epoch that token corresponds to.
+        # Notice, that len(np.unique(ordering)) is the number of unique configs in the sequence (incl. queries)
 
         epoch = torch.zeros(self.seq_len)
         id_curve = torch.zeros(self.seq_len)
         curve_val = torch.zeros(self.seq_len)
-        config = np.zeros((self.seq_len, num_params))
-        
+
+        # Based on the abstract allocation, which merely tells us how many epochs there are for an abstract unique
+        # hyperparameter index (which we can look up in curve_configs), we will now collect the fidelity array
         curve_xs = []
         curve_ys = []
-        for cid in range(self.seq_len):  # loop over every curve
+        for cid in range(self.seq_len):  # loop over every token
             if epochs_per_curve[cid] > 0:
-                # determine x (observations + query)
+                # create empty tensor that will hold the fidelity levels at which we want to evaluate a particular
+                # curve (hyperparameter config  )
                 x_ = np.zeros((epochs_per_curve[cid],))
                 if cutoff_per_curve[cid] > 0:  # observations (if any)
+                    # given the allocated budget create the fidelity level tensor for the observations we want to evaluate
                     x_[: cutoff_per_curve[cid]] = (
                         np.arange(1, cutoff_per_curve[cid] + 1) / self.n_levels
                     )
+
                 if cutoff_per_curve[cid] < epochs_per_curve[cid]:  # queries (if any)
+                    # beyond the cutoff of this particular curve, we sample future fidelity levels
+                    # that we want to use as query points -- and evaluate with the curves callable
                     x_[cutoff_per_curve[cid] :] = (
                         np.random.choice(
                             np.arange(cutoff_per_curve[cid] + 1, self.n_levels + 1),
@@ -116,16 +236,24 @@ class AllocationPrior:
                         )
                         / self.n_levels
                     )
+
                 curve_xs.append(x_)
-                # determine y's
+
+                # determine y's, by evaluating this curve at the fidelity levels x_
+                # FIXME: the curves call here could be vmaped to be more efficient, but it would require changing the curves callable to handle arrays of x values instead of just one at a time
                 y_ = curves(x_, cid)
                 curve_ys.append(y_)
+
+            # an unused curve/config
             else:
                 curve_xs.append(None)
                 curve_ys.append(None)
 
-        # construct the batch data element
+        # construct the sequence tensors x and y based on the sampled ordering
+        # read the note on ordering above for details!
+        config = np.zeros((self.seq_len, num_params))
         curve_counters = torch.zeros(self.seq_len).type(torch.int64)
+
         for i in range(self.seq_len):
             cid = ordering[i]
             if i < single_eval_pos or curve_counters[cid] > 0:
@@ -137,193 +265,9 @@ class AllocationPrior:
             curve_val[i] = curve_ys[cid][curve_counters[cid]]
             curve_counters[cid] += 1
 
-        x = torch.cat([torch.stack([id_curve, epoch], dim=1), torch.from_numpy(config)], dim=1)
+        x = torch.cat(
+            [torch.stack([id_curve, epoch], dim=1), torch.from_numpy(config)], dim=1
+        )
         y = curve_val
 
         return x, y
-
-
-
-    def parse_allocation_into_sequence_vectorized(self, curve_configs, curves, num_params, single_eval_pos, allocation):
-        raise NotImplementedError('The below implementation is not tested for quality yet!')
-        
-        cutoff_per_curve, epochs_per_curve, ordering = allocation
-        seq_len = self.seq_len
-
-        # --- LOOP 1: Data Generation (Per Curve) ---
-        # We still need to generate the actual points for each curve
-        curve_xs = [None] * seq_len
-        curve_ys = [None] * seq_len
-        
-        for cid in range(seq_len):
-            n_epochs = epochs_per_curve[cid]
-            if n_epochs > 0:
-                n_obs = cutoff_per_curve[cid]
-                x_ = np.zeros((n_epochs,))
-                
-                # Observations: linear space
-                if n_obs > 0:
-                    x_[:n_obs] = np.arange(1, n_obs + 1) / self.n_levels
-                
-                # Queries: random unique sampling
-                if n_obs < n_epochs:
-                    remaining_pool = np.arange(n_obs + 1, self.n_levels + 1)
-                    x_[n_obs:] = np.random.choice(remaining_pool, size=n_epochs - n_obs, replace=False) / self.n_levels
-                
-                curve_xs[cid] = x_
-                curve_ys[cid] = curves(x_, cid)
-
-        # --- VECTORIZED ASSEMBLY (Replacing Loop 3) ---
-        
-        # 1. Calculate the "Instance Rank" (Cumulative Count)
-        # This tells us: "Is this the 1st, 2nd, or N-th time we've seen this cid?"
-        # We use a sorting trick to get cumulative counts in O(N log N)
-        sort_idx = np.argsort(ordering)
-        sorted_ordering = ordering[sort_idx]
-        # Find where the CID changes in the sorted array
-        changes = np.concatenate(([0], np.where(sorted_ordering[:-1] != sorted_ordering[1:])[0] + 1))
-        # Create the counts and map them back to original order
-        counts = np.arange(len(ordering)) - np.repeat(changes, np.diff(np.concatenate((changes, [len(ordering)]))))
-        instance_rank = np.zeros_like(ordering)
-        instance_rank[sort_idx] = counts
-
-        # 2. Vectorized ID Assignment (ID 0 logic)
-        # Mask: Curve is 0 if it's the FIRST time seeing it AND it's in the query section
-        _, first_occurrence_indices = np.unique(ordering, return_index=True)
-        is_first_occurrence = np.zeros(seq_len, dtype=bool)
-        is_first_occurrence[first_occurrence_indices] = True
-        
-        is_query_pos = np.arange(seq_len) >= single_eval_pos
-        
-        id_curve = ordering + 1  # Standard IDs
-        id_curve[is_first_occurrence & is_query_pos] = 0 # Apply anonymity mask
-
-        # 3. Extract values using the instance_rank
-        # Since curve_xs is a list of arrays, we use the pre-calculated rank to index
-        epoch = np.array([curve_xs[cid][rank] for cid, rank in zip(ordering, instance_rank)])
-        curve_val = np.array([curve_ys[cid][rank] for cid, rank in zip(ordering, instance_rank)])
-        
-        # 4. Construct Tensors
-        id_curve = torch.from_numpy(id_curve).float()
-        epoch = torch.from_numpy(epoch).float()
-        curve_val = torch.from_numpy(curve_val).float()
-        config = torch.from_numpy(curve_configs[ordering]).float()
-
-        x = torch.cat([torch.stack([id_curve, epoch], dim=1), config], dim=1)
-        y = curve_val
-
-        return x, y
-    
-
-if __name__ == "__main__":
-              
-
-    import time
-    from ppfn.dataset.prior.multifidelity_problem_prior import MultiFidelityTask 
-
-    def benchmark_parse_allocation():
-        # Setup parameters
-        seq_len = 2048
-        num_params = 10
-        n_levels = 100
-        single_eval_pos = 1024
-
-        dataset_prior = MultiFidelityTask(num_params, 23)
-        dataset_prior.sample_task()
-        curve_configs = np.random.uniform(size=(seq_len, num_params)) 
-
-        curves = dataset_prior.get_marginal_curve(torch.from_numpy(curve_configs).float())  # get callable to evaluate (hp, t) --> y
-
-        # --- Execution ---
-
-        prior = AllocationPrior(seq_len, n_levels)
-        configs = np.random.randn(seq_len, num_params)
-        allocation = prior.sample_abstract_allocation(single_eval_pos)
-
-        # Warmup
-        prior.parse_allocation_into_sequence(configs, curves, num_params, single_eval_pos, allocation)
-        prior.parse_allocation_into_sequence_vectorized(configs, curves, num_params, single_eval_pos, allocation)
-
-        # Timing Original
-        t0 = time.perf_counter()
-        x1, y1 = prior.parse_allocation_into_sequence(configs, curves, num_params, single_eval_pos, allocation)
-        t1 = time.perf_counter()
-
-        # Timing Vectorized
-        t2 = time.perf_counter()
-        x2, y2 = prior.parse_allocation_into_sequence_vectorized(configs, curves, num_params, single_eval_pos, allocation)
-        t3 = time.perf_counter()
-
-        # Assert equivalence
-        # FIXME: check equivalence (due to repeated rnd sampling in loop, this is difficult)
-        # assert torch.allclose(x1, x2), "X tensors do not match!"
-        # assert torch.allclose(y1, y2), "Y tensors do not match!"
-
-        print(f"Results (seq_len={seq_len}):")
-        print(f"Original Time:   {(t1 - t0)*1000:.2f} ms")
-        print(f"Vectorized Time: {(t3 - t2)*1000:.2f} ms")
-        print(f"Speedup:         {(t1 - t0)/(t3 - t2):.2f}x")
-    
-    benchmark_parse_allocation()
-    # Loading BNN prior ECDF cache from bnn_prior_ecdf.npy
-    # Results (seq_len=2048):
-    # Original Time:   124.18 ms
-    # Vectorized Time: 72.07 ms
-    # Speedup:         1.72x
-
-  
-    def benchmark_bincount():
-        # Setup parameters
-        seq_len = 5000
-        n_levels = 10
-        single_eval_pos = 2000
-        p = np.random.dirichlet(np.ones(seq_len), size=1).flatten()  # Random weights summing to 1
-        
-        # Generate common ordering to ensure we compare apples to apples
-        ids = np.arange(seq_len)
-        all_levels = np.repeat(ids, n_levels)
-        all_p = np.repeat(p, n_levels) / n_levels
-        ordering = np.random.choice(all_levels, p=all_p, size=seq_len, replace=False)
-
-        # --- METHOD 1: ORIGINAL LOOP ---
-        start_loop = time.perf_counter()
-        
-        cutoff_loop = np.zeros((seq_len,), dtype=int)
-        epochs_loop = np.zeros((seq_len,), dtype=int)
-        for i in range(seq_len):
-            cid = ordering[i]
-            epochs_loop[cid] += 1
-            if i < single_eval_pos:
-                cutoff_loop[cid] += 1
-                
-        end_loop = time.perf_counter()
-
-        # --- METHOD 2: VECTORIZED BINCOUNT ---
-        start_vec = time.perf_counter()
-        
-        epochs_vec = np.bincount(ordering, minlength=seq_len)
-        cutoff_vec = np.bincount(ordering[:single_eval_pos], minlength=seq_len)
-        
-        end_vec = time.perf_counter()
-
-        # --- VALIDATION ---
-        epochs_match = np.array_equal(epochs_loop, epochs_vec)
-        cutoff_match = np.array_equal(cutoff_loop, cutoff_vec)
-        
-        print(f"Validation:")
-        print(f" - Epochs match: {epochs_match}")
-        print(f" - Cutoffs match: {cutoff_match}")
-        print("-" * 30)
-        print(f"Timing (seq_len={seq_len}):")
-        print(f" - Original Loop:     {(end_loop - start_loop) * 1000:.4f} ms")
-        print(f" - Vectorized Bincount: {(end_vec - start_vec) * 1000:.4f} ms")
-        print(f" - Speedup:            {(end_loop - start_loop) / (end_vec - start_vec):.1f}x")
-        assert np.array_equal(epochs_loop, epochs_vec) and np.array_equal(cutoff_loop, cutoff_vec)
-
-
-    # ------------------------------
-    # Timing (seq_len=5000):
-    # - Original Loop:     2.1054 ms
-    # - Vectorized Bincount: 0.0554 ms
-    # - Speedup:            38.0x
-    # benchmark_bincount()

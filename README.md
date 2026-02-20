@@ -11,8 +11,21 @@ Integration options included here:
 
 	```bash
 	# from project root
-	python -m pip install -e external/ifBO
-	python -m pip install -r external/ifBO/core_requirements.txt
+ 	mkdir -p external
+ 	cd external
+ 	git clone https://github.com/automl/ifBO.git
+ 	cd external/ifBO
+ 
+	uv python -m pip install -e external/ifBO
+	uv python -m pip install -r external/ifBO/core_requirements.txt
+ 
+ 	cd .. 
+ 	
+ 	# add ifbo_icml2024 branch as folder 
+ 	git clone https://github.com/automl/ifBO.git ifbo_icml2024
+ 	cd ifbo_icml2024
+	git fetch origin icml-2024
+ 	git checkout icml-2024
 	```
 
 	Or, if you prefer to use a reproducible pinned install (non-editable):

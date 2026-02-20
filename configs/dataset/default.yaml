@@ -1,0 +1,37 @@
+sample_prior: False
+dataset_class:
+
+  _target_: ppfn.dataset.priordataloader.StoredPriorDataset
+  storage_path: ${oc.env:DATADIR}priors/${dataset.dataset_name}
+
+
+store_prior: # method call
+  get_batch_fn: ???
+
+  n_chunks: 300 # 400  # array size
+  chunk_size: 6660 # 5000 # number of items (tasks) per file
+  batch_size: 60 # 25 # number of tasks in a batch number of batches = n_chunks * chunk_size / batch_size
+  seq_len: 1000
+  batch_kwargs:
+    share_unrelated_tasks: 0.33
+    num_features: 12
+
+
+  eval_pos_sampler: Null
+  local: False # FIXME: for testing purposes only
+
+#  submitit_kwargs:
+  timeout_min: 60
+  slurm_gres: "gpu:0"
+  slurm_array_parallelism: 50
+  cpus_per_task: 1
+  nodes: 1
+  mem_gb: 2
+  slurm_partition: amo
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 1 # number of batches -- because the dataset yields batches already!
+  shuffle: False
+  #  num_workers: 1
+#  collate_fn  is overwritten in train.py, since we cannot collate batches with different hp dim!

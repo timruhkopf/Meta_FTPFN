@@ -1,0 +1,7 @@
+ckpt:
+  _target_: ppfn.trainer.callbacks.checkpoint.CheckpointCallback
+  save_dir: ${hydra:run.dir}/checkpoints/
+  name: "best_nll_CA"
+  mode: "min"
+  monitor: "nll/C-A"
+  resume_from: ${checkpoint}

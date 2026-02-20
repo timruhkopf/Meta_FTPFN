@@ -1,0 +1,40 @@
+dataset_name: homebrew_bnn_interpolation_and_unrelated
+sample_prior: False
+dataset_class:
+
+  _target_: ppfn.dataset.priordataloader.StoredPriorDataset
+  storage_path: ${oc.env:DATADIR}priors/${dataset.dataset_name}
+
+
+store_prior: # method call
+  get_batch_fn:
+    _target_: ppfn.dataset.get_batch.bnn_output_interpolation.get_batch_mixed
+    _partial_: True
+
+  n_chunks: 300 # 400
+  chunk_size: 3500 # 5000
+  batch_size: 30 # 25
+  seq_len: 1000
+  batch_kwargs:
+    share_unrelated_tasks: 0.33
+    num_features: 12
+
+
+  eval_pos_sampler: Null
+  local: False # FIXME: for testing purposes only
+
+#  submitit_kwargs:
+  timeout_min: 120
+  slurm_gres: "gpu:0"
+  slurm_array_parallelism: 50
+  cpus_per_task: 4
+  nodes: 1
+  mem_gb: 8
+  slurm_partition: amo
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 1 # number of batches -- because the dataset yields batches already!
+  shuffle: False
+#  num_workers: 1
+  collate_fn: null

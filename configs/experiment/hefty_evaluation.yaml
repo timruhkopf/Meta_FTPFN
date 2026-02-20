@@ -1,0 +1,67 @@
+# @package _global_
+defaults:
+  - /callbacks:
+      - mlflow
+      - ckpt_nll_avg
+  - override /model: ppfn_padded
+  - _self_
+
+
+checkpoint: ???
+
+experiment_name: ???
+run_name: ???
+mlflow_tracking_uri: 'file:///bigwork/nhwpruht/Meta_FTPFN/mlruns'
+callbacks:
+  nll_avg_ckpt:
+    resume_from: ${checkpoint}
+    read_only: True
+
+    # LCBench
+  lcbench_hefty:
+    _target_: ppfn.trainer.callbacks.hefty_meta_test.HeftyContextEvaluationCallback
+    device: ${device}
+    dataset:
+      _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+      benchmark_name: lcbench_tabular
+      data_path: ${oc.env:DATADIR}/validation
+      n_folds: 3 # FIXME: check how this interacts with the num_samples policy
+      device: ${device}
+      single_eval_pos: 500
+    context_levels: [ 1,10,20,40,80,120,160,200,300,400,500,600 ]
+
+    single_eval_pos: 500
+
+    # TaskSet
+  taskset_hefty:
+    _target_: ppfn.trainer.callbacks.hefty_meta_test.HeftyContextEvaluationCallback
+    device: ${device}
+    dataset:
+      _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+      benchmark_name: taskset_tabular
+      data_path: ${oc.env:DATADIR}/validation
+      n_folds: 3
+      device: ${device}
+      single_eval_pos: 500
+    context_levels: [ 1,10,20,40,80,120,160,200,300,400,500,600 ]
+
+    single_eval_pos: 500
+
+    # PD1
+  pd1_hefty:
+    _target_: ppfn.trainer.callbacks.hefty_meta_test.HeftyContextEvaluationCallback
+    device: ${device}
+    dataset:
+      _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
+      benchmark_name: pd1_tabular
+      data_path: ${oc.env:DATADIR}/validation
+      n_folds: 3
+      device: ${device}
+      single_eval_pos: 500
+    context_levels: [ 1,10,20,40,80,120,160,200,300,400,500,600 ]
+
+    single_eval_pos: 500
+
+trainer:
+  epochs: 0
+  steps: 0

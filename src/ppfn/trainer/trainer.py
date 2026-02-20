@@ -7,47 +7,31 @@ PPFN (Pre-conditioned Prior Fitted Network) architecture.
 
 from __future__ import annotations
 
-import subprocess
-import os
+
 import time
-from typing import Dict
+import warnings
+from typing import Dict, List
+from tqdm import tqdm
+import signal
 
 import torch
 import torch.nn as nn
 from torch import amp
 
-from tqdm import tqdm
-
-import mlflow
-from omegaconf import OmegaConf
-
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
-
-import pfns4hpo.utils as utils
 from pfns4hpo.priors import Batch
 
+from ppfn.utils.gracefull_exit import GracefulExit, signal_handler
+from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
+
+
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-def get_git_hash():
-    try:
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
-    except Exception as e:
-        logger.warning("Could not retrieve git hash.")
-        return "not-a-git-repo"
 
-def flatten_dict(d, parent_key='', sep='.'):
-    """Recursively flattens a nested dictionary."""
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-    
+
+
 class PPFNTrainer:
     """
     Trainer for PPFN models with MLflow integration.
@@ -57,20 +41,19 @@ class PPFNTrainer:
     """
 
     def __init__(
-        self,
-        model: nn.Module,
-        train_loader,
-        criterion: nn.Module,
-        device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
-        use_amp: bool = False,
-        grad_clip: float = 1.0,
-        aggregate_k_gradients: int = 1,
-        callbacks: list[AbstractCallback] | None = None,
-        experiment_name: str = "ppfn_training",
-        run_name: str | None = None,
-        verbose: bool = True,
-        optimizer=None,
-        scheduler=None,
+            self,
+            model: nn.Module,
+            train_loader,
+            criterion: nn.Module,
+            device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
+            use_amp: bool = False,
+            grad_clip: float = 1.0,
+            aggregate_k_gradients: int = 1,
+            callbacks: list[AbstractCallback] | None = None,
+            verbose: bool = False,
+            optimizer=None,
+            scheduler=None,
+            description_template: str | None = None,
     ):
         """
         Initialize the trainer.
@@ -84,12 +67,13 @@ class PPFNTrainer:
             grad_clip: Gradient clipping norm (None to disable)
             aggregate_k_gradients: Number of gradient accumulation steps
             callbacks: List of callback objects
-            experiment_name: MLflow experiment name
-            run_name: MLflow run name (auto-generated if None)
-            config: OmegaConf config dict to log
             verbose: Whether to print progress
             optimizer: Partial optimizer callable - will be called with trainable_params
             scheduler: Partial scheduler callable - will be called with optimizer
+            description_template: Template for epoch description in progress bar,
+                e.g. "Epoch {epoch} | Time: {time:.2f}s | LR: {lr:.6f}"
+                will allow keys provided in epoch metrics (which in turn are created by the
+                callbacks).
         """
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -98,45 +82,35 @@ class PPFNTrainer:
         self.use_amp = use_amp
 
         # Get trainable parameters from the model
-
-        # FIXME: trainable parameters!
-        if hasattr(model, "trainable_parameters"):
-            trainable_params = model.trainable_parameters()
-        else:
-            trainable_params = [p for p in model.parameters() if p.requires_grad]
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
 
         self.optimizer = optimizer(trainable_params)
         self.scheduler = scheduler(self.optimizer)
 
+
+        self.callbacks = callbacks or []
+        # TODO callbackhandler will need to be ddp rank aware to avoid multiple logging
+        self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
+
+        self.verbose = verbose
+        self.config = None # Placeholder, we pass this from outside if needed
+
+        # Mixed precision & gradient settings
+        self.scaler = amp.GradScaler(device=self.device) if use_amp else None
         self.grad_clip = grad_clip
         self.aggregate_k_gradients = aggregate_k_gradients
-        self.callbacks = callbacks or []
-        self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
-        self.verbose = verbose
 
-        # MLflow 
-        logger.info("Setting up MLflow tracking...")
-        db_path = os.getenv("MLFLOW_DB_PATH", "mlflow.db")
-        mlflow.set_tracking_uri(f"sqlite:///{db_path}")
-        mlflow.set_experiment(experiment_name)
-        self.mlflow_run = mlflow.start_run(run_name=run_name)
-
-        # 1. Track Git Hash as a Tag
-        mlflow.set_tag("mlflow.source.git.commit", get_git_hash())
-
-        # Mixed precision
-        # Mixed precision
-        self.scaler = amp.GradScaler(device=self.device) if use_amp else None
         # Training state
         self.current_epoch = 0
         self.global_step = 0
         self.best_loss = float("inf")
 
-    def log_config(self, cfg):
-         
-        # Convert to container and resolve interpolations (e.g. ${model.lr})
-        config_dict = OmegaConf.to_container(cfg, resolve=True)
-        mlflow.log_dict(config_dict, "config.yaml")
+        self.description_template = description_template or (
+            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {train/lr:.8f}"
+        )
+
+        self.callback_handler.on_event("on_trainer_init")
+
 
     def fit(self, epochs: int, steps: int):
         """
@@ -145,60 +119,79 @@ class PPFNTrainer:
         Args:
             epochs: Number of epochs to train
         """
+        logger.info("Starting training...")
+        self.callback_handler.on_event("on_train_start")
+
+        # prepare sigterm handler for slurm
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGUSR1, signal_handler)
+
+        # notice that we can trigger the signal during debugging:
+        # Sends SIGUSR1 to the most recent Python process running train.py
+        # kill -USR1 $(pgrep -n -f train.py)
+        # Then check the resulting log!
+
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
+
+            if hasattr(self.train_loader, '__iter__'):
+                # classical trainloader
+                self.train_loader = iter(self.train_loader)
+
             for epoch in iterator:
                 self.current_epoch = epoch
 
-                # Epoch start callbacks
                 self.callback_handler.on_event("on_epoch_start", epoch=epoch)
 
-                # Train
                 epoch_metrics = self.train_epoch(steps)
 
-                # Epoch end callbacks
                 feedback = self.callback_handler.on_event(
                     "on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                )
+
+                epoch_metrics.update(feedback)
+
+                self.callback_handler.on_event(
+                    "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
                 )
 
                 if feedback.get('stop_training', False):
                     print("Early stopping triggered. Terminating training.")
                     break
 
-                # Log to MLflow
-                for key, value in epoch_metrics.items():
-                    mlflow.log_metric(key, value, step=epoch)
-
-                # Track best loss
-                # FIXME: obsolte with working EarlyStopping callback
-                if epoch_metrics["loss"] < self.best_loss and epoch > 100:
-                    self.best_loss = epoch_metrics["loss"]
-                    self._save_checkpoint(f"best_model.pt")
-
                 if self.verbose:
-                    # update tqdm description
-                    iterator.set_description(
-                        f"Epoch {epoch:3d} | Loss: {epoch_metrics['loss']:7.4f} | "
-                        f"Time: {epoch_metrics['time']:6.2f}s | "
-                        f"LR: {epoch_metrics.get('lr', 0):.6f}"
-                    )
+                    try:
+                        # We merge epoch into the metrics dict or pass it as a kwarg
+                        description = self.description_template.format(
+                            epoch=epoch,
+                            **epoch_metrics
+                        )
+                        iterator.set_description(description)
+                    except KeyError as e:
+                        # Fallback or warning if user provided a key that doesn't exist
+                        iterator.set_description(f"Epoch {epoch} (Template Error: Missing {e})")
 
         except KeyboardInterrupt:
             print("Training interrupted by user")
-        finally:
-            # Train end callbacks
-            self.callback_handler.on_event(
-                "on_train_end", best_loss=self.best_loss, epochs=self.current_epoch
-            )
+        except GracefulExit as e:
+            # This block specifically catches the Slurm Timeout / USR1
+            logger.warning(f"Training interrupted by Slurm: {e}")
 
-            # Log final model
-            # self._save_checkpoint("final_model.pt")
+        except Exception as e:
+            logger.error(f"An error occurred during training: {e}")
+            raise e
+        finally:
+            logger.info("Reached end of training...")
+            self.callback_handler.on_event("on_train_end")
+
+            # e.g. terminate mlflow run
+            self.callback_handler.on_event("log_on_train_end")
+
+        logger.info("Training complete.")
 
     def train_epoch(self, n_steps) -> Dict[str, float]:
-        """Train for one epoch."""
         self.model.train()
         epoch_metrics = {
-            "loss": 0.0,
             "num_batches": 0,
             "time": 0.0,
         }
@@ -206,10 +199,34 @@ class PPFNTrainer:
         epoch_start = time.time()
 
         for step in range(n_steps):
-            batch = self.train_loader.get_batch(device=self.device)
-            step_metrics = self._train_step(batch)
 
-            # Accumulate metrics
+            if hasattr(self.train_loader, 'get_batch'):
+                # PRIORDATALOADER Legacy support
+                batch = self.train_loader.get_batch(device=self.device)
+            else:
+                # standard dataloader
+                batch = next(self.train_loader)
+                assert isinstance(batch, List) and len(batch) == 1, (
+                    "The PPFNTrainer expects that the dataset class already provides batches, "
+                    "so the loader must have batch_size=1."
+                )
+                batch = batch[0]  # since we expect batch_size=1 with collate_fn=lambda x: x[0]
+
+                batch = batch.to(self.device)
+
+            if batch.single_eval_pos is None:
+                seq_len = torch.tensor(batch.x.shape[1])
+                # sample according to the PriorDataLoader default
+                single_eval_pos = int(torch.floor(
+                    torch.exp(torch.rand(1) * torch.log(seq_len + 1))
+                ) - 1)
+                warnings.warn("single_eval_pos not set in batch; using random value.")
+            else:
+                single_eval_pos = batch.single_eval_pos
+
+            step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
+
+            # Accumulate metrics per step
             for key, value in step_metrics.items():
                 if key not in epoch_metrics:
                     epoch_metrics[key] = 0.0
@@ -224,7 +241,7 @@ class PPFNTrainer:
 
             self.global_step += 1
 
-        # Average metrics
+        # Average metrics for epoch (except time)
         num_batches = epoch_metrics.pop("num_batches")
         for key in epoch_metrics:
             if key != "time":
@@ -235,12 +252,9 @@ class PPFNTrainer:
 
         return epoch_metrics
 
-    def _train_step(self, batch: Batch) -> Dict[str, float]:
-        """Execute a single training step."""
+    def _train_step(self, step, batch: Batch, single_eval_pos) -> Dict[str, float]:
         device_type = self.device.type if hasattr(self, "device") else "cuda"
-        losses, step_metrics = self._forward_pass(batch)
-
-        loss, nan_share = utils.torch_nanmean(losses.mean(0), return_nanshare=True)
+        loss, step_metrics = self._forward_pass(batch, single_eval_pos=single_eval_pos)
 
         # Scale loss for gradient accumulation
         loss_scaled = loss / self.aggregate_k_gradients
@@ -256,6 +270,12 @@ class PPFNTrainer:
                 self.scaler.unscale_(self.optimizer)
 
             if self.grad_clip:
+
+                feedack = self.callback_handler.on_event(
+                    "on_clipping", epoch=self.current_epoch, step=step, metrics=step_metrics
+                )
+                step_metrics.update(feedack)
+
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
 
             if self.scaler and device_type == "cuda":
@@ -268,46 +288,28 @@ class PPFNTrainer:
 
         step_metrics.update(
             {
-                "loss": loss.detach().cpu().item(),
-                "lr": self.scheduler.get_last_lr()[0],
-                "nan_share": nan_share,
-                "single_eval_pos": batch.single_eval_pos
-                if hasattr(batch, "single_eval_pos")
-                else -1,
+                "nll/batch_loss": loss.detach().cpu().item(),
+                "train/lr": self.scheduler.get_last_lr()[0],
             }
         )
+        if self.verbose:
+            step_metrics.update({
+                "train/single_eval_pos": single_eval_pos
+            })
 
         return step_metrics
 
-    def _forward_pass(self, batch: Batch) -> tuple[torch.Tensor, Dict[str, float]]:
+    def _forward_pass(self, batch: Batch, single_eval_pos, **kwargs) -> tuple[torch.Tensor, Dict[str, float]]:
         """Perform a single forward pass and compute loss."""
         # Unpack batch; adapt based on your batch structure
         # if isinstance(batch, (tuple, list)):
         # batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
 
-        with amp.autocast(device_type="cuda", enabled=self.use_amp):
-            output = self.model(batch, single_eval_pos=batch.single_eval_pos)
+        with (amp.autocast(device_type="cuda", enabled=self.use_amp)):
+            output = self.model(batch, single_eval_pos=single_eval_pos, **kwargs)
+            targets = batch.y[single_eval_pos:, ...]
 
-            targets = batch.y[batch.single_eval_pos :, ...]
-
-            feedback = self.callback_handler.on_event(
-                "on_forward_end", batch=batch, output=output, targets=targets
-            )
-
-            output = feedback.get("output", output)
-            targets = feedback.get("targets", targets)
-
-            loss = self.criterion(output, targets)
-
-            feedback = self.callback_handler.on_event(
-                "on_loss_end", batch=batch, output=output, targets=targets, loss=loss
-            )
-
-            loss = feedback.get("loss", loss)
-
-        # 6. Metrics extraction (to satisfy the type hint)
-        # Often callbacks return extra metrics (accuracy, etc.)
-        metrics = feedback
+            loss, metrics = self.criterion(output, targets, batch=batch, single_eval_pos=single_eval_pos)
 
         return loss, metrics
 
@@ -332,9 +334,6 @@ class PPFNTrainer:
         self.current_epoch = checkpoint["epoch"]
         self.best_loss = checkpoint["best_loss"]
 
-    def end_run(self):
-        """End the MLflow run."""
-        mlflow.end_run()
 
 
 class DistributedTrainer(PPFNTrainer):
@@ -357,4 +356,3 @@ class DistributedTrainer(PPFNTrainer):
         """Log only from rank 0."""
         if self.rank == 0:
             print(message)
-

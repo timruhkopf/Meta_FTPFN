@@ -1,33 +1,53 @@
-
-from typing import Mapping
+from dataclasses import dataclass
+from typing import Mapping, Optional
 import os
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 
+import logging
 
-from ppfn.model.mymodel.interleaved_model import HierarchicalPFN
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-from pfns4hpo.priors import Batch 
 
 
-def load_frozen_model() -> nn.Module:
-    """Load frozen pre-trained PPFN model from ifBO."""
-    import torch
-    from dotenv import load_dotenv
-    from ifbo.surrogate import FTPFN
 
-    # Load from project root .env (4 levels up from this file)
-    load_dotenv(dotenv_path=Path(__file__).parents[4] / ".env")
+# TODO move to utils!
+@dataclass
+class MyBatch(Batch):
 
-    model_path = os.getenv("MODELDIR", "models/") + "pfn_ckpt"
-    frozen_model = FTPFN(
-        target_path=Path(model_path), version="0.0.1", device=torch.device("cpu")
-    ).model
-    
-    return frozen_model
+    def __add__(self, other) -> 'MyBatch':
 
+
+        # Concatenate core tensors along the batch dimension (dim=1)
+        # Assuming shape: [seq_len, batch_size, n_features]
+        new_x = torch.cat([self.x, other.x], dim=1)
+        new_y = torch.cat([self.y, other.y], dim=1)
+        new_target_y = torch.cat([self.target_y, other.target_y], dim=1)
+
+        if self.style is None or other.style is None:
+            new_style = None
+        else:
+            new_style = torch.cat([self.style, other.style], dim=0)
+
+        # Create the new instance
+        return MyBatch(
+            x=new_x,
+            y=new_y,
+            target_y=new_target_y,
+            style=new_style
+        )
+
+    def to(self, device: torch.device) -> 'MyBatch':
+        """Move all tensors in the batch to the specified device."""
+        return MyBatch(
+            x=self.x.to(device),
+            y=self.y.to(device),
+            target_y=self.target_y.to(device),
+            style=self.style.to(device) if self.style is not None else None
+        )
 
 class FT_PPFN(HierarchicalPFN):
     """
@@ -44,59 +64,115 @@ class FT_PPFN(HierarchicalPFN):
         self,
         frozen_model: nn.Module,
         interleaved_layers: Mapping[str, nn.Module],
+        force_same_query: bool = False,
     ):
         super().__init__(
             frozen_model=frozen_model,
             interleaved_layers=interleaved_layers,
         )
+        self.force_same_query = force_same_query
 
-    @staticmethod
-    def parse_batch(training, batch: Batch) -> Batch:
-        if training: 
-            x = torch.cat([batch.x, batch.x.roll(1, dims=1), batch.x], dim=1)
-            y = torch.cat([batch.y, batch.y.roll(1, dims=1), batch.y], dim=1)
+        logger.info(f'FT_PPFN initialized with cross-fusion interleaved layers. '
+                    f'Number of parameters to train: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
 
-        if not training: 
-            # first batch item is target task marginal predictions
-            # next batch items are related tasks' marginal predictions
-            # last batch items are related tasks' conditional predictions to be updated
-            B = batch.x.shape[1]
-            R = (B - 1) 
+    def parse_train_batch(self, batch: MyBatch, single_eval_pos) -> MyBatch:
+        """
+        Modify the batch for cross-fusion training.
+        In training mode, we expect triplets of tasks in the batch:
+        (Target marginal (A), Related marginal (B), Target conditional (C)), 
+        where (A) & (B) are untainted predictions, and (C) is to be updated.
+        """
 
-            target_marginal = batch.x[:, :1, :].expand(-1, R, -1)
-            related_marginal = batch.x[:, 1:, :]
-            related_conditional = batch.x[:, :1, :].expand(-1, R, -1)
-            x = torch.cat([
-                        target_marginal,
-                        related_marginal,
-                        related_conditional,
-                    ],dim=1)
-            
-            y = torch.cat([
-                batch.y[:, :1].expand(-1, R, -1),
-                batch.y[:, 1:],
-                batch.y[:, :1].expand(-1, R, -1),
-            ], dim=1)
+        sep = single_eval_pos
+        device = batch.x.device
+  
+        # add related tasks by rolling the batch
+        target_marginal_x = batch.x[:, ::2, :]
+        related_marginal_x = batch.x[:, 1::2, :]
+        target_conditional_x = batch.x[:, ::2, :]
 
-          
-            # FIXME: during eval we need to aggregate the conditional predictions
-            # for now, we just return them as is 
-            raise NotImplementedError("Aggregation of conditional predictions during eval not implemented yet.")
+        target_marginal_y = batch.y[:, ::2]
+        related_marginal_y = batch.y[:, 1::2]
+        target_conditional_y = batch.y[:, ::2]
+    
+        # force the related tasks to have the same query positions for cross-fusion
+        if self.force_same_query: 
+            related_marginal_x[sep :, ...] = batch.x[sep :, ::2, ...]
+            related_marginal_y[sep :, ...] = batch.y[sep :, ::2, ...]
         
-        return Batch(
-                x=x, y=y, target_y=y,
-                single_eval_pos=batch.single_eval_pos,
+        # Join the three streams into a single batch
+        x = torch.cat([target_marginal_x, related_marginal_x, target_conditional_x], dim=1)
+        y = torch.cat([target_marginal_y, related_marginal_y, target_conditional_y], dim=1)
+
+        return MyBatch(
+                x=x.to(device), y=y.to(device), target_y=y.to(device),
+                single_eval_pos=sep,
+        )
+
+    def parse_eval_batch(self, batch: MyBatch, single_eval_pos) -> MyBatch:
+        """
+        Modify the batch for cross-fusion evaluation.
+        In evaluation mode, we expect:
+        (Target marginal (A), Related marginals (B), Target conditionals (C)),
+        where (A) & (B) are untainted predictions, and (C) is to be updated.
+        
+        Note that during evaluation, there is only one target task (A),
+        and multiple related tasks (B), all in the same batch.
+        """
+    
+        B = batch.x.shape[1]
+        R = (B - 1)
+        device = batch.x.device
+
+        sep = single_eval_pos
+
+        # prepare the three streams (X tensors)
+        target_marginal_x = batch.x[:, :1, :].expand(-1, R, -1)
+        related_marginal_x = batch.x[:, 1:, :]
+        target_conditional_x = batch.x[:, :1, :].expand(-1, R, -1)
+
+        # prepare the three streams (Y tensors)
+        target_marginal_y = batch.y[:, :1].expand(-1, R)
+        related_marginal_y = batch.y[:, 1:]
+        target_conditional_y = batch.y[:, :1].expand(-1, R)
+
+        if self.force_same_query:
+            # we only need to edit the related marginals' query, since target marginal
+            # and conditional are the same by construction
+            related_marginal_x[sep :, ...] = target_marginal_x[sep :, ...]
+            related_marginal_y[sep :, ...] = target_marginal_y[sep :, ...]
+
+        # Join the three streams into a single batch
+        x = torch.cat([ target_marginal_x, related_marginal_x, target_conditional_x],dim=1)
+        y = torch.cat([ target_marginal_y, related_marginal_y, target_conditional_y], dim=1)
+
+        return MyBatch(
+                x=x.to(device), y=y.to(device), target_y=y.to(device),
+                single_eval_pos=sep,
         )
     
-    def forward(self, batch, **kwargs):
-        # for the CrossFusion layers, we need to modify the batch: 
-        # the first third is the unconditional marginal predictions of the target task
-        # the second third is the unconditional marginal predictions of the related tasks
-        # the last third is the conditional predictions of the related tasks to be updated
+    def forward(self, batch: MyBatch, **kwargs):
+        """
+        Forward pass with batch parsing for cross-fusion.
+        """
+
+        if 'single_eval_pos' in kwargs.keys():
+            # kwargs has precedence over batch attribute
+            single_eval_pos = kwargs['single_eval_pos']
+            del kwargs['single_eval_pos']
+        else:
+            single_eval_pos = batch.single_eval_pos
         
-        batch = self.parse_batch(self.training, batch)
-        output = super().forward(batch, **kwargs)
+        batch = self.parse_batch(batch, single_eval_pos)
+        output = super().forward(batch, single_eval_pos, **kwargs)
         return output
+
+    def parse_batch(self, batch: MyBatch, single_eval_pos) -> MyBatch:
+        """
+        Override parse_batch to handle both train and eval parsing.
+        """
+        return self.parse_train_batch(batch, single_eval_pos) if self.training \
+            else self.parse_eval_batch(batch, single_eval_pos)
 
     @property
     def criterion(self):

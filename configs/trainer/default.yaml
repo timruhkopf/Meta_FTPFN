@@ -1,15 +1,17 @@
 # Default trainer configuration
-epochs: 300
-steps: 63
+epochs: ${dataset.store_prior.n_chunks }
+steps:  ${div:${dataset.store_prior.chunk_size},${dataset.store_prior.batch_size}}
+# number of batches assuming chunk_size=1008 and batch_size=16
+
+objective:
+  _target_: ppfn.model.mymodel.multistream_objective.MultiStreamObjective
+
 trainer_class:
   _target_: ppfn.trainer.PPFNTrainer
   use_amp: false
   grad_clip: 1.0
   aggregate_k_gradients: 1
   verbose: true
-  callbacks:
-    - _target_: ppfn.model.mymodel.cross_fusion.CrossFusionLossCallback
-
-  experiment_name: ${experiment_name}
 
 
+  callbacks: Null
