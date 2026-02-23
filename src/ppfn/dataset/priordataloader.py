@@ -12,22 +12,22 @@ import torch
 
 import logging
 
+from ppfn.utils.mybatch import MyBatch
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
 
 
 class StoredPriorDataset(torch.utils.data.Dataset):
     """Handles the physical structure of the data on disk."""
 
     def __init__(
-        self,
-        storage_path: str,
-        get_batch_fn: Callable = None,
-        # sample_on_init: bool = False,
-        # sample_kwargs: dict = {},
-        # submitit_kwargs: dict = {}
+            self,
+            storage_path: str,
+            get_batch_fn: Callable = None,
+            # sample_on_init: bool = False,
+            # sample_kwargs: dict = {},
+            # submitit_kwargs: dict = {}
     ):
         super().__init__()
         self.storage_path = pathlib.Path(storage_path)
@@ -75,58 +75,93 @@ class StoredPriorDataset(torch.utils.data.Dataset):
         # batch_idx = idx % K
         chunk_idx, batch_idx = divmod(idx, self.items_per_chunk)
 
+        if self.eval_pos_sampler is None:
+            # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
+            single_eval_pos = int(
+                np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+            )
+        else:
+            single_eval_pos = self.eval_pos_sampler()
+
         chunk_data = self.load_chunk(chunk_idx)
+
+        batch = MyBatch(
+            **{k: v[batch_idx] for k, v in chunk_data.items()},
+            single_eval_pos=single_eval_pos,
+            target_y=chunk_data["y"][batch_idx]
+        )
+
         return chunk_data[batch_idx]
 
     def store_prior(
-        self,
-        n_chunks,
-        chunk_size,
-        batch_size,
-        seq_len,
-        get_batch_fn,
-        batch_kwargs={},
-        eval_pos_sampler=None,
-        local=False,
-        **submitit_kwargs,
-    ):
-        """locally or via submitit."""
-
-        def sample_chunk(
-            path,  # must contain the partition folder
-            chunk_id,
+            self,
+            n_chunks,
             chunk_size,
             batch_size,
             seq_len,
             get_batch_fn,
+            batch_kwargs={},
             eval_pos_sampler=None,
-            get_batch_kwargs={},
+            local=False,
+            **submitit_kwargs,
+    ):
+        """locally or via submitit."""
+
+        def sample_chunk(
+                path,  # must contain the partition folder
+                chunk_id,
+                chunk_size,
+                batch_size,
+                seq_len,
+                get_batch_fn,
+                eval_pos_sampler=None,
+                get_batch_kwargs={},
         ):
             chunks = []
             for chunk in range(chunk_size // batch_size):
                 # sample the train-test-split position for the entire batch
-                if eval_pos_sampler is None:
-                    # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-                    single_eval_pos = int(
-                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
-                    )
-                else:
-                    single_eval_pos = eval_pos_sampler()
-                assert single_eval_pos < seq_len
 
                 batch = get_batch_fn(
                     batch_size=batch_size,
                     seq_len=seq_len,
-                    single_eval_pos=single_eval_pos,
+                    single_eval_pos=None,
                     **get_batch_kwargs,
                 )
                 chunks.append(batch)
                 # todo on USR1 signal of process (--signal=B:TERM@120) break and dump the current
                 # progress
 
-            chunk_file = pathlib.Path(path) / f"chunk_{chunk_id}.pkl"
+            # concat the batches into a single chunk
+            # FIXME: This will fail due to the varying dimensionality of x across batches!
+            x = torch.cat([b.x for b in chunks], dim=1)
+            y = torch.cat([b.y for b in chunks], dim=1)
+            # target_y = torch.cat([b.target_y for b in chunks], dim=1)
+            style = torch.cat([b.style for b in chunks], dim=0) if chunks[0].style is not None else None
+            src_key_padding_mask = torch.cat([b.src_key_padding_mask for b in chunks], dim=0) if chunks[
+                                                                                                     0].src_key_padding_mask is not None else None
+
+            chunk_data = {
+                "x": x,
+                "y": y,
+                # "target_y": target_y,
+                "style": style,
+                "mask": src_key_padding_mask,
+            }
+
+            if self.half_precision:
+                chunk_data = {
+                    k: v.half()
+                    if isinstance(v, torch.Tensor) and v.dtype == torch.float else v
+                    for k, v in chunk_data.items()
+                }
+
+            chunk_file = pathlib.Path(path) / f"chunk_{chunk_id}.pt"
+            # consider training on float16 to reduce storage and I/O overhead
+            # TODO src_key_padding_mask stored as torch.BoolTensor to save space or sample on demand?
             with open(chunk_file, "wb") as file:
-                cloudpickle.dump(chunks, file)
+                # use torch.save for the chunks instead of cloudpickle due to meta-data / class information overhead
+                torch.save(chunk_data, file)
+                # cloudpickle.dump(chunks, file)
 
         # define the jobs
         chunk_tasks = [
@@ -159,7 +194,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
 
 # FIXME: Untested DDP dataloader preparation
 def prepare_dataloader(
-    dataset: Dataset, batch_size: int, pin_memory: bool = True, num_workers=4
+        dataset: Dataset, batch_size: int, pin_memory: bool = True, num_workers=4
 ) -> DataLoader:
     return DataLoader(
         dataset,
@@ -182,6 +217,7 @@ if __name__ == "__main__":
     import os
     import torch.distributed as dist
 
+
     def setup_ddp(rank, world_size):
         # These environment variables are usually set by torchrun
         os.environ["MASTER_ADDR"] = "localhost"
@@ -191,8 +227,10 @@ if __name__ == "__main__":
         dist.init_process_group("nccl", rank=rank, world_size=world_size)
         torch.cuda.set_device(rank)
 
+
     def cleanup():
         dist.destroy_process_group()
+
 
     with TemporaryDirectory() as tmpdir:
         path = tmpdir
