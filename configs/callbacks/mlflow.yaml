@@ -4,3 +4,4 @@ mlflow:
   run_name: ${run_name}
   mlflow_tracking_uri: ${mlflow_tracking_uri}
   log_system_metrics: False
+  parent_run_id: ${parent_run_id}

@@ -11,6 +11,7 @@ checkpoint: ???
 
 experiment_name: ???
 run_name: ???
+parent_run_id: ???
 mlflow_tracking_uri: 'file:///bigwork/nhwpruht/Meta_FTPFN/mlruns'
 callbacks:
   nll_avg_ckpt:

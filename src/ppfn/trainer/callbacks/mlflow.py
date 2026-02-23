@@ -19,6 +19,7 @@ class MLflowCallback(AbstractCallback):
         run_name: str | None = None,
         mlflow_tracking_uri: str | None = None,
         log_system_metrics: bool = True,
+        parent_run_id: str | None = None,
     ):
         super().__init__()
         self.experiment_name = experiment_name
@@ -27,6 +28,7 @@ class MLflowCallback(AbstractCallback):
         self.run = None
         self.mlflow_tracking_uri = mlflow_tracking_uri
         self.log_system_metrics = log_system_metrics
+        self.parent_run_id = parent_run_id
 
     def on_train_start(self, **kwargs):
         logger.info("Setting up MLflow tracking...")
@@ -36,9 +38,19 @@ class MLflowCallback(AbstractCallback):
             mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
 
         mlflow.set_experiment(self.experiment_name)
-        self.run = mlflow.start_run(
-            run_name=self.run_name, log_system_metrics=self.log_system_metrics
-        )
+
+        if self.parent_run_id is not None:
+            logger.info(f"Starting nested child run under parent run {self.parent_run_id}...")
+            self.run = mlflow.start_run(
+                run_name=self.run_name,
+                log_system_metrics=self.log_system_metrics,
+                parent_run_id=self.parent_run_id,
+                nested=True,
+            )
+        else:
+            self.run = mlflow.start_run(
+                run_name=self.run_name, log_system_metrics=self.log_system_metrics
+            )
 
         # Log Git Metadata
         mlflow.set_tag("mlflow.folder", os.getcwd())
