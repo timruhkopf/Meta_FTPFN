@@ -9,9 +9,23 @@ To analyse our results in the dashboard, we will need to do port forwarding from
 
 ## on remote
 ```bash
+# 1. Get a random free port
 PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
-echo "------------------ Starting MLflow UI on port $PORT ------------------"
-uv run mlflow ui --backend-store-uri file:///bigwork/nhwpruht/Meta_FTPFN/mlruns --port $PORT
+
+# 2. Identify the specific login node (e.g., login03)
+NODE_HOSTNAME=$(hostname)
+LOCAL_PORT=5004
+USERNAME=nhwpruht
+
+# 3. Construct and echo the command for your local machine
+echo "----------------------------------------------------------------"
+echo "MLflow UI is starting on $NODE_HOSTNAME:$PORT"
+echo "PASTE THIS ON YOUR LOCAL MACHINE:"
+echo "ssh -L $LOCAL_PORT:localhost:$PORT $USERNAME@$NODE_HOSTNAME.cluster.uni-hannover.de"
+echo "----------------------------------------------------------------"
+
+# 4. Run the UI
+uv run mlflow ui --backend-store-uri file:///bigwork/$USERNAME/Meta_FTPFN/mlruns --port $PORT
 ```
 
 ## on local 
