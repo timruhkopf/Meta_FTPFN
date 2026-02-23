@@ -63,7 +63,9 @@ class MetaTestCallback(AbstractCallback):
 
         aggregated_metrics = {}
         for key in results[0].keys():
-            if key.startswith("nll/A"): # we skip these, because on a fixed dataset, this will always be constant!
+            if key.startswith("nll/A") or key == "nll/C":
+                # we skip A, because on a fixed dataset, this will always be constant!
+                # similarilty, nll/C will be the same as nll/C-A, so we skip it to avoid redundancy in the logs.
                 continue
 
             newkey = f"{key}:{self.dataset.name}"
