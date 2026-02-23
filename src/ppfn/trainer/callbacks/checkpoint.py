@@ -134,24 +134,17 @@ class CheckpointCallback(AbstractCallback):
             self.mode == "max" and current_score > self.best_score
         )
 
-        now = time.time()
-        time_since_last = now - self.last_save_time
-
         if is_best:
             self.best_score = current_score
-            # Always snapshot the best state to CPU memory immediately
-            # This ensures we have the best version even if we don't write to disk yet
             self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
-            self._needs_saving = True if epoch > self.min_epoch else False # <--- Mark as "dirty" (needs disk sync)
-            logger.info(
-                f"✨ New best captured in memory (Epoch {epoch}: {current_score:.4f})"
-            )
+            self._needs_saving = True  # Always mark as dirty if it's the new best
+            logger.info(f"✨ New best captured in memory (Epoch {epoch})")
 
-            # 3. Time Guard for Disk I/O
         now = time.time()
         time_since_last = now - self.last_save_time
 
-        if self._needs_saving and time_since_last >= self.min_save_interval:
+        # Only save if: We have a new version AND we are past the min epoch AND the timer expired
+        if self._needs_saving and epoch >= self.min_epoch and time_since_last >= self.min_save_interval:
             self._trigger_save(now)
 
     def _trigger_save(self, timestamp: float):

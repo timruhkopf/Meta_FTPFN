@@ -31,9 +31,9 @@ class CrossFusion(nn.Module):
 
     def initialize_as_identity(self):
         # 1. Zero out the output projection weights and biases
-        nn.init.zeros_(self.cross_train.out_proj.weight)
+        nn.init.normal_(self.cross_train.out_proj.weight, std=1e-4)
         nn.init.zeros_(self.cross_train.out_proj.bias)
-        nn.init.zeros_(self.cross_test.out_proj.weight)
+        nn.init.normal_(self.cross_test.out_proj.weight, std=1e-4)
         nn.init.zeros_(self.cross_test.out_proj.bias)
 
         # 2. Ensure LayerNorm starts as identity (weight=1, bias=0)
@@ -109,6 +109,10 @@ class CrossFusion(nn.Module):
             train_delta = self.norm(train_delta)
             test_delta = self.norm(test_delta)
 
+        if self.linear is not None:
+            train_delta = self.linear(train_delta)
+            test_delta = self.linear(test_delta)
+
         train_update = train_delta + C_train
         test_update = test_delta + C_test
 
@@ -116,8 +120,6 @@ class CrossFusion(nn.Module):
             [train_update, test_update], dim=0
         )  # train + test updated conditionals
 
-        if self.linear is not None:
-            conditional = self.linear(conditional)
 
         # combine the untainted streams A, B with the updated conditional stream C
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)

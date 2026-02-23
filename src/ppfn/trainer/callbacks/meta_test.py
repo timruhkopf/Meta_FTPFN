@@ -63,6 +63,9 @@ class MetaTestCallback(AbstractCallback):
 
         aggregated_metrics = {}
         for key in results[0].keys():
+            if key.startswith("nll/A"): # we skip these, because on a fixed dataset, this will always be constant!
+                continue
+
             newkey = f"{key}:{self.dataset.name}"
             aggregated_metrics[newkey] = sum(r[key] for r in results) / len(results)
 
