@@ -88,7 +88,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
 
         # upcast
         batch = {
-            k: v.float() if isinstance(v, torch.Tensor) and v.dtype == torch.float else v
+            k: v.float() if isinstance(v, torch.Tensor) and v.dtype == torch.float16 else v
             for k, v in batch.items()
         }
 
