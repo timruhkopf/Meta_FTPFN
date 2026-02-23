@@ -32,7 +32,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
         super().__init__()
         self.storage_path = pathlib.Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        self.chunk_files = sorted(self.storage_path.glob("chunk_*.pkl"))
+        self.chunk_files = sorted(self.storage_path.glob("chunk_*.pt"))
         self.get_batch_fn = get_batch_fn
 
         # FIXME: this is just a temporary fix to sample prior on initialization
@@ -58,9 +58,9 @@ class StoredPriorDataset(torch.utils.data.Dataset):
         if chunk_id == self.current_chunk_id:
             return self.cached_chunk_data
 
-        chunk_file = self.storage_path / f"chunk_{chunk_id}.pkl"
-        with open(chunk_file, "rb") as f:
-            data = cloudpickle.load(f)
+        chunk_file = self.storage_path / f"chunk_{chunk_id}.pt"
+        # with open(chunk_file, "rb") as f:
+        data = torch.load(chunk_file) # consider mmap for processes on the same machine to reduce memory overhead, but beware of potential issues with concurrent access
 
         self.current_chunk_id = chunk_id
         self.cached_chunk_data = data
@@ -75,23 +75,27 @@ class StoredPriorDataset(torch.utils.data.Dataset):
         # batch_idx = idx % K
         chunk_idx, batch_idx = divmod(idx, self.items_per_chunk)
 
-        if self.eval_pos_sampler is None:
-            # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-            single_eval_pos = int(
-                np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
-            )
-        else:
-            single_eval_pos = self.eval_pos_sampler()
-
         chunk_data = self.load_chunk(chunk_idx)
+        batch = chunk_data[f"batch_{batch_idx}"]
 
-        batch = MyBatch(
-            **{k: v[batch_idx] for k, v in chunk_data.items()},
-            single_eval_pos=single_eval_pos,
-            target_y=chunk_data["y"][batch_idx]
+        # TODO Padding
+        # Since we are training on meta-tasks, with a target task and multiple related tasks, all of which may be at varying
+        # x_train sizes -- especially the target task, that has usually less training data than the related tasks,
+        # we need to pad the x and y of the target task to the maximum sequence length in the batch
+        # FIXME: Notice, that we need to know in the train part, which tokens correspond to later fidelities PER HP (!)
+        #  so that we can decide for each hp config, which tokens we want to remove by padding, ensuring, that we are
+        #  not breaking sequence logic by padding in the middle of the sequence
+
+        # upcast
+        batch = {
+            k: v.float() if isinstance(v, torch.Tensor) and v.dtype == torch.float else v
+            for k, v in batch.items()
+        }
+
+        return MyBatch(
+            **{k: v for k, v in batch.items()},
+            target_y=batch["y"],
         )
-
-        return chunk_data[batch_idx]
 
     def store_prior(
             self,
@@ -103,6 +107,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
             batch_kwargs={},
             eval_pos_sampler=None,
             local=False,
+            half_precision=False,
             **submitit_kwargs,
     ):
         """locally or via submitit."""
@@ -116,51 +121,56 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 get_batch_fn,
                 eval_pos_sampler=None,
                 get_batch_kwargs={},
+                half_precision=False,
         ):
-            chunks = []
-            for chunk in range(chunk_size // batch_size):
-                # sample the train-test-split position for the entire batch
+            chunk_storage = {}
+            for i, chunk in enumerate(range(chunk_size // batch_size)):
+
+                # Train-test split position sampling for the batch.
+                # Notice, that this must be the same for the entire batch due to the split MultiHeadAttention as implemented in the PFN
+                if eval_pos_sampler is None:
+                    # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
+                    single_eval_pos = int(
+                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+                    )
+                else:
+                    single_eval_pos = eval_pos_sampler()
 
                 batch = get_batch_fn(
                     batch_size=batch_size,
                     seq_len=seq_len,
-                    single_eval_pos=None,
+                    single_eval_pos=single_eval_pos,
                     **get_batch_kwargs,
                 )
-                chunks.append(batch)
+
+                x, y, style = batch.x, batch.y, batch.style if hasattr(batch, "style") else None
+
+                if half_precision:
+                    x = x.half() if x.dtype == torch.float else x
+                    y = y.half() if y.dtype == torch.float else y
+                    style = style.half() if style is not None and style.dtype == torch.float else style
+
+
+                chunk_storage[f"batch_{i}"] = {
+                    "x": x,
+                    "y": y,
+                    # "target_y": batch.target_y,
+                    "style": style,
+                    # "mask": batch.src_key_padding_mask,
+                    "single_eval_pos": batch.single_eval_pos
+                }
                 # todo on USR1 signal of process (--signal=B:TERM@120) break and dump the current
                 # progress
 
-            # concat the batches into a single chunk
-            # FIXME: This will fail due to the varying dimensionality of x across batches!
-            x = torch.cat([b.x for b in chunks], dim=1)
-            y = torch.cat([b.y for b in chunks], dim=1)
-            # target_y = torch.cat([b.target_y for b in chunks], dim=1)
-            style = torch.cat([b.style for b in chunks], dim=0) if chunks[0].style is not None else None
-            src_key_padding_mask = torch.cat([b.src_key_padding_mask for b in chunks], dim=0) if chunks[
-                                                                                                     0].src_key_padding_mask is not None else None
 
-            chunk_data = {
-                "x": x,
-                "y": y,
-                # "target_y": target_y,
-                "style": style,
-                "mask": src_key_padding_mask,
-            }
-
-            if self.half_precision:
-                chunk_data = {
-                    k: v.half()
-                    if isinstance(v, torch.Tensor) and v.dtype == torch.float else v
-                    for k, v in chunk_data.items()
-                }
 
             chunk_file = pathlib.Path(path) / f"chunk_{chunk_id}.pt"
+            torch.save(chunk_storage, chunk_file)
             # consider training on float16 to reduce storage and I/O overhead
             # TODO src_key_padding_mask stored as torch.BoolTensor to save space or sample on demand?
-            with open(chunk_file, "wb") as file:
+            # with open(chunk_file, "wb") as file:
                 # use torch.save for the chunks instead of cloudpickle due to meta-data / class information overhead
-                torch.save(chunk_data, file)
+
                 # cloudpickle.dump(chunks, file)
 
         # define the jobs
@@ -174,6 +184,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 "get_batch_fn": get_batch_fn,
                 "eval_pos_sampler": eval_pos_sampler,
                 "get_batch_kwargs": batch_kwargs,
+                "half_precision": half_precision,
             }
             for chunk_id in range(n_chunks)
         ]
@@ -212,7 +223,7 @@ def prepare_dataloader(
 
 if __name__ == "__main__":
     from tempfile import TemporaryDirectory
-    from ppfn.dataset.get_batch.deprec.bnn_output_interpolation import get_batch_mixed
+    from ppfn.dataset.get_batch.get_related_batch import get_batch
 
     import os
     import torch.distributed as dist
@@ -238,22 +249,28 @@ if __name__ == "__main__":
         chunk_size = 64
         batch_size = 32
         seq_len = 1000
-        dataset = StoredPriorDataset(storage_path=tmpdir, get_batch_fn=get_batch_mixed)
-        dataset.sample_chunk(
+        dataset = StoredPriorDataset(storage_path=tmpdir, get_batch_fn=get_batch)
+        dataset.store_prior(
             path=path,
             chunk_id=chunk_id,
             chunk_size=chunk_size,
+            n_chunks=2,
             batch_size=batch_size,
             seq_len=seq_len,
-            get_batch_fn=get_batch_mixed,
-            num_features=12,
-            single_eval_pos=1000,
+            get_batch_fn=get_batch,
+            local=True,
+            half_precision=False,
+            batch_kwargs={'num_features': 12}
         )
+
+        # check that files are created and can be loaded
+        assert torch.load(pathlib.Path(tmpdir) / f"chunk_{chunk_id}.pt") is not None, "Chunk file was not created successfully."
 
         dataset2 = StoredPriorDataset(
             storage_path=tmpdir,
         )
-        dataset2[0]
+        dataset2[1]
+
 
         local_rank = int(0)  # os.environ["LOCAL_RANK"]
         # torch.cuda.set_device(local_rank)

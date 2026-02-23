@@ -7,6 +7,7 @@ dataset_class:
 
 store_prior: # method call
   get_batch_fn: ???
+  half_precision: False
 
   n_chunks: 300 # 400  # array size
   chunk_size: 6660 # 5000 # number of items (tasks) per file
