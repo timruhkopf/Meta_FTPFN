@@ -41,19 +41,20 @@ class PPFNTrainer:
     """
 
     def __init__(
-            self,
-            model: nn.Module,
-            train_loader,
-            criterion: nn.Module,
-            device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
-            use_amp: bool = False,
-            grad_clip: float = 1.0,
-            aggregate_k_gradients: int = 1,
-            callbacks: list[AbstractCallback] | None = None,
-            verbose: bool = False,
-            optimizer=None,
-            scheduler=None,
-            description_template: str | None = None,
+        self,
+        model: nn.Module,
+        train_loader,
+        criterion: nn.Module,
+        device: torch.device | str = "cuda" if torch.cuda.is_available() else "cpu",
+        use_amp: bool = False,
+        grad_clip: float = 1.0,
+        aggregate_k_gradients: int = 1,
+        callbacks: dict[AbstractCallback] | None = None,
+        verbose: bool = False,
+        optimizer=None,
+        scheduler=None,
+        description_template: str | None = None,
+        loss_multiplier: float = 1.0,
     ):
         """
         Initialize the trainer.
@@ -99,6 +100,7 @@ class PPFNTrainer:
         self.scaler = amp.GradScaler(device=self.device) if use_amp else None
         self.grad_clip = grad_clip
         self.aggregate_k_gradients = aggregate_k_gradients
+        self.loss_multiplier = loss_multiplier
 
         # Training state
         self.current_epoch = 0
@@ -214,15 +216,15 @@ class PPFNTrainer:
 
                 batch = batch.to(self.device)
 
-            if batch.single_eval_pos is None:
-                seq_len = torch.tensor(batch.x.shape[1])
-                # sample according to the PriorDataLoader default
-                single_eval_pos = int(torch.floor(
-                    torch.exp(torch.rand(1) * torch.log(seq_len + 1))
-                ) - 1)
-                warnings.warn("single_eval_pos not set in batch; using random value.")
-            else:
-                single_eval_pos = batch.single_eval_pos
+            # if batch.single_eval_pos is None:
+            #     seq_len = torch.tensor(batch.x.shape[1])
+            #     # sample according to the PriorDataLoader default
+            #     single_eval_pos = int(
+            #         torch.floor(torch.exp(torch.rand(1) * torch.log(seq_len + 1))) - 1
+            #     )
+            #     warnings.warn("single_eval_pos not set in batch; using random value.")
+            # else:
+            single_eval_pos = batch.single_eval_pos
 
             step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
 
@@ -257,7 +259,7 @@ class PPFNTrainer:
         loss, step_metrics = self._forward_pass(batch, single_eval_pos=single_eval_pos)
 
         # Scale loss for gradient accumulation
-        loss_scaled = loss / self.aggregate_k_gradients
+        loss_scaled = (loss * self.loss_multiplier) / self.aggregate_k_gradients
 
         if self.scaler and device_type == "cuda":
             self.scaler.scale(loss_scaled).backward()

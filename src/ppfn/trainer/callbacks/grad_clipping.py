@@ -32,9 +32,18 @@ class GradientClippingCallback(AbstractCallback):
             # Adding a small epsilon to avoid division by zero
             gsnr = (mean_grad**2) / (std_grad**2 + 1e-8)
 
+            weight_norm = {}
+            for name, p in self.trainer.model.named_parameters():
+                if p.grad is not None and p.requires_grad:
+                    w_norm = p.data.norm().item()
+                    g_norm = p.grad.data.norm().item()
+                    # Ratio of gradient scale to weight scale
+                    weight_norm[f"train/ratio/{name}"] = g_norm / (w_norm + 1e-8)
+
             return {
                 "train/grad/sparsity": sparsity,
                 "train/grad/gsnr": gsnr,
                 "train/grad/mean": mean_grad,
                 "train/grad/std": std_grad,
+                **weight_norm,
             }

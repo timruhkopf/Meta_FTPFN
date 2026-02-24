@@ -15,8 +15,7 @@ class CrossFusion(nn.Module):
         self.dropout = dropout
         self.use_prenorm = use_prenorm
 
-        self.cross_train = MultiheadAttention(d_model, num_heads, dropout)
-        self.cross_test = MultiheadAttention(d_model, num_heads, dropout)
+        self.self_attn = MultiheadAttention(d_model, num_heads, dropout)
         self.linear = nn.Linear(d_model, d_model) if add_linear else None
 
         # PRE-NORM: Normalize inputs, not the output delta
@@ -30,16 +29,19 @@ class CrossFusion(nn.Module):
         self.single_eval_pos = None  # placeholder
 
     def initialize_as_identity(self):
-        # 1. Zero out the output projection weights and biases
-        nn.init.zeros_(self.cross_train.out_proj.weight)
-        nn.init.zeros_(self.cross_train.out_proj.bias)
-        nn.init.zeros_(self.cross_test.out_proj.weight)
-        nn.init.zeros_(self.cross_test.out_proj.bias)
-
-        # 2. Ensure LayerNorm starts as identity (weight=1, bias=0)
-        # PyTorch does this by default, but it's good to be explicit
+        # 1. Ensure LayerNorm starts as identity
         nn.init.constant_(self.norm.weight, 1)
         nn.init.constant_(self.norm.bias, 0)
+
+        # 2. Safely zero ONLY the final projection in the residual block
+        if self.linear is not None:
+            nn.init.zeros_(self.linear.weight)
+            nn.init.zeros_(self.linear.bias)
+            # self_attn handles itself via PyTorch's default Xavier Uniform!
+        else:
+            # If there is no linear layer, out_proj becomes the final layer we must zero
+            nn.init.zeros_(self.self_attn.out_proj.weight)
+            nn.init.zeros_(self.self_attn.out_proj.bias)
 
     def validate_forward_args(self, x, *args, **kwargs) -> Tuple[int, int]:
         if "single_eval_pos" in kwargs:
@@ -100,14 +102,18 @@ class CrossFusion(nn.Module):
         C_train, C_test = C[:sep, :, :], C[sep:, :, :]
 
         # only the learned delta
-        train_delta = self.cross_train(A_train, B_train, B_train)[0]
-        test_delta = self.cross_test(A_test, B_train, B_train)[0]
+        train_delta = self.self_attn(A_train, B_train, B_train)[0]
+        test_delta = self.self_attn(A_test, B_train, B_train)[0]
 
         # FIXME: V_test should probably be altered and added?
 
         if not self.use_prenorm:
             train_delta = self.norm(train_delta)
             test_delta = self.norm(test_delta)
+
+        if self.linear is not None:
+            train_delta = self.linear(train_delta)
+            test_delta = self.linear(test_delta)
 
         train_update = train_delta + C_train
         test_update = test_delta + C_test
@@ -116,8 +122,6 @@ class CrossFusion(nn.Module):
             [train_update, test_update], dim=0
         )  # train + test updated conditionals
 
-        if self.linear is not None:
-            conditional = self.linear(conditional)
 
         # combine the untainted streams A, B with the updated conditional stream C
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)

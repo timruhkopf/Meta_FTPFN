@@ -33,6 +33,7 @@ def callback(tmp_path, mock_trainer):
         mode="min",
         name="test_model",  # Defined name implies file will be best_test_model.pt
         min_save_interval=0,  # Disable time guard for most tests by default
+        min_save_epoch=0
     )
     callb.set_trainer(mock_trainer)
     return callb
