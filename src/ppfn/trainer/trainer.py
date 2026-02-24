@@ -49,7 +49,7 @@ class PPFNTrainer:
         use_amp: bool = False,
         grad_clip: float = 1.0,
         aggregate_k_gradients: int = 1,
-        callbacks: list[AbstractCallback] | None = None,
+        callbacks: dict[AbstractCallback] | None = None,
         verbose: bool = False,
         optimizer=None,
         scheduler=None,

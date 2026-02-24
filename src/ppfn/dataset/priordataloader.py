@@ -60,7 +60,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
 
         chunk_file = self.storage_path / f"chunk_{chunk_id}.pt"
         # with open(chunk_file, "rb") as f:
-        data = torch.load(chunk_file) # consider mmap for processes on the same machine to reduce memory overhead, but beware of potential issues with concurrent access
+        data = torch.load(chunk_file, map_location='cpu') # consider mmap for processes on the same machine to reduce memory overhead, but beware of potential issues with concurrent access
 
         self.current_chunk_id = chunk_id
         self.cached_chunk_data = data
