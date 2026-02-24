@@ -2,8 +2,8 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 from typing import Callable
+from pathlib import Path
 import os
-import pathlib
 
 import numpy as np
 import cloudpickle
@@ -58,9 +58,22 @@ class StoredPriorDataset(torch.utils.data.Dataset):
         if chunk_id == self.current_chunk_id:
             return self.cached_chunk_data
 
-        chunk_file = self.storage_path / f"chunk_{chunk_id}.pt"
+
         # with open(chunk_file, "rb") as f:
-        data = torch.load(chunk_file, map_location='cpu') # consider mmap for processes on the same machine to reduce memory overhead, but beware of potential issues with concurrent access
+        # data = torch.load(chunk_file, map_location='cpu')
+        flag = True
+        while flag:
+            try:
+                chunk_file = self.chunk_files[chunk_id]
+                # map_location='cpu' is good, but let's ensure the file is actually readable
+                data = torch.load(chunk_file, map_location='cpu', weights_only=False)
+                flag = False
+            except Exception as e:
+                logger.error(f"Failed to load chunk {chunk_file}. File might be corrupted.")
+                # pop the file
+                self.chunk_files.pop(chunk_id)
+                # raise RuntimeError(f"Corrupted file detected: {chunk_file}") from e
+        # consider mmap for processes on the same machine to reduce memory overhead, but beware of potential issues with concurrent access
 
         self.current_chunk_id = chunk_id
         self.cached_chunk_data = data
@@ -150,7 +163,6 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                     y = y.half() if y.dtype == torch.float else y
                     style = style.half() if style is not None and style.dtype == torch.float else style
 
-
                 chunk_storage[f"batch_{i}"] = {
                     "x": x,
                     "y": y,
@@ -162,16 +174,14 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 # todo on USR1 signal of process (--signal=B:TERM@120) break and dump the current
                 # progress
 
-
-
-            chunk_file = pathlib.Path(path) / f"chunk_{chunk_id}.pt"
+            chunk_file = Path(path) / f"chunk_{chunk_id}.pt"
             torch.save(chunk_storage, chunk_file)
             # consider training on float16 to reduce storage and I/O overhead
             # TODO src_key_padding_mask stored as torch.BoolTensor to save space or sample on demand?
             # with open(chunk_file, "wb") as file:
-                # use torch.save for the chunks instead of cloudpickle due to meta-data / class information overhead
+            # use torch.save for the chunks instead of cloudpickle due to meta-data / class information overhead
 
-                # cloudpickle.dump(chunks, file)
+            # cloudpickle.dump(chunks, file)
 
         # define the jobs
         chunk_tasks = [
@@ -264,13 +274,13 @@ if __name__ == "__main__":
         )
 
         # check that files are created and can be loaded
-        assert torch.load(pathlib.Path(tmpdir) / f"chunk_{chunk_id}.pt") is not None, "Chunk file was not created successfully."
+        assert torch.load(
+            Path(tmpdir) / f"chunk_{chunk_id}.pt") is not None, "Chunk file was not created successfully."
 
         dataset2 = StoredPriorDataset(
             storage_path=tmpdir,
         )
         dataset2[1]
-
 
         local_rank = int(0)  # os.environ["LOCAL_RANK"]
         # torch.cuda.set_device(local_rank)
