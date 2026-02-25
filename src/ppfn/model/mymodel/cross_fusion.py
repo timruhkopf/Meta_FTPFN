@@ -7,15 +7,18 @@ from torch.nn import MultiheadAttention
 
 class CrossFusion(nn.Module):
     def __init__(
-        self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=True
+        self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=True, reuse_attention=False
     ):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.dropout = dropout
         self.use_prenorm = use_prenorm
+        self.reuse_attention = reuse_attention
 
         self.self_attn = MultiheadAttention(d_model, num_heads, dropout)
+        if not reuse_attention:
+            self.test_attn = MultiheadAttention(d_model, num_heads, dropout)  # separate attention for test stream
         self.linear = nn.Linear(d_model, d_model) if add_linear else None
 
         # PRE-NORM: Normalize inputs, not the output delta
@@ -42,6 +45,10 @@ class CrossFusion(nn.Module):
             # If there is no linear layer, out_proj becomes the final layer we must zero
             nn.init.zeros_(self.self_attn.out_proj.weight)
             nn.init.zeros_(self.self_attn.out_proj.bias)
+
+            if not self.reuse_attention:
+                nn.init.zeros_(self.test_attn.out_proj.weight)
+                nn.init.zeros_(self.test_attn.out_proj.bias)
 
     def validate_forward_args(self, x, *args, **kwargs) -> Tuple[int, int]:
         if "single_eval_pos" in kwargs:
@@ -80,10 +87,7 @@ class CrossFusion(nn.Module):
         # Stream (A) query target task marginal predictions (untainted)
         A = x[:, :R, :]
 
-        # Stream (B.1) key related tasks' marginal predictions (untainted)
-        B = x[:, R : 2 * R, :]
-
-        # Stream (B.2) Value: what we want to extract from the related tasks based on
+        # Stream (B): what we want to extract from the related tasks based on
         # the learned kernel(A, B) * B, which will give us \Delta C, that we can add to C.
         B = x[:, R : 2 * R, :]  # Key Difference to CrossFusion
 
@@ -103,7 +107,11 @@ class CrossFusion(nn.Module):
 
         # only the learned delta
         train_delta = self.self_attn(A_train, B_train, B_train)[0]
-        test_delta = self.self_attn(A_test, B_train, B_train)[0]
+
+        if self.reuse_attention:
+            test_delta = self.self_attn(A_test, B_train, B_train)[0]  # cross-attend test queries to train keys/values
+        else:
+            test_delta = self.test_attn(A_test, B_train, B_train)[0]  # cross-attend test queries to train keys/values
 
         # FIXME: V_test should probably be altered and added?
 
