@@ -3,6 +3,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from typing import Callable
 from pathlib import Path
+import pathlib
 import os
 
 import numpy as np
@@ -28,11 +29,21 @@ class StoredPriorDataset(torch.utils.data.Dataset):
             # sample_on_init: bool = False,
             # sample_kwargs: dict = {},
             # submitit_kwargs: dict = {}
+            shuffle=False
     ):
         super().__init__()
-        self.storage_path = pathlib.Path(storage_path)
+        self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        self.chunk_files = sorted(self.storage_path.glob("chunk_*.pt"))
+        self.chunk_files: list[Path] = sorted(
+            [f for f in self.storage_path.glob("chunk_*.pt")
+             if f.is_file() and not f.name.startswith('.')] # avoid rsync temp files during debugging
+        )
+
+        assert len(self.chunk_files) > 0, f"No chunk files found in {self.storage_path}. Please run store_prior() to generate data."
+
+        if shuffle:
+            self.chunk_files = np.random.permutation(self.chunk_files).tolist()
+
         self.get_batch_fn = get_batch_fn
 
         # FIXME: this is just a temporary fix to sample prior on initialization
@@ -69,7 +80,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 data = torch.load(chunk_file, map_location='cpu', weights_only=False)
                 flag = False
             except Exception as e:
-                logger.error(f"Failed to load chunk {chunk_file}. File might be corrupted.")
+                logger.error(f"Failed to load chunk {self.chunk_files[chunk_id]}. File might be corrupted.")
                 # pop the file
                 self.chunk_files.pop(chunk_id)
                 # raise RuntimeError(f"Corrupted file detected: {chunk_file}") from e

@@ -14,7 +14,7 @@ store_prior: # method call
   batch_size: 60 # 25 # number of tasks in a batch number of batches = n_chunks * chunk_size / batch_size
   seq_len: 1000
   batch_kwargs:
-    share_unrelated_tasks: 0.33
+    share_unrelated: 0.33
     num_features: 12
 
 

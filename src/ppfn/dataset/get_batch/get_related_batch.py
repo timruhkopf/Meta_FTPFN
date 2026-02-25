@@ -5,6 +5,10 @@ import numpy as np
 
 from ppfn.utils.mybatch import MyBatch
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @torch.no_grad()
 def get_batch(
@@ -14,6 +18,7 @@ def get_batch(
         single_eval_pos,
         device=default_device,
         transform=None,
+        share_unrelated=0,
         **kwargs,
 ):
     num_params = kwargs.get("num_params") or DimensionPrior(num_features).sample()
@@ -22,7 +27,20 @@ def get_batch(
     x_list, y_list = [], []
 
     relation = []
-    for i in range(batch_size // 2):
+    num_pairs = batch_size // 2
+
+    # 1. Deterministically calculate how many pairs must be unrelated
+    num_unrelated_pairs = int(num_pairs * share_unrelated)
+
+    if share_unrelated > 0 and num_unrelated_pairs == 0:
+        logger.warn(
+            f"share_unrelated={share_unrelated} is greater than 0 but results in 0 unrelated pairs due to small batch size."
+            f" Consider increasing batch size or adjusting share_unrelated."
+        )
+
+    for i in range(num_pairs):
+        # Check if the current pair falls into the "forced unrelated" quota
+        force_unrelated = i < num_unrelated_pairs
 
         # 1. Initialize the base state
         target_task.sample_task()
@@ -30,12 +48,13 @@ def get_batch(
 
         # 2. Apply transform to get two related functional states
         # target_task and related_m are callables (BNNs)
-        if transform:
+        if transform is not None and not force_unrelated:
             related_m, relatedness = transform(target_task)
         else:
             # independent sampling of related task, no relation to target task
             related_m = target_task.clone()
             related_m.sample_task()
+            related_m.sample_y0_ymax()
             relatedness = 0
 
         relation.append(relatedness)
@@ -81,5 +100,8 @@ if __name__ == '__main__':
         num_features=3,
         single_eval_pos=16,
         device="cpu",
-        transform=None
+        transform=None,
+        share_unrelated=0.5,  # 50% of pairs will be unrelated
     )
+
+    batch.style # This will be completely 0, since we have no transform.

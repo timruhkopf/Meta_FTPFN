@@ -390,6 +390,22 @@ class OutputInterpolationTransform(TaskTransform):
 
 
 if __name__ == '__main__':
+
+    from ppfn.dataset.get_batch.get_related_batch import get_batch
+    # Example usage
+    batch = get_batch(
+        batch_size=4,
+        seq_len=32,
+        num_features=3,
+        single_eval_pos=16,
+        device="cpu",
+        transform=OutputInterpolationTransform(alpha=0.3, resample_y0_ymax=False),
+        share_unrelated=0.5,  # 50% of pairs will be unrelated
+    )
+
+    batch.style  # This will be half 0 half != 0 since we have a transform and a share_unrelated of 0.5.
+
+
     def debug_plot_transformation(transform, num_features=3):
         """
         Creates a comparison plot for a Target Task and its Related Task.
