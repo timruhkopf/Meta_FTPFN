@@ -52,12 +52,10 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 [f for f in self.storage_path.glob("chunk_*.pt")
                  if f.is_file() and not f.name.startswith('.')]  # avoid rsync temp files during debugging
             )
-
-        if len(self.chunk_files) == 0:
-            raise FileNotFoundError( f"No chunk files found in {self.storage_path}. Please run store_prior() to generate data.")
+            # raise FileNotFoundError( f"No chunk files found in {self.storage_path}. Please run store_prior() to generate data.")
 
 
-        if shuffle:
+        if shuffle and len(self.chunk_files) > 0:
             self.chunk_files = np.random.permutation(self.chunk_files).tolist()
 
         self.get_batch_fn = get_batch_fn
