@@ -25,21 +25,37 @@ class StoredPriorDataset(torch.utils.data.Dataset):
     def __init__(
             self,
             storage_path: str,
+            folder_name: str,
             get_batch_fn: Callable = None,
-            # sample_on_init: bool = False,
-            # sample_kwargs: dict = {},
-            # submitit_kwargs: dict = {}
-            shuffle=False
+            shuffle=False,
+            sample_on_init_kwargs: dict = None,
+
     ):
         super().__init__()
-        self.storage_path = Path(storage_path)
+        self.storage_path = Path(storage_path) / folder_name
+        self.name = folder_name
         self.storage_path.mkdir(parents=True, exist_ok=True)
+
         self.chunk_files: list[Path] = sorted(
             [f for f in self.storage_path.glob("chunk_*.pt")
-             if f.is_file() and not f.name.startswith('.')] # avoid rsync temp files during debugging
+             if f.is_file() and not f.name.startswith('.')]  # avoid rsync temp files during debugging
         )
 
-        assert len(self.chunk_files) > 0, f"No chunk files found in {self.storage_path}. Please run store_prior() to generate data."
+        if len(self.chunk_files) == 0 and sample_on_init_kwargs is not None:
+            # optional generation
+            self.store_prior(
+                local=True, # we don't want a trainer job to first spawn submitit jobs to then crash
+                get_batch_fn=get_batch_fn,
+                **sample_on_init_kwargs,
+            )
+            self.chunk_files: list[Path] = sorted(
+                [f for f in self.storage_path.glob("chunk_*.pt")
+                 if f.is_file() and not f.name.startswith('.')]  # avoid rsync temp files during debugging
+            )
+
+        if len(self.chunk_files) == 0:
+            raise FileNotFoundError( f"No chunk files found in {self.storage_path}. Please run store_prior() to generate data.")
+
 
         if shuffle:
             self.chunk_files = np.random.permutation(self.chunk_files).tolist()
@@ -132,6 +148,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
             eval_pos_sampler=None,
             local=False,
             half_precision=False,
+            single_eval_pos=None,
             **submitit_kwargs,
     ):
         """locally or via submitit."""
@@ -146,19 +163,21 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 eval_pos_sampler=None,
                 get_batch_kwargs={},
                 half_precision=False,
+                single_eval_pos=None,
         ):
             chunk_storage = {}
             for i, chunk in enumerate(range(chunk_size // batch_size)):
 
                 # Train-test split position sampling for the batch.
                 # Notice, that this must be the same for the entire batch due to the split MultiHeadAttention as implemented in the PFN
-                if eval_pos_sampler is None:
-                    # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-                    single_eval_pos = int(
-                        np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
-                    )
-                else:
-                    single_eval_pos = eval_pos_sampler()
+                if single_eval_pos is None:
+                    if eval_pos_sampler is None:
+                        # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
+                        single_eval_pos = int(
+                            np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+                        )
+                    else:
+                        single_eval_pos = eval_pos_sampler()
 
                 batch = get_batch_fn(
                     batch_size=batch_size,
@@ -187,12 +206,8 @@ class StoredPriorDataset(torch.utils.data.Dataset):
 
             chunk_file = Path(path) / f"chunk_{chunk_id}.pt"
             torch.save(chunk_storage, chunk_file)
-            # consider training on float16 to reduce storage and I/O overhead
             # TODO src_key_padding_mask stored as torch.BoolTensor to save space or sample on demand?
-            # with open(chunk_file, "wb") as file:
-            # use torch.save for the chunks instead of cloudpickle due to meta-data / class information overhead
 
-            # cloudpickle.dump(chunks, file)
 
         # define the jobs
         chunk_tasks = [
@@ -204,6 +219,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 "seq_len": seq_len,
                 "get_batch_fn": get_batch_fn,
                 "eval_pos_sampler": eval_pos_sampler,
+                "single_eval_pos": single_eval_pos,
                 "get_batch_kwargs": batch_kwargs,
                 "half_precision": half_precision,
             }

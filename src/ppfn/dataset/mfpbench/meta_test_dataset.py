@@ -2,9 +2,10 @@ import torch
 from torch.utils.data import IterableDataset
 from pathlib import Path
 
-from pfns4hpo.priors.prior import Batch
 
 from sklearn.model_selection import KFold
+
+from ppfn.utils.mybatch import MyBatch
 
 
 class MFPBenchMetaTestDataset(IterableDataset):
@@ -90,13 +91,11 @@ class MFPBenchMetaTestDataset(IterableDataset):
                 combined = torch.cat([test_data, train_data], dim=1)
                 # combined = combined.transpose(0, 1)
 
-                yield Batch(
+                yield MyBatch(
                     x=combined[..., :-1].to(self.device),
                     y=combined[..., -1].to(self.device),
                     target_y=combined[..., -1].to(self.device),
-                    single_eval_pos=torch.tensor([self.single_eval_pos]).to(
-                        self.device
-                    ),
+                    single_eval_pos=self.single_eval_pos,
                 )
 
 

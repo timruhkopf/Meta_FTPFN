@@ -2,39 +2,58 @@ same_task_128:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
   switch_to_eval: False
+
   dataset:
-    _target_: ppfn.dataset.synthetic_task_meta_test_dataset.SyntheticTaskMetaTestDataset
-    name: synthetic_same_task
+    _target_: ppfn.dataset.priordataloader.StoredPriorDataset
     get_batch_fn:
       _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
       _partial_: True
-      transform:
-        _target_: ppfn.dataset.get_batch.task_transforms.SameTaskTransform
-        resample_y0_ymax: False
-    data_path: ${oc.env:DATADIR}/validation
-    single_eval_pos: 128
-    device: ${device}
-    # kwargs for generating the dataset:
-    n_chunks: 1
-    chunk_size: 100
-    batch_size: 10 # 100 # half this number is number of pairs of items (bnn) per batch
+
+    storage_path: ${oc.env:DATADIR}/validation/
+    folder_name: synthetic_same_task
+
+    sample_on_init_kwargs:
+      seq_len: 1000
+      half_precision: True
+      eval_pos_sampler: Null
+      batch_kwargs: # address get_batch_fn kwargs here
+        share_unrelated: 0.
+        num_features: 12
+        transform:
+          _target_: ppfn.dataset.get_batch.task_transforms.SameTaskTransform
+          resample_y0_ymax: False
+
+      single_eval_pos: 128
+      n_chunks: 1
+      chunk_size: 1000
+      batch_size: 50 # 100 # half this number is number of pairs of items (bnn) per batch
+
+
+
 
 
 unrelated_128:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
   switch_to_eval: False
+
   dataset:
-    _target_: ppfn.dataset.synthetic_task_meta_test_dataset.SyntheticTaskMetaTestDataset
-    name: synthetic_unrelated_task
+    _target_: ppfn.dataset.priordataloader.StoredPriorDataset
     get_batch_fn:
       _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
       _partial_: True
-      transform: Null
-    data_path: ${oc.env:DATADIR}/validation
-    single_eval_pos: 128
-    device: ${device}
-    # kwargs for generating the dataset:
-    n_chunks: 1 # number of files
-    chunk_size: 100 # number of items per file
-    batch_size: 10  # number of unrelated tasks (bnn) items in batch (half them to get the n-pairs)
+
+    sample_on_init_kwargs:
+      seq_len: 1000
+      half_precision: True
+      eval_pos_sampler: Null
+      batch_kwargs: # address get_batch_fn kwargs here
+        num_features: 12
+
+
+      single_eval_pos: 128
+      n_chunks: 1
+      chunk_size: 1000
+      batch_size: 50 # 100 # half this number is number of pairs of items (bnn) per batch
+    storage_path: ${oc.env:DATADIR}/validation/
+    folder_name: synthetic_unrelated

@@ -82,8 +82,10 @@ class MultiStreamObjective(nn.Module):
                 style = batch.style[::2].squeeze()  # Extract style for stream A tasks
                 metrics.update(
                     {
-                        "nll/similar_task": nll_diff[:, style != 1].mean().item(),
-                        "nll/unrelated_task": nll_diff[:, style == 1].mean().item(),
+                        # note: similartasktransform defines style=1 for similar
+                        # get_related_batch.get_batch defines unrelated as style=0, similar depending on the transform
+                        "nll/similar_task": nll_diff[:, style != 0].mean().item(),
+                        "nll/unrelated_task": nll_diff[:, style == 0].mean().item(),
                     }
                 )
 

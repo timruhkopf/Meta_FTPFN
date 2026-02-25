@@ -2,7 +2,8 @@ sample_prior: False
 dataset_class:
 
   _target_: ppfn.dataset.priordataloader.StoredPriorDataset
-  storage_path: ${oc.env:DATADIR}priors/${dataset.dataset_name}
+  storage_path: ${oc.env:DATADIR}priors/
+  folder_name: ${dataset.dataset_name}
 
 
 store_prior: # method call

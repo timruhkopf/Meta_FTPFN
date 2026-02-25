@@ -21,9 +21,7 @@ class MetaTestCallback(AbstractCallback):
         self.frequency = frequency
         self.device = device
         self.switch_to_eval = switch_to_eval
-        assert hasattr(self.dataset, "name"), (
-            "Dataset must have a 'name' attribute for logging purposes."
-        )
+        self.name = dataset.name
 
     def on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
         if (epoch + 1) % self.frequency == 0:
@@ -55,20 +53,22 @@ class MetaTestCallback(AbstractCallback):
 
         with torch.no_grad():
             for batch in evaluation_dataloader:
+                batch = batch.to(self.device)
                 losses, step_metrics = self.trainer._forward_pass(
-                    batch, self.dataset.single_eval_pos
+                    batch, batch.single_eval_pos
                 )
 
                 results.append(step_metrics)
 
         aggregated_metrics = {}
+
         for key in results[0].keys():
-            if key.startswith("nll/A") or key == "nll/C":
+            if key.startswith("nll/A") or key in ["nll/C", 'nll/similar_task', "nll/unrelated_task"]:
                 # we skip A, because on a fixed dataset, this will always be constant!
                 # similarilty, nll/C will be the same as nll/C-A, so we skip it to avoid redundancy in the logs.
                 continue
 
-            newkey = f"{key}:{self.dataset.name}"
+            newkey = f"{key}:{self.name}"
             aggregated_metrics[newkey] = sum(r[key] for r in results) / len(results)
 
         return aggregated_metrics
