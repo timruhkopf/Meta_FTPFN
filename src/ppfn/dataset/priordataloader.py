@@ -217,9 +217,9 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 "seq_len": seq_len,
                 "get_batch_fn": get_batch_fn,
                 "eval_pos_sampler": eval_pos_sampler,
-                "single_eval_pos": single_eval_pos,
                 "get_batch_kwargs": batch_kwargs,
                 "half_precision": half_precision,
+                "single_eval_pos": single_eval_pos,
             }
             for chunk_id in range(n_chunks)
         ]
