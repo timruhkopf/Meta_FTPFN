@@ -21,6 +21,8 @@ def get_batch(
         share_unrelated=0,
         **kwargs,
 ):
+
+    assert kwargs.keys() <= {"num_params"}, f"Unexpected kwargs keys: {kwargs.keys()}. Only 'num_params' is allowed."
     num_params = kwargs.get("num_params") or DimensionPrior(num_features).sample()
     target_task = MultiFidelityTask(num_params, 23)
 

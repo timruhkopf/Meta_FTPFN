@@ -11,6 +11,8 @@ import cloudpickle
 import submitit
 import torch
 
+from copy import deepcopy
+
 import logging
 
 from ppfn.utils.mybatch import MyBatch
@@ -228,6 +230,28 @@ class StoredPriorDataset(torch.utils.data.Dataset):
             for task in chunk_tasks:
                 sample_chunk(**task)
         else:
+            import tempfile
+            from copy import deepcopy
+
+            # Sanity check: Run a tiny local dummy job to validate get_batch_fn
+            logger.info("Running a local dummy task to validate batch generation...")
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    dummy_task = deepcopy(chunk_tasks[0])
+                    # Override the path to the temp directory and restrict to 1 batch
+                    dummy_task["path"] = temp_dir
+                    dummy_task["chunk_size"] = 10
+                    dummy_task["batch_size"] = 10
+
+                    # Execute the single batch locally
+                    sample_chunk(**dummy_task)
+
+                logger.info("Dummy task succeeded! Proceeding with submitit array launch.")
+
+            except Exception as e:
+                logger.error("Dummy task failed! Halting before submitting array jobs.")
+                raise RuntimeError("Sanity check failed during local dummy batch generation.") from e
+
             executor = submitit.AutoExecutor(
                 folder=self.storage_path / "tmp/submitit_logs"
             )
