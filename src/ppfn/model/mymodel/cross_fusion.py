@@ -7,7 +7,7 @@ from torch.nn import MultiheadAttention
 
 class CrossFusion(nn.Module):
     def __init__(
-        self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_linear=True, reuse_attention=False
+        self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_adapter=True, reuse_attention=False, C_as_Q=True,
     ):
         super().__init__()
         self.d_model = d_model
@@ -15,11 +15,27 @@ class CrossFusion(nn.Module):
         self.dropout = dropout
         self.use_prenorm = use_prenorm
         self.reuse_attention = reuse_attention
+        self.C_as_Q = C_as_Q
 
         self.self_attn = MultiheadAttention(d_model, num_heads, dropout)
-        if not reuse_attention:
+        if reuse_attention:
+            self.test_attn = self.self_attn
+        else:
             self.test_attn = MultiheadAttention(d_model, num_heads, dropout)  # separate attention for test stream
-        self.linear = nn.Linear(d_model, d_model) if add_linear else None
+
+        if add_adapter:
+            # adapter is supposed to help us not leak B's task scale information into the final update
+            bottleneck_dim = d_model // 4  # Typical adapter bottleneck
+            self.adapter = nn.Sequential(
+                nn.Linear(d_model, bottleneck_dim),
+                nn.GELU(),
+                nn.Linear(bottleneck_dim, d_model)
+            )
+            # self.adapter = nn.Sequential(
+            #     nn.Linear(d_model, d_model),
+            # )
+        else:
+            self.adapter = None
 
         # PRE-NORM: Normalize inputs, not the output delta
         if self.use_prenorm:
@@ -37,9 +53,9 @@ class CrossFusion(nn.Module):
         nn.init.constant_(self.norm.bias, 0)
 
         # 2. Safely zero ONLY the final projection in the residual block
-        if self.linear is not None:
-            nn.init.zeros_(self.linear.weight)
-            nn.init.zeros_(self.linear.bias)
+        if self.adapter is not None:
+            nn.init.zeros_(self.adapter[-1].weight)
+            nn.init.zeros_(self.adapter[-1].bias)
             # self_attn handles itself via PyTorch's default Xavier Uniform!
         else:
             # If there is no linear layer, out_proj becomes the final layer we must zero
@@ -97,31 +113,36 @@ class CrossFusion(nn.Module):
         if self.use_prenorm:
             A = self.norm_Q(A)
             B = self.norm_K(B)
-            # V needs no norm, as we want the raw values from the related tasks
+
+            # FIXME: C_norm (as used for residual) must be different to C that is being used for q! normed q will cause issues in MHA
+            # C_norm = self.norm_Q(C) # we don't use A, if C is active!
+
 
         # Handle the train/test split
         A_train, A_test = A[:sep, :, :], A[sep:, :, :]
         B_train, _ = B[:sep, :, :], B[sep:, :, :]
-        # B_train, B_test = B[:sep, :, :], B[sep:, :, :]
         C_train, C_test = C[:sep, :, :], C[sep:, :, :]
 
-        # only the learned delta
-        train_delta = self.self_attn(A_train, B_train, B_train)[0]
-
-        if self.reuse_attention:
-            test_delta = self.self_attn(A_test, B_train, B_train)[0]  # cross-attend test queries to train keys/values
+        if self.C_as_Q:
+            Q_train = C_train
+            Q_test = C_test
         else:
-            test_delta = self.test_attn(A_test, B_train, B_train)[0]  # cross-attend test queries to train keys/values
+            Q_train = A_train
+            Q_test = A_test
 
-        # FIXME: V_test should probably be altered and added?
+
+        # only the learned delta
+        train_delta = self.self_attn(Q_train, B_train, B_train)[0]
+        test_delta = self.test_attn(Q_test, B_train, B_train)[0]
+
 
         if not self.use_prenorm:
             train_delta = self.norm(train_delta)
             test_delta = self.norm(test_delta)
 
-        if self.linear is not None:
-            train_delta = self.linear(train_delta)
-            test_delta = self.linear(test_delta)
+        if self.adapter is not None:
+            train_delta = self.adapter(train_delta)
+            test_delta = self.adapter(test_delta)
 
         train_update = train_delta + C_train
         test_update = test_delta + C_test

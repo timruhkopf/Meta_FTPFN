@@ -83,7 +83,10 @@ class PPFNTrainer:
         self.use_amp = use_amp
 
         # Get trainable parameters from the model
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if hasattr(model, 'get_trainable_params'):
+            trainable_params = model.get_trainable_params(optimizer.keywords['weight_decay'])
+        else:
+            trainable_params = [p for p in model.parameters() if p.requires_grad]
 
         self.optimizer = optimizer(trainable_params)
         self.scheduler = scheduler(self.optimizer)

@@ -233,6 +233,32 @@ class FT_PPFN(HierarchicalPFN):
     def criterion(self):
         return self.frozen_model.criterion
 
+    # def get_trainable_params(self, weight_decay):
+    #     """
+    #     Separates parameters into two groups: one with weight decay, one without.
+    #
+    #     Weight decay pushes all network weights towards zero to prevent overfitting. However, applying weight decay to 1D parameters—specifically biases and LayerNorm weights/biases—often degrades performance because these parameters control the shift and scale of activations, not the complexity of the feature interactions.
+    #
+    #     In PyTorch, the optimizer will blindly apply weight decay to everything unless you explicitly separate the parameters.
+    #     """
+    #     decay = []
+    #     no_decay = []
+    #
+    #     for name, param in self.named_parameters():
+    #         if not param.requires_grad:
+    #             continue
+    #
+    #         # Do not apply weight decay to LayerNorm weights, or any biases
+    #         if param.ndim <= 1 or name.endswith(".bias") or "norm" in name.lower():
+    #             no_decay.append(param)
+    #         else:
+    #             decay.append(param)
+    #
+    #     return [
+    #         {'params': decay, 'weight_decay': weight_decay},
+    #         {'params': no_decay, 'weight_decay': 0.0}
+    #     ]
+
 
 if __name__ == "__main__":
     # Example usage
