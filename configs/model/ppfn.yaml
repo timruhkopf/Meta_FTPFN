@@ -1,5 +1,16 @@
 # @package _global_
 # Multi-layer model with cross-attention at layers 0 and 2
+# 1. Define the base configuration once using an anchor (&)
+layer_base: # &layer_logic
+  _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
+  d_model: 512
+  num_heads: 4
+  dropout: 0.1
+  use_prenorm: True
+  add_linear: False
+  use_gate: False
+  reuse_attention: False
+  C_as_Q: False
 
 trainer:
   objective:
@@ -8,10 +19,6 @@ trainer:
 model:
   frozen_version: "0.0.1"
 
-  config:
-    d_model: 512
-    nhead: 4
-    use_prenorm: true
 
 
   model_class:
@@ -29,43 +36,14 @@ model:
     interleaved_layers:
 
       - name: "transformer_encoder.layers.0"
-        layer:
-          _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
-          d_model: ${model.config.d_model}
-          num_heads: ${model.config.nhead}
-          dropout: 0.1
-          use_prenorm: ${model.config.use_prenorm}
+        layer: ${layer_base} #*layer_logic
       - name: "transformer_encoder.layers.1"
-        layer:
-          _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
-          d_model: ${model.config.d_model}
-          num_heads: ${model.config.nhead}
-          dropout: 0.1
-          use_prenorm: ${model.config.use_prenorm}
+        layer: ${layer_base} #*layer_logic
       - name: "transformer_encoder.layers.2"
-        layer:
-          d_model: ${model.config.d_model}
-          _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
-          num_heads: ${model.config.nhead}
-          dropout: 0.1
-          use_prenorm: ${model.config.use_prenorm}
+        layer: ${layer_base} #*layer_logic
       - name: "transformer_encoder.layers.3"
-        layer:
-          d_model: ${model.config.d_model}
-          _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
-          num_heads: ${model.config.nhead}
-          dropout: 0.1
-          use_prenorm: ${model.config.use_prenorm}
+        layer: ${layer_base} #*layer_logic
       - name: "transformer_encoder.layers.4"
-        layer:
-          d_model: ${model.config.d_model}
-          _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
-          num_heads: ${model.config.nhead}
-          dropout: 0.1
-          use_prenorm: ${model.config.use_prenorm}
+        layer: ${layer_base} #*layer_logic
       - name: "transformer_encoder.layers.5"
-        layer:
-          d_model: ${model.config.d_model}
-          _target_: ppfn.model.mymodel.cross_fusion.CrossFusion
-          num_heads: ${model.config.nhead}
-          use_prenorm: ${model.config.use_prenorm}
+        layer: ${layer_base} #*layer_logic

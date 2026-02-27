@@ -27,6 +27,8 @@ class CrossFusion(nn.Module):
 
         if add_linear:
             self.linear = nn.Linear(d_model, d_model)
+        else:
+            self.linear = None
 
         # 1. Explicit Gating Mechanism instead of a standard adapter
         if self.use_gate:
@@ -61,6 +63,10 @@ class CrossFusion(nn.Module):
             # Initialize bias to a negative value (e.g., -2.0 or -3.0).
             # Sigmoid(-2.0) = 0.11. This starts the gate "mostly closed", acting as a soft identity.
             nn.init.constant_(self.gate_proj.bias, -2.0)
+        elif self.add_linear:
+            # FIX: Zero both weights AND biases of the linear layer
+            nn.init.zeros_(self.linear.weight)
+            nn.init.zeros_(self.linear.bias)
         else:
             nn.init.zeros_(self.cross_attn.out_proj.weight)
             nn.init.zeros_(self.cross_attn.out_proj.bias)
