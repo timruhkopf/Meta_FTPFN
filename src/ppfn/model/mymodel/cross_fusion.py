@@ -1,14 +1,13 @@
 from typing import Tuple
-
 import torch
 from torch import nn
-from torch.nn import MultiheadAttention
+from torch.nn import functional as F
 
 
 class CrossFusion(nn.Module):
     def __init__(
-            self, d_model, num_heads, dropout=0.0, use_prenorm=True, add_adapter=True, reuse_attention=False,
-            C_as_Q=True,
+            self, d_model, num_heads, dropout=0.0, use_prenorm=True,
+            use_gate=True, add_linear=False, reuse_attention=False, C_as_Q=True,
     ):
         super().__init__()
         self.d_model = d_model
@@ -17,25 +16,24 @@ class CrossFusion(nn.Module):
         self.use_prenorm = use_prenorm
         self.reuse_attention = reuse_attention
         self.C_as_Q = C_as_Q
+        self.use_gate = use_gate
+        self.add_linear = add_linear
 
-        # Default is batch_first=False, which expects (T, B, D)
         self.cross_attn = nn.MultiheadAttention(d_model, num_heads, dropout)
         if reuse_attention:
             self.test_attn = self.cross_attn
         else:
             self.test_attn = nn.MultiheadAttention(d_model, num_heads, dropout)
 
-        if add_adapter:
-            bottleneck_dim = max(d_model // 4, 1)  # Ensure at least dim 1
-            self.adapter = nn.Sequential(
-                # nn.Linear(d_model, bottleneck_dim),
-                # nn.GELU(),
-                # nn.Linear(bottleneck_dim, d_model)
-                nn.Linear(d_model, d_model),
-                nn.GELU(),
-            )
+        if add_linear:
+            self.linear = nn.Linear(d_model, d_model)
+
+        # 1. Explicit Gating Mechanism instead of a standard adapter
+        if self.use_gate:
+            # Takes concatenated [Query, Attention_Update] -> Outputs scalar gate
+            self.gate_proj = nn.Linear(d_model * 2, 1)
         else:
-            self.adapter = None
+            self.gate_proj = None
 
         if self.use_prenorm:
             self.norm_Q = nn.LayerNorm(d_model)
@@ -46,16 +44,23 @@ class CrossFusion(nn.Module):
         self.initialize_as_identity()
         self.single_eval_pos = None
 
+        # State variable to store the sparsity loss for the current forward pass
+        self.aux_gate_loss = torch.tensor(0.0)
+
     def initialize_as_identity(self):
-        # 1. Initialize Post-Norm to identity if used
         if not self.use_prenorm:
             nn.init.constant_(self.norm.weight, 1)
             nn.init.constant_(self.norm.bias, 0)
 
-        # 2. Zero out the final projection to ensure the residual block starts as an identity map
-        if self.adapter is not None:
-            nn.init.zeros_(self.adapter[0].weight)
-            nn.init.zeros_(self.adapter[0].bias)
+        if self.linear is not None:
+            nn.init.zeros_(self.linear.weight)
+
+        if self.use_gate:
+            # Initialize weights to 0
+            nn.init.zeros_(self.gate_proj.weight)
+            # Initialize bias to a negative value (e.g., -2.0 or -3.0).
+            # Sigmoid(-2.0) = 0.11. This starts the gate "mostly closed", acting as a soft identity.
+            nn.init.constant_(self.gate_proj.bias, -2.0)
         else:
             nn.init.zeros_(self.cross_attn.out_proj.weight)
             nn.init.zeros_(self.cross_attn.out_proj.bias)
@@ -65,10 +70,9 @@ class CrossFusion(nn.Module):
 
     def validate_forward_args(self, x, *args, **kwargs) -> Tuple[int, int]:
         single_eval_pos = kwargs.get("single_eval_pos", self.single_eval_pos)
-        assert single_eval_pos is not None, "single_eval_pos must be provided during training"
-
-        B = x.shape[1]  # Batch dimension is index 1
-        assert B % 3 == 0, "Batch size must be multiple of 3 (A, B, C task triplets)"
+        assert single_eval_pos is not None, "single_eval_pos must be provided"
+        B = x.shape[1]
+        assert B % 3 == 0, "Batch size must be multiple of 3"
         return B, single_eval_pos
 
     def forward(self, x, *args, **kwargs):
@@ -92,30 +96,44 @@ class CrossFusion(nn.Module):
         # 4. Train/Test split across Sequence dimension (index 0)
         Q_train, Q_test = Q_input[:sep, :, :], Q_input[sep:, :, :]
         K_train = K_input[:sep, :, :]
-
-        # 5. Train/Test split for Residual (always un-normalized)
         C_train, C_test = C[:sep, :, :], C[sep:, :, :]
 
-        # 6. Cross Attention (Returns (T, B, D))
+        # Cross Attention
         train_delta = self.cross_attn(Q_train, K_train, K_train)[0]
         test_delta = self.test_attn(Q_test, K_train, K_train)[0]
 
-        # 7. Apply Adapter if present
-        if self.adapter is not None:
-            train_delta = self.adapter(train_delta)
-            test_delta = self.adapter(test_delta)
+        if self.add_linear:
+            train_delta = self.linear(train_delta)
+            test_delta = self.linear(test_delta)
 
-        # 8. Residual Addition
+        # Apply Explicit Gate and Compute Aux Loss
+        self.aux_gate_loss = torch.tensor(0.0, device=x.device)
+        if self.use_gate:
+            # Compute gate scores: shape (T, R, 1)
+            gate_train = torch.sigmoid(self.gate_proj(torch.cat([Q_train, train_delta], dim=-1)))
+            gate_test = torch.sigmoid(self.gate_proj(torch.cat([Q_test, test_delta], dim=-1)))
+
+            # Record L1 sparsity loss (average over sequence and batch)
+            self.aux_gate_loss = gate_train.abs().mean() + gate_test.abs().mean()
+
+            # Apply gate
+            train_delta = train_delta * gate_train
+            test_delta = test_delta * gate_test
+
         train_update = C_train + train_delta
         test_update = C_test + test_delta
 
-        # 9. Apply Post-Norm if enabled (Standard formulation on the sum)
+        #  Apply Post-Norm if enabled (Standard formulation on the sum)
         if not self.use_prenorm:
             train_update = self.norm(train_update)
             test_update = self.norm(test_update)
 
-        # 10. Recombine Sequence (dim=0) and Batch (dim=1)
+        # Recombine train-test Sequence (dim=0) and Batch unaltered A, B with conditional C (dim=1)
         conditional = torch.cat([train_update, test_update], dim=0)
         output = torch.cat([x[:, : 2 * R, :], conditional], dim=1)
 
         return output
+
+    # Optional: A helper to locate this module in a large model
+    def get_aux_loss(self):
+        return self.aux_gate_loss

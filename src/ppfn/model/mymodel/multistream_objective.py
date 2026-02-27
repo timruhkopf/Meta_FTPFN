@@ -3,6 +3,7 @@ import torch.nn as nn
 from typing import Dict, Tuple
 
 from pfns4hpo.utils import torch_nanmean
+from ppfn.model import CrossFusion
 
 
 class MultiStreamObjective(nn.Module):
@@ -12,24 +13,33 @@ class MultiStreamObjective(nn.Module):
     and returns both the loss to optimize and the metrics to log.
     """
 
-    def __init__(self, criterion: nn.Module, model=None, verbose=False):
+    def __init__(self, criterion: nn.Module, model=None, verbose=False, lambda_sparsity=0.001):
         super().__init__()
         self.criterion = criterion
         self.verbose = verbose
-        # FIXME: deprecaite this; it is needed only for batch parsing in forward (depending on
-        #  train/eval state)
-        self.model = (
-            model  # Optional reference to the model if needed for batch parsing
-        )
+        self.model = model
+        self.lambda_sparsity = lambda_sparsity  # Hyperparameter for the L1 penalty
+
+    def _find_cross_fusion_aux_loss(self):
+        """Helper to recursively find CrossFusion modules and sum their aux losses."""
+        if self.model is None:
+            return 0.0
+
+        total_aux_loss = 0.0
+        # Iterate through all modules in the backbone
+        for module in self.model.modules():
+            if isinstance(module, CrossFusion):
+                total_aux_loss += module.get_aux_loss()
+            return total_aux_loss
 
     def forward(
-        self,
-        output: torch.Tensor,
-        targets: torch.Tensor,
-        single_eval_pos,
-        batch=None,
-        src_key_padding_mask=None,
-        **kwargs,
+            self,
+            output: torch.Tensor,
+            targets: torch.Tensor,
+            single_eval_pos,
+            batch=None,
+            src_key_padding_mask=None,
+            **kwargs,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # 1. Compute raw loss for all streams
         # Assuming output/targets are shaped correctly for the criterion
@@ -63,6 +73,10 @@ class MultiStreamObjective(nn.Module):
             return_nanshare=True,
         )
 
+        # FETCH AND ADD AUXILIARY SPARSITY LOSS
+        aux_loss = self._find_cross_fusion_aux_loss()
+        optimization_loss = optimization_loss + (self.lambda_sparsity * aux_loss)
+
         # 4. Compute Metrics (The logic previously in TrainMetricsCallback)
         with torch.no_grad():
             nll_diff = (loss_stream_C - loss_stream_A).detach()
@@ -75,9 +89,9 @@ class MultiStreamObjective(nn.Module):
 
             # Handle style-based grouping if batch is provided
             if (
-                batch is not None
-                and hasattr(batch, "style")
-                and batch.style is not None
+                    batch is not None
+                    and hasattr(batch, "style")
+                    and batch.style is not None
             ):
                 style = batch.style[::2].squeeze()  # Extract style for stream A tasks
                 metrics.update(
