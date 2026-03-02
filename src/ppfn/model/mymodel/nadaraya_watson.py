@@ -21,7 +21,7 @@ class ContinuousPositionalEncoding(nn.Module):
         return pe
 
 class NadarayaWatsonAdapter(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1, nw_dropout=0.0, reuse_attn=True):
+    def __init__(self, d_model, n_heads, dropout=0.1, nw_dropout=0.0, reuse_attn=True, hp_only_attn=True):
         """
         A 3-stream meta-learning adapter that performs Non-Parametric Local Smoothing
         to align and extract knowledge from related tasks within a frozen Prior-Data Fitted Network (PFN).
@@ -61,6 +61,7 @@ class NadarayaWatsonAdapter(nn.Module):
         """
         super().__init__()
         self.d_model = d_model
+        self.hp_only_attn = hp_only_attn
 
         # NEW: Project the separate HP stream into the latent dimension for Q/K matching
         # self.hp_proj = nn.Linear(d_hp, d_model)
@@ -157,26 +158,51 @@ class NadarayaWatsonAdapter(nn.Module):
         # ==========================================
         # STAGE 2: THE EXTRACTOR
         # ==========================================
-        # Keys for the extractor are the hyperparameters of B_active
-        k_ext = self.norm_k(self.hp_proj(hp_B_active))
+        if self.hp_only_attn:
+            # Keys for the extractor are the hyperparameters of B_active
+            k_ext = self.norm_k(self.hp_proj(hp_B_active))
 
-        # Values are the newly UNDISTORTED latent features
-        v_ext = B_prime
+            # Values are the newly UNDISTORTED latent features
+            v_ext = B_prime
 
-        # Queries are the hyperparameters of C
-        c_train_update, train_weights = self.attn_train(
-            self.norm_train_q(self.hp_proj(hp_C_train)), k_ext, v_ext
-        )
+            # Queries are the hyperparameters of C
+            c_train_update, train_weights = self.attn_train(
+                self.norm_train_q(self.hp_proj(hp_C_train)), k_ext, v_ext
+            )
 
-        c_test_update, test_weights = self.attn_test(
-            self.norm_test_q(self.hp_proj(hp_C_test)), k_ext, v_ext
-        )
+            c_test_update, test_weights = self.attn_test(
+                self.norm_test_q(self.hp_proj(hp_C_test)), k_ext, v_ext
+            )
 
-        c_dummy_update = torch.zeros_like(C_belief_A).to(device)
-        C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
+            c_dummy_update = torch.zeros_like(C_belief_A).to(device)
+            C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
 
-        C = C + C_update
-        C = C + self.ffn(self.norm_ffn(C))
+            C = C + C_update
+            C = C + self.ffn(self.norm_ffn(C))
+        else:
+            # ==========================================
+            # STAGE 2: THE EXTRACTOR
+            # ==========================================
+            # Keys for the extractor are the hyperparameters of B_active
+            k_ext = B_prime #self.norm_k(self.hp_proj(hp_B_active))
+
+            # Values are the newly UNDISTORTED latent features
+            v_ext = B_prime
+
+            # Queries use the ACTUAL latent features of C (reverted from hp_C)
+            c_train_update, train_weights = self.attn_train(
+                self.norm_train_q(C_train), k_ext, v_ext
+            )
+
+            c_test_update, test_weights = self.attn_test(
+                self.norm_test_q(C_test), k_ext, v_ext
+            )
+
+            c_dummy_update = torch.zeros_like(C_belief_A).to(device)
+            C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
+
+            C = C + C_update
+            C = C + self.ffn(self.norm_ffn(C))
 
         batch = torch.cat([A, B, C], dim=1)
         return batch, {
@@ -337,7 +363,7 @@ if __name__ == '__main__':
                 pbar.set_postfix({"Loss": f"{current_loss:.6f}"})
 
 
-            if epoch+1 % 2000 == 0:
+            if( epoch+1 )% 2000 == 0:
                 plot_results(sep, T, adapter, loss_history)
 
         # ==========================================
