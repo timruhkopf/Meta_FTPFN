@@ -286,39 +286,81 @@ if __name__ == '__main__':
     import numpy as np
 
 
+    class HighDimAdapterWrapper(nn.Module):
+        def __init__(self, input_dim=2, d_model=64, n_heads=4, dropout=0.0):
+            super().__init__()
+            # 1. Up-projection: 2D Spatial -> High-Dimensional Latent Space
+            self.up_proj = nn.Sequential(
+                nn.Linear(input_dim, d_model),
+                nn.GELU(),
+                nn.Linear(d_model, d_model)
+            )
+
+            # 2. The Core Meta-Learner (Operating in d_model space)
+            self.adapter = NadarayaWatsonAdapter(
+                d_model=d_model,
+                n_heads=n_heads,
+                dropout=dropout
+            )
+
+            # 3. Down-projection: Latent Space -> 2D Spatial
+            self.down_proj = nn.Linear(d_model, input_dim)
+
+        def forward(self, x, single_eval_pos):
+            # x shape: (T, 3 * Batch, 2)
+            h = self.up_proj(x)
+
+            # The adapter now works its magic in 64D space
+            h_out, attn_weights = self.adapter(h, single_eval_pos=single_eval_pos)
+
+            # Project back to 2D for the loss calculation and plotting
+            out = self.down_proj(h_out)
+            return out, attn_weights
+
+
     # ==========================================
     # HELPER: 2D Spatial Geometry Fix
     # ==========================================
-    def bypass_layernorms(module):
-        for name, child in module.named_children():
-            if isinstance(child, nn.LayerNorm):
-                setattr(module, name, nn.Identity())
-            else:
-                bypass_layernorms(child)
+    # def bypass_layernorms(module):
+    #     for name, child in module.named_children():
+    #         if isinstance(child, nn.LayerNorm):
+    #             setattr(module, name, nn.Identity())
+    #         else:
+    #             bypass_layernorms(child)
 
 
     # ==========================================
-    # DYNAMIC DATA GENERATOR
+    # FULLY DYNAMIC DATA GENERATOR
     # ==========================================
     def generate_dynamic_batch(batch_size, T, sep, D=2):
         """
-        Generates a batch where EVERY single item has a unique, randomized
-        geometric distortion (scale, phase shift, and linear trend).
+        Generates a batch where EVERY item has a unique Task A (random base function)
+        AND a unique Task B (random distortion of that specific Task A).
         """
-        # 1. Task A (Ground Truth)
+        # 1. Task A (Randomized Target Manifold)
         t_A = torch.linspace(0, 2 * np.pi, T).view(T, 1, 1).expand(T, batch_size, 1)
-        A_data = torch.cat([t_A, torch.sin(t_A)], dim=-1)
 
-        # 2. Task B (Distorted Domain with Random Parameters)
+        # Sample random parameters for Task A's underlying function
+        A_amp = torch.rand(1, batch_size, 1) * 1.0 + 0.5  # Amplitude (0.5 to 1.5)
+        A_freq = torch.rand(1, batch_size, 1) * 0.8 + 0.6  # Frequency (0.6 to 1.4)
+        A_phase = torch.rand(1, batch_size, 1) * 2 * np.pi  # Phase shift (0 to 2*pi)
+
+        def task_A_func(x):
+            return A_amp * torch.sin(A_freq * x + A_phase)
+
+        A_data = torch.cat([t_A, task_A_func(t_A)], dim=-1)
+
+        # 2. Task B (Randomized Distortion of Task A)
         t_B = torch.linspace(-0.5, 2 * np.pi + 0.5, T).view(T, 1, 1).expand(T, batch_size, 1)
 
-        # Sample random transformation parameters for EACH item in the batch
-        scale = torch.rand(1, batch_size, 1) * 1.5 + 0.5  # Amplitude stretch (0.5x to 2.0x)
-        phase = torch.rand(1, batch_size, 1) * 2 * np.pi  # Phase shift (0 to 2*pi)
-        trend = torch.rand(1, batch_size, 1) * 1.0 - 0.5  # Linear trend slope (-0.5 to +0.5)
+        # Sample random parameters for Task B's distortion over A
+        B_scale = torch.rand(1, batch_size, 1) * 1.5 + 0.5  # Amplitude stretch (0.5x to 2.0x)
+        B_phase = torch.rand(1, batch_size, 1) * 2 * np.pi  # Domain phase shift (0 to 2*pi)
+        B_trend = torch.rand(1, batch_size, 1) * 1.0 - 0.5  # Linear trend slope (-0.5 to +0.5)
 
         def task_B_func(x):
-            return scale * torch.sin(x + phase) + trend * x
+            # B is a distorted version of A's geometry
+            return B_scale * task_A_func(x + B_phase) + B_trend * x
 
         B_data = torch.cat([t_B, task_B_func(t_B)], dim=-1)
 
@@ -344,27 +386,30 @@ if __name__ == '__main__':
         T = 60
         sep = 20
         D = 2
-        epochs = 1500
-        batch_size = 16  # Train on 16 entirely different distortions at once!
+        epochs = 20000
+        batch_size = 64  # We can handle larger batches now
 
-        adapter = NadarayaWatsonAdapter(d_model=D, n_heads=2, dropout=0.0)
-        bypass_layernorms(adapter)
+        # Initialize the WRAPPER instead of the raw adapter
+        # We give it d_model=64 and 4 attention heads for rich feature extraction
+        adapter = HighDimAdapterWrapper(input_dim=D, d_model=64, n_heads=4, dropout=0.0)
 
-        # Lowered LR slightly because the target is constantly shifting
-        optimizer = optim.Adam(adapter.parameters(), lr=0.005)
+        # Notice: NO bypass_layernorms() here!
+
+        optimizer = optim.Adam(adapter.parameters(), lr=0.001)  # Slightly lower LR for deep network
         criterion = nn.MSELoss()
 
-        print(f"Starting dynamic training (Batch Size: {batch_size})...")
+        print(f"Starting fully dynamic meta-training with High-Dim Latent Space...")
         for epoch in range(epochs):
             optimizer.zero_grad()
 
-            # GENERATE FRESH DATA EVERY EPOCH
             A_data, B_data_corrected, C_data_init, _ = generate_dynamic_batch(batch_size, T, sep)
 
-            # The adapter is built to handle (T, 3 * batch_size, D) seamlessly
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
 
+            # Forward pass through the wrapper
             out_batch, _ = adapter(x, single_eval_pos=sep)
+
+            # The indexing remains exactly the same
             C_out = out_batch[:, 2 * batch_size:, :]
 
             loss = criterion(C_out[:sep * 2], A_data[:sep * 2])
@@ -372,24 +417,22 @@ if __name__ == '__main__':
             loss.backward()
             optimizer.step()
 
-            if (epoch + 1) % 150 == 0:
+            if (epoch + 1) % 200 == 0:
                 print(f"Epoch {epoch + 1:04d} | Loss: {loss.item():.6f}")
 
         # ==========================================
-        # INFERENCE ON A COMPLETELY UNSEEN DISTORTION
+        # INFERENCE ON A NOVEL FUNCTION & DISTORTION
         # ==========================================
-        print("\nTesting on a novel, random distortion...")
+        print("\nTesting on a novel Task A and novel Task B distortion...")
         with torch.no_grad():
-            # Generate exactly 1 sample with a random distortion it has never seen
             A_data, B_data_corrected, C_data_init, B_belief_A_data = generate_dynamic_batch(1, T, sep)
 
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
             final_batch, _ = adapter(x, single_eval_pos=sep)
             C_final = final_batch[:, 2:, :]
 
-        # Extract data for plotting
         A_plot = A_data[:sep * 2, 0, :].numpy()
-        B_plot = B_data_corrected[:sep * 2, 0, :].numpy()  # Plot active B
+        B_plot = B_data_corrected[:sep * 2, 0, :].numpy()
         C_plot = C_final[:sep * 2, 0, :].numpy()
         A_train = A_data[:sep, 0, :].numpy()
         B_belief_plot = B_belief_A_data[:, 0, :].numpy()
@@ -397,7 +440,7 @@ if __name__ == '__main__':
         plt.figure(figsize=(10, 6))
 
         plt.scatter(B_plot[:, 0], B_plot[:, 1], c='gray', alpha=0.5, label='Task B (Novel Distorted Domain)')
-        plt.plot(A_plot[:, 0], A_plot[:, 1], 'g--', linewidth=2, label='Task A (Ground Truth)')
+        plt.plot(A_plot[:, 0], A_plot[:, 1], 'g--', linewidth=2, label='Task A (Novel Ground Truth)')
         plt.scatter(A_train[:, 0], A_train[:, 1], c='green', s=100, marker='*', label='A Train (Anchors)')
         plt.scatter(B_belief_plot[:, 0], B_belief_plot[:, 1], c='red', s=40, marker='x', label='B Belief of A_train')
         plt.scatter(C_plot[:, 0], C_plot[:, 1], c='blue', s=30, label='Stream C (Adapter Output)')
@@ -407,7 +450,7 @@ if __name__ == '__main__':
                      [A_train[i, 1], B_belief_plot[i, 1]],
                      'r:', alpha=0.4)
 
-        plt.title('Dynamic Sanity Check: Zero-Shot Alignment on Novel Distortion')
+        plt.title('Sanity Check: Zero-Shot Alignment on Novel Functions')
         plt.legend()
         plt.grid(True)
         plt.show()
