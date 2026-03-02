@@ -286,17 +286,10 @@ if __name__ == '__main__':
     import numpy as np
 
 
+    # ==========================================
     # HELPER: 2D Spatial Geometry Fix
-
+    # ==========================================
     def bypass_layernorms(module):
-        """
-        In a real PFN with a high-dimensional latent space (e.g., d_model=128),
-        LayerNorm is mathematically required for training stability.
-        However, in this 2D sanity check, our 'embeddings' are literal spatial
-        coordinates (x, y). Applying LayerNorm to a 2D coordinate normalizes
-        the mean and variance of x and y, structurally destroying the Euclidean
-        geometry of the curve. We bypass them here to preserve the spatial task.
-        """
         for name, child in module.named_children():
             if isinstance(child, nn.LayerNorm):
                 setattr(module, name, nn.Identity())
@@ -304,135 +297,120 @@ if __name__ == '__main__':
                 bypass_layernorms(child)
 
 
-    def run_sanity_check():
+    # ==========================================
+    # DYNAMIC DATA GENERATOR
+    # ==========================================
+    def generate_dynamic_batch(batch_size, T, sep, D=2):
         """
-        SANITY CHECK: Manifold Alignment with Unaligned X-Coordinates
-
-        Goal: Prove that the adapter can map a distorted source domain (Task B)
-        to a target domain (Task A) even when Task B's data points are sampled
-        at entirely different locations. The NW attention must learn continuous
-        spatial similarity, not just index-matching.
+        Generates a batch where EVERY single item has a unique, randomized
+        geometric distortion (scale, phase shift, and linear trend).
         """
-        # Hyperparameters
-        T = 60  # Total sequence length (Train + Test points)
-        sep = 20  # The split index: 20 anchor points (Train), 40 query points (Test)
-        D = 2  # Dimensionality (x, y coordinates)
-        epochs = 300
+        # 1. Task A (Ground Truth)
+        t_A = torch.linspace(0, 2 * np.pi, T).view(T, 1, 1).expand(T, batch_size, 1)
+        A_data = torch.cat([t_A, torch.sin(t_A)], dim=-1)
 
-        # Initialize the Adapter (dropout=0 to prevent severing local structural anchors)
+        # 2. Task B (Distorted Domain with Random Parameters)
+        t_B = torch.linspace(-0.5, 2 * np.pi + 0.5, T).view(T, 1, 1).expand(T, batch_size, 1)
+
+        # Sample random transformation parameters for EACH item in the batch
+        scale = torch.rand(1, batch_size, 1) * 1.5 + 0.5  # Amplitude stretch (0.5x to 2.0x)
+        phase = torch.rand(1, batch_size, 1) * 2 * np.pi  # Phase shift (0 to 2*pi)
+        trend = torch.rand(1, batch_size, 1) * 1.0 - 0.5  # Linear trend slope (-0.5 to +0.5)
+
+        def task_B_func(x):
+            return scale * torch.sin(x + phase) + trend * x
+
+        B_data = torch.cat([t_B, task_B_func(t_B)], dim=-1)
+
+        # 3. Stream C (Queries)
+        C_data_init = torch.zeros(T, batch_size, D)
+        C_data_init[:, :, 0] = t_A[:, :, 0]  # Ground truth X queries
+        C_data_init[:, :, 1] = torch.randn(T, batch_size) * 0.1  # Corrupted Y values
+
+        # 4. Belief Alignment
+        t_A_train = t_A[:sep]
+        B_belief_A_data = torch.cat([t_A_train, task_B_func(t_A_train)], dim=-1)
+
+        # Pack the active B points + Belief
+        B_data_corrected = torch.cat([B_data[:2 * sep], B_belief_A_data], dim=0)
+
+        return A_data, B_data_corrected, C_data_init, B_belief_A_data
+
+
+    # ==========================================
+    # MAIN EXECUTION
+    # ==========================================
+    def run_dynamic_sanity_check():
+        T = 60
+        sep = 20
+        D = 2
+        epochs = 1500
+        batch_size = 16  # Train on 16 entirely different distortions at once!
+
         adapter = NadarayaWatsonAdapter(d_model=D, n_heads=2, dropout=0.0)
         bypass_layernorms(adapter)
 
-        optimizer = optim.Adam(adapter.parameters(), lr=0.01)
+        # Lowered LR slightly because the target is constantly shifting
+        optimizer = optim.Adam(adapter.parameters(), lr=0.005)
         criterion = nn.MSELoss()
 
-        # ==========================================
-        # DATA GENERATION: Constructing the 3 Streams
-        # ==========================================
-
-        # 1. Task A (The Ground Truth Manifold)
-        # Sampled strictly from 0 to 2*pi.
-        t_A = torch.linspace(0, 2 * np.pi, T).view(-1, 1)
-        A_data = torch.cat([t_A, torch.sin(t_A)], dim=1).unsqueeze(1)  # Shape: (T, 1, 2)
-
-        # 2. Task B (The Distorted Related Task - DIFFERENT X COORDS)
-        # We sample Task B from a shifted, wider range (-0.5 to 2*pi + 0.5) to guarantee
-        # the points do not align with Task A.
-        t_B = torch.linspace(-0.5, 2 * np.pi + 0.5, T).view(-1, 1)
-
-        # Define Task B's underlying distorted domain (phase shift + amplitude + linear trend)
-        def task_B_func(x):
-            return 1.5 * torch.sin(x + np.pi / 4) + 0.2 * x
-
-        B_data = torch.cat([t_B, task_B_func(t_B)], dim=1).unsqueeze(1)
-
-        # 3. Stream C (The Target Queries)
-        # Stream C represents the target task's forward pass. It uses Task A's exact
-        # x-coordinates as queries, but the y-coordinates are random noise.
-        C_data_init = torch.zeros(T, 1, D)
-        C_data_init[:, :, 0] = t_A  # Ground truth X queries
-        C_data_init[:, :, 1] = torch.randn(T, 1) * 0.1  # Corrupted Y values
-
-        # 4. The Belief Alignment (Simulating the PFN's B_test(A_train))
-        # This is the crucial step. In the real architecture, B's stream processes A's
-        # training tokens. We simulate this by evaluating Task B's underlying function
-        # using A's training x-coordinates.
-        t_A_train = t_A[:sep]
-        B_belief_A_data = torch.cat([t_A_train, task_B_func(t_A_train)], dim=1).unsqueeze(1)
-
-        # Pack the corrected B tensor: Active B points + The Belief of A
-        B_data_corrected = torch.cat([B_data[:2 * sep], B_belief_A_data], dim=0)
-
-        # ==========================================
-        # TRAINING LOOP
-        # ==========================================
-        print("Starting training...")
+        print(f"Starting dynamic training (Batch Size: {batch_size})...")
         for epoch in range(epochs):
             optimizer.zero_grad()
 
-            # Pack the 3 streams into the required batch format: (T, 3, D)
+            # GENERATE FRESH DATA EVERY EPOCH
+            A_data, B_data_corrected, C_data_init, _ = generate_dynamic_batch(batch_size, T, sep)
+
+            # The adapter is built to handle (T, 3 * batch_size, D) seamlessly
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
 
-            # Forward pass through the adapter
             out_batch, _ = adapter(x, single_eval_pos=sep)
+            C_out = out_batch[:, 2 * batch_size:, :]
 
-            # Extract the updated Stream C (index 2 in the batch dimension)
-            C_out = out_batch[:, 2:, :]
-
-            # The loss is strictly evaluated on how well Stream C reconstructs
-            # the original Task A curve across both the Train and Test splits.
             loss = criterion(C_out[:sep * 2], A_data[:sep * 2])
 
             loss.backward()
             optimizer.step()
 
-            if (epoch + 1) % 200 == 0:
+            if (epoch + 1) % 150 == 0:
                 print(f"Epoch {epoch + 1:04d} | Loss: {loss.item():.6f}")
 
         # ==========================================
-        # VISUALIZATION
+        # INFERENCE ON A COMPLETELY UNSEEN DISTORTION
         # ==========================================
+        print("\nTesting on a novel, random distortion...")
         with torch.no_grad():
+            # Generate exactly 1 sample with a random distortion it has never seen
+            A_data, B_data_corrected, C_data_init, B_belief_A_data = generate_dynamic_batch(1, T, sep)
+
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
             final_batch, _ = adapter(x, single_eval_pos=sep)
             C_final = final_batch[:, 2:, :]
 
-        # Extract data for plotting (removing batch dimensions)
+        # Extract data for plotting
         A_plot = A_data[:sep * 2, 0, :].numpy()
-        B_plot = B_data[:sep * 2, 0, :].numpy()
+        B_plot = B_data_corrected[:sep * 2, 0, :].numpy()  # Plot active B
         C_plot = C_final[:sep * 2, 0, :].numpy()
         A_train = A_data[:sep, 0, :].numpy()
-
-        # We also plot the "Belief" to visualize the exact vectors the Corrector calculates
         B_belief_plot = B_belief_A_data[:, 0, :].numpy()
 
         plt.figure(figsize=(10, 6))
 
-        # Plot Task B (The source domain we are extracting from, unaligned X)
-        plt.scatter(B_plot[:, 0], B_plot[:, 1], c='gray', alpha=0.5, label='Task B (Distorted Domain)')
-
-        # Plot Task A (The mathematical ideal we want to hit)
+        plt.scatter(B_plot[:, 0], B_plot[:, 1], c='gray', alpha=0.5, label='Task B (Novel Distorted Domain)')
         plt.plot(A_plot[:, 0], A_plot[:, 1], 'g--', linewidth=2, label='Task A (Ground Truth)')
-
-        # Plot the few-shot Train anchors
         plt.scatter(A_train[:, 0], A_train[:, 1], c='green', s=100, marker='*', label='A Train (Anchors)')
-
-        # Plot Task B's belief of A_train (The origin points for the distortion vectors)
         plt.scatter(B_belief_plot[:, 0], B_belief_plot[:, 1], c='red', s=40, marker='x', label='B Belief of A_train')
-
-        # Plot the network's attempt to reconstruct A
         plt.scatter(C_plot[:, 0], C_plot[:, 1], c='blue', s=30, label='Stream C (Adapter Output)')
 
-        # Draw lines showing the exact error vectors the Corrector computes
         for i in range(sep):
             plt.plot([A_train[i, 0], B_belief_plot[i, 0]],
                      [A_train[i, 1], B_belief_plot[i, 1]],
-                     'r:', alpha=0.5)
+                     'r:', alpha=0.4)
 
-        plt.title('Sanity Check: Unaligned NW Domain Alignment')
+        plt.title('Dynamic Sanity Check: Zero-Shot Alignment on Novel Distortion')
         plt.legend()
         plt.grid(True)
         plt.show()
 
 
-    run_sanity_check()
+    run_dynamic_sanity_check()
