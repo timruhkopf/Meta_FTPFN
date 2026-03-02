@@ -4,7 +4,21 @@ import torch.nn.functional as F
 
 from typing import Tuple
 
+class ContinuousPositionalEncoding(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.d_model = d_model
+        # Create a spectrum of frequency bands
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        self.register_buffer('div_term', div_term)
 
+    def forward(self, x):
+        # x shape: (T, Batch, 1)
+        pe = torch.zeros(x.shape[0], x.shape[1], self.d_model, device=x.device)
+        # Apply sine to even indices, cosine to odd indices
+        pe[:, :, 0::2] = torch.sin(x * self.div_term)
+        pe[:, :, 1::2] = torch.cos(x * self.div_term)
+        return pe
 
 class NadarayaWatsonAdapter(nn.Module):
     def __init__(self, d_model, n_heads, dropout=0.1, nw_dropout=0.0, reuse_attn=True):
@@ -48,13 +62,15 @@ class NadarayaWatsonAdapter(nn.Module):
         super().__init__()
         self.d_model = d_model
 
+        # NEW: Project the separate HP stream into the latent dimension for Q/K matching
+        # self.hp_proj = nn.Linear(d_hp, d_model)
+        self.hp_proj = ContinuousPositionalEncoding(d_model)
 
-        # 1. The Corrector (Undistorting B into A's domain)
+        # 1. The Corrector
         self.norm_nw_q = nn.LayerNorm(d_model)
         self.norm_nw_k = nn.LayerNorm(d_model)
         self.norm_nw_v = nn.LayerNorm(d_model)
 
-        # MLP to project the local distortion error before applying it
         self.mlp_err = nn.Sequential(
             nn.Linear(d_model, d_model * 4),
             nn.GELU(),
@@ -63,18 +79,18 @@ class NadarayaWatsonAdapter(nn.Module):
         )
         self.nw_attn = nn.MultiheadAttention(d_model, n_heads, dropout=nw_dropout)
 
-        # 2. The Extractor (Cross-Task Modulation) - Split into Train and Test
+        # 2. The Extractor
         self.norm_train_q = nn.LayerNorm(d_model)
         self.norm_test_q = nn.LayerNorm(d_model)
-        self.norm_k = nn.LayerNorm(d_model)  # Keys and Values come from B_prime
+        self.norm_k = nn.LayerNorm(d_model)
 
         self.attn_train = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
         if reuse_attn:
-            self.attn_test = self.attn_train  # Share the exact same weights
+            self.attn_test = self.attn_train
         else:
             self.attn_test = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
 
-        # 3. Standard FFN for the C Stream (Best practice after attention)
+        # 3. FFN Modulator
         self.norm_ffn = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_model * 4),
@@ -85,197 +101,90 @@ class NadarayaWatsonAdapter(nn.Module):
         )
 
     def validate_forward_args(self, x, *args, **kwargs) -> Tuple[int, int]:
-        single_eval_pos = kwargs.get("single_eval_pos",None)
+        single_eval_pos = kwargs.get("single_eval_pos", None)
         assert single_eval_pos is not None, "single_eval_pos must be provided"
         B = x.shape[1]
         assert B % 3 == 0, "Batch size must be multiple of 3"
         return B, single_eval_pos
 
-    def forward(self, x, *args, **kwargs):
-
+    def forward(self, x, hp, *args, **kwargs):
+        """
+        x: Latent representations (T, 3*Batch, d_model)
+        hp: Separate hyperparameter coordinates (T, 3*Batch, d_hp)
+        """
         B_dim, sep = self.validate_forward_args(x, *args, **kwargs)
         R = B_dim // 3
 
-        # 1. Extract raw streams across the Batch dimension (index 1)
+        # --- Extract Latent Streams ---
         A = x[:, :R, :].detach()
         B = x[:, R: 2 * R, :].detach()
         C = x[:, 2 * R:, :]
         device = A.device
 
+        # --- Extract Hyperparameter (HP) Streams ---
+        hp_A = hp[:, :R, :]
+        hp_B = hp[:, R: 2 * R, :]
+        hp_C = hp[:, 2 * R:, :]
+
         # --- Split Streams ---
-        A_train, A_test = A[:sep], A[sep:]
-        B_train, B_test, B_belief_A = B[:sep], B[sep:2 * sep], B[2 * sep:] # TODO : calculate nll of the projected belief based on A train's true y values (dim: -1)
+        A_train = A[:sep]
+        B_train, B_test, B_belief_A = B[:sep], B[sep:2 * sep], B[2 * sep:]
         C_train, C_test, C_belief_A = C[:sep], C[sep:2 * sep], C[2 * sep:]
+
+        hp_A_train = hp_A[:sep]
+        hp_B_active = hp_B[:2 * sep]
+        hp_C_train = hp_C[:sep]
+        hp_C_test = hp_C[sep:2 * sep]
 
         # ==========================================
         # STAGE 1: THE NW error propagation
         # ==========================================
-        # Calculate local distortion and project B in the domain of A (=B')
-
-        # Q: B_train, K: A_train, V: Projected Error
-        # We capture the attention weights to track the distortion mapping
-        # pre attn mlp:
-        #  the latent space is highly non-linear. Subtracting $B$ from $A$ yields a naive Euclidean distance vector.
-        #  In a curved manifold, moving along this naive vector might push the representation off the valid data manifold entirely
         error = self.mlp_err(self.norm_nw_v(A_train - B_belief_A))
         B_active = B[:2 * sep]
+
+        # CRITICAL UPDATE: Q and K use purely the projected hyperparameters
+        q_nw = self.norm_nw_q(self.hp_proj(hp_B_active))
+        k_nw = self.norm_nw_k(self.hp_proj(hp_A_train))
+
         corr_out, corr_weights = self.nw_attn(
-            self.norm_nw_q(B_active),  # Query with all active B points
-            self.norm_nw_k(A_train),  # Anchored by Train
-            error # on B's belief over A_train
+            q_nw,  # Query: Where are the active B points spatially?
+            k_nw,  # Key: Where are the A anchors spatially?
+            error  # Value: What is the latent feature distortion?
         )
 
-        # Undistort B's domain completely
         B_prime = B_active + corr_out
 
         # ==========================================
         # STAGE 2: THE EXTRACTOR
         # ==========================================
-        # Keys and Values for both Extractor MHAs are the aligned B_prime_train
+        # Keys for the extractor are the hyperparameters of B_active
+        k_ext = self.norm_k(self.hp_proj(hp_B_active))
 
-         # Reusing the normalized tensor for V
-        k = self.norm_k(B_prime)
-        v = k # reusing norm results
+        # Values are the newly UNDISTORTED latent features
+        v_ext = B_prime
 
-        # Train-to-Train Attention
+        # Queries are the hyperparameters of C
         c_train_update, train_weights = self.attn_train(
-            self.norm_train_q(C_train), k, v
+            self.norm_train_q(self.hp_proj(hp_C_train)), k_ext, v_ext
         )
 
-        # Test-to-Train Attention
         c_test_update, test_weights = self.attn_test(
-            self.norm_test_q(C_test), k, v
+            self.norm_test_q(self.hp_proj(hp_C_test)), k_ext, v_ext
         )
 
-        # Recombine C stream over the sequence dimension (T, B, D)
         c_dummy_update = torch.zeros_like(C_belief_A).to(device)
         C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
 
-        # Residual connection for Stream C
         C = C + C_update
-
-        # ==========================================
-        # STAGE 3: FFN Modulator
-        # ==========================================
         C = C + self.ffn(self.norm_ffn(C))
 
-        # ==========================================
-        # STAGE 4: Batch Tensor Reconstruction
-        # ==========================================
         batch = torch.cat([A, B, C], dim=1)
-
-        # Return the modulated C stream and all MHA weights for monitoring/gating
         return batch, {
             "corrector": corr_weights,
             "train_attn_scores": train_weights,
             "test_attn_scores": test_weights
         }
 
-class DualSignalFusion(nn.Module):
-    def __init__(self, init_gamma=0.1):
-        super().__init__()
-        # gamma scales the structural penalty (entropy).
-        # We init small so empirical NLL dominates the routing early in training.
-        self.gamma = nn.Parameter(torch.tensor(init_gamma))
-
-        # Temperature for the gating softmax.
-        self.inv_tau = nn.Parameter(torch.tensor(1.0))
-
-    def compute_entropy(self, attn_weights):
-        """
-        Computes the Shannon Entropy for the Corrector attention.
-        attn_weights shape: (N, B, Seq_Q, Seq_K) or (N, B, Heads, Seq_Q, Seq_K)
-        """
-        # Robustness: strict epsilon clamp to prevent log(0) NaNs
-        eps = 1e-9
-        attn_weights = torch.clamp(attn_weights, min=eps)
-
-        # H = -sum(p * log(p)) over the Key sequence dimension (the last dim)
-        entropy = -torch.sum(attn_weights * torch.log(attn_weights), dim=-1)
-
-        # Average over whatever dimensions are left between Batch and the end
-        # to get a single scalar per related task, per batch item.
-        # Output shape: (N, B)
-        while len(entropy.shape) > 2:
-            entropy = entropy.mean(dim=-1)
-
-        return entropy
-
-    def forward(
-            self,
-            uncond_prob,  # (T_test, B, n_bins) - Probabilities, NOT logits
-            related_probs,  # (N, T_test, B, n_bins)
-            uncond_nll_train,  # (B,) - The empirical loss of the unconditional model on A_train
-            related_nll_train,  # (N, B) - The empirical loss of each related task on A_train
-            corrector_attns,  # (N, B, eval_pos, eval_pos) - The local support footprint
-            y_true_test  # (T_test, B) - Ground truth bin indices for the test sequence
-    ):
-        N, T_test, B, n_bins = related_probs.shape
-
-        # ==========================================
-        # 1. Compute Dual-Signal Energy
-        # ==========================================
-        # Structural Uncertainty (Local Support)
-        # Shape: (N, B)
-        entropy_scores = self.compute_entropy(corrector_attns)
-
-        # Robustness: Softplus ensures gamma remains non-negative (entropy should strictly penalize)
-        safe_gamma = F.softplus(self.gamma)
-
-        # Related Task Energy: E_r = L_r + gamma * S_r
-        # Shape: (N, B)
-        related_energy = related_nll_train + (safe_gamma * entropy_scores)
-
-        # Unconditional Baseline Energy: E_base = L_base
-        # Reshape to (1, B) so it can be concatenated
-        base_energy = uncond_nll_train.unsqueeze(0)
-
-        # Combine all energies: index 0 is baseline, 1:N are related tasks
-        # Shape: (N + 1, B)
-        all_energies = torch.cat([base_energy, related_energy], dim=0)
-
-        # ==========================================
-        # 2. Compute Gating Weights (Lambda)
-        # ==========================================
-        # Robustness: Enforce positive temperature with a minimum bound
-        tau = F.softplus(self.inv_tau) + 1e-4
-
-        # Softmax over the task dimension (dim=0)
-        # Lower energy -> Higher weight
-        # Shape: (N + 1, B)
-        lambdas = F.softmax(-all_energies / tau, dim=0)
-
-        # ==========================================
-        # 3. Bayesian Model Averaging (Linear Pooling)
-        # ==========================================
-        # Reshape lambdas so they broadcast over the sequence and bin dimensions
-        # Base weight: (1, 1, B, 1) -> broadcasts to (T_test, B, n_bins)
-        lambda_base = lambdas[0].view(1, B, 1)
-
-        # Related weights: (N, 1, B, 1) -> broadcasts to (N, T_test, B, n_bins)
-        lambda_related = lambdas[1:].view(N, 1, B, 1)
-
-        # Linearly pool the actual probabilities
-        fused_prob = (lambda_base * uncond_prob) + torch.sum(lambda_related * related_probs, dim=0)
-
-        # Robustness: Minor numerical float errors can push sums to 1.00001 or 0.99999.
-        # Normalize the final fused distribution to guarantee a valid PMF.
-        fused_prob = fused_prob / fused_prob.sum(dim=-1, keepdim=True)
-
-        # ==========================================
-        # 4. Final Test Loss
-        # ==========================================
-        # NLL Loss requires log-probabilities.
-        # Clamp before log to prevent log(0) NaNs from perfectly zeroed bins.
-        fused_log_prob = torch.log(torch.clamp(fused_prob, min=1e-9))
-
-        # Flatten for the standard PyTorch NLLLoss function
-        flat_log_prob = fused_log_prob.view(-1, n_bins)
-        flat_targets = y_true_test.view(-1)
-
-        final_loss = F.nll_loss(flat_log_prob, flat_targets)
-
-        return final_loss, fused_prob, lambdas
 
 
 if __name__ == '__main__':
@@ -285,15 +194,15 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import numpy as np
     from tqdm import tqdm
+    from copy import deepcopy
 
 
     # ==========================================
     # STRICTLY LINEAR HIGH-DIM WRAPPER
     # ==========================================
     class LinearHighDimWrapper(nn.Module):
-        def __init__(self, input_dim=2, d_model=64, n_heads=4, dropout=0.0):
+        def __init__(self, input_dim=2, d_model=64, n_heads=4,  dropout=0.0):
             super().__init__()
-            # NO non-linearities here. Strictly an affine projection to 64D.
             self.up_proj = nn.Linear(input_dim, d_model)
 
             self.adapter = NadarayaWatsonAdapter(
@@ -302,67 +211,83 @@ if __name__ == '__main__':
                 dropout=dropout
             )
 
-            # Strictly an affine projection back to 2D.
             self.down_proj = nn.Linear(d_model, input_dim)
 
         def forward(self, x, single_eval_pos):
             h = self.up_proj(x)
-            h_out, attn_weights = self.adapter(h, single_eval_pos=single_eval_pos)
+
+            # Explicitly isolate the hyperparameters (the x-coordinates, index 0)
+            # We keep the trailing dimension so shape is (T, 3*Batch, 1)
+            hp = x[:, :, 0:1]
+
+            h_out, attn_weights = self.adapter(h, hp=hp, single_eval_pos=single_eval_pos)
             out = self.down_proj(h_out)
             return out, attn_weights
-
 
     # ==========================================
     # NON-LINEAR DYNAMIC DATA GENERATOR
     # ==========================================
-    def generate_nonlinear_batch(batch_size, T, sep, D=2):
-        """
-        Generates a batch where Task B suffers from a spatially varying,
-        strictly non-linear distortion that cannot be solved by a matrix multiplication.
-        """
-        # 1. Task A (Randomized Target Manifold)
+    def generate_shared_complex_batch(batch_size, T, sep, D=2):
+        # 1. Task A (The Shared Irregular Target)
         t_A = torch.linspace(0, 2 * np.pi, T).view(T, 1, 1).expand(T, batch_size, 1)
 
-        A_amp = torch.rand(1, batch_size, 1) * 1.0 + 0.5
-        A_freq = torch.rand(1, batch_size, 1) * 0.8 + 0.6
-        A_phase = torch.rand(1, batch_size, 1) * 2 * np.pi
+        # Complex Base: A sum of two random frequencies
+        f1 = torch.rand(1, batch_size, 1) * 2.0 + 1.0
+        f2 = torch.rand(1, batch_size, 1) * 3.0 + 2.0
 
-        def task_A_func(x):
-            return A_amp * torch.sin(A_freq * x + A_phase)
+        # The "Unknown": A Gaussian bump that randomly appears ONLY in the test region (x > 3.0)
+        bump_center = torch.rand(1, batch_size, 1) * 2.0 + 3.5
+        bump_height = torch.rand(1, batch_size, 1) * 2.0 - 1.0  # Can go up or down
+        bump_width = 0.4
 
-        A_data = torch.cat([t_A, task_A_func(t_A)], dim=-1)
+        def shared_base_shape(x):
+            base = torch.sin(f1 * x) + 0.5 * torch.cos(f2 * x)
+            bump = bump_height * torch.exp(-((x - bump_center) ** 2) / (2 * bump_width ** 2))
+            return base + bump
 
-        # 2. Task B (Non-Linear Distortion of Task A)
+        A_data = torch.cat([t_A, shared_base_shape(t_A)], dim=-1)
+
+        # 2. Task B (The Distorted Domain of the Shared Shape)
         t_B = torch.linspace(-0.5, 2 * np.pi + 0.5, T).view(T, 1, 1).expand(T, batch_size, 1)
 
-        # Sample non-linear distortion parameters
-        # NON-LINEARITY
-        warp = torch.rand(1, batch_size, 1) * 0.6 + 0.2  # Strength of the accordion squeeze
-        curve = torch.rand(1, batch_size, 1) * 0.4 - 0.2  # Strength of the quadratic bend
+        # Domain Distortion Parameters (Warping the x and y axes)
+        warp = torch.rand(1, batch_size, 1) * 0.8 + 0.2
+        curve = torch.rand(1, batch_size, 1) * 0.2 - 0.1
 
         def task_B_func(x):
-            # The Non-Linearity:
-            # 1. (x + warp * sin(x)) creates a spatially varying pinch/stretch on the x-axis.
-            # 2. (curve * x**2) bends the entire manifold into a parabola.
+            # We apply the distortion to the x-axis BEFORE passing it to the shared shape
             distorted_x = x + warp * torch.sin(x)
-            return A_amp * torch.sin(A_freq * distorted_x + A_phase) + curve * (x ** 2)
+            # We apply the y-axis bend AFTER the shared shape
+            return shared_base_shape(distorted_x) + curve * (x ** 2)
 
         B_data = torch.cat([t_B, task_B_func(t_B)], dim=-1)
 
         # 3. Stream C (Queries)
-        C_data_init = torch.zeros(T, batch_size, D)
-        C_data_init[:, :, 0] = t_A[:, :, 0]
-        C_data_init[:, :, 1] = torch.randn(T, batch_size) * 0.1
+        # C_data_init = torch.zeros(T, batch_size, D)
+        # C_data_init[:, :, 0] = t_A[:, :, 0]
+        # C_data_init[:, :, 1] = torch.randn(T, batch_size) * 0.1
+        C_data_init = deepcopy(A_data)  # Start with the same shape as A, but it will be updated by the adapter
 
+        # 4. Belief Alignment
         # 4. Belief Alignment
         t_A_train = t_A[:sep]
         B_belief_A_data = torch.cat([t_A_train, task_B_func(t_A_train)], dim=-1)
 
         B_data_corrected = torch.cat([B_data[:2 * sep], B_belief_A_data], dim=0)
 
-        return A_data, B_data_corrected, C_data_init, B_belief_A_data
+        # --- NEW: Extract the exact ground truth distortion mapping for visualization ---
+        with torch.no_grad():
+            distorted_t_B = t_B + warp * torch.sin(t_B)  # The true X accordion
+            base_B = shared_base_shape(distorted_t_B)  # The pure feature without the Y-bend
 
+            debug_info = {
+                't_B': t_B.squeeze().cpu().numpy(),
+                'distorted_t_B': distorted_t_B.squeeze().cpu().numpy(),
+                'base_B': base_B.squeeze().cpu().numpy(),
+                'task_B': B_data[:, :, 1].squeeze().cpu().numpy()
+            }
 
+        return A_data, B_data_corrected, C_data_init, B_belief_A_data, debug_info
     # ==========================================
     # MAIN EXECUTION
     # ==========================================
@@ -371,7 +296,7 @@ if __name__ == '__main__':
         sep = 20
         D = 2
         epochs = 20000
-        batch_size = 256  # We can handle larger batches now
+        batch_size = 128  # We can handle larger batches now
 
         # Initialize the WRAPPER instead of the raw adapter
         # We give it d_model=64 and 4 attention heads for rich feature extraction
@@ -388,7 +313,7 @@ if __name__ == '__main__':
         for epoch in pbar:
             optimizer.zero_grad()
 
-            A_data, B_data_corrected, C_data_init, _ = generate_nonlinear_batch(batch_size, T, sep)
+            A_data, B_data_corrected, C_data_init,  B_belief_A_data, debug_info  = generate_shared_complex_batch(batch_size, T, sep)
 
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
 
@@ -408,17 +333,29 @@ if __name__ == '__main__':
             loss_history.append(current_loss)
 
             if (epoch + 1) % 200 == 0:
-                print(f"Epoch {epoch + 1:04d} | Loss: {loss.item():.6f}")
+                # update pbar with current loss
+                pbar.set_postfix({"Loss": f"{current_loss:.6f}"})
+
+
+            if epoch+1 % 2000 == 0:
+                plot_results(sep, T, adapter, loss_history)
 
         # ==========================================
         # INFERENCE ON A NOVEL FUNCTION & DISTORTION
         # ==========================================
         print("\nTesting on a novel Task A and novel Task B distortion...")
+
+
+    def plot_results(sep, T, adapter, loss_history):
         with torch.no_grad():
-            A_data, B_data_corrected, C_data_init, B_belief_A_data = generate_nonlinear_batch(1, T, sep)
+            A_data, B_data_corrected, C_data_init, B_belief_A_data, debug_info = generate_shared_complex_batch(1, T,
+                                                                                                               sep)
 
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
+            # Using the continuous positional encodings for hp
+            hp = x[:, :, 0:1]
             final_batch, attn_weights = adapter(x, single_eval_pos=sep)
+
             C_final = final_batch[:, 2:, :]
             corrector_attn = attn_weights['corrector'].squeeze().cpu().numpy()
 
@@ -429,43 +366,76 @@ if __name__ == '__main__':
             A_train = A_data[:sep, 0, :].numpy()
             B_belief_plot = B_belief_A_data[:, 0, :].numpy()
 
-            # ==========================================
-            # VISUALIZATIONS (3 Subplots)
-            # ==========================================
-            fig, axs = plt.subplots(1, 3, figsize=(20, 6))
+            # --- NEW: Calculate the Domain Boundary ---
+            # 1. Get the maximum X-coordinate of the A_train anchors
+            max_a_train_x = A_train[-1, 0]
 
-            # 1. The Learning Curve
-            axs[0].plot(loss_history, color='purple', alpha=0.8)
-            axs[0].set_title('Learning Curve (MSE Loss)')
-            axs[0].set_xlabel('Epoch')
-            axs[0].set_ylabel('Loss')
-            axs[0].set_yscale('log')  # Log scale helps visualize deep convergence
-            axs[0].grid(True)
+            # 2. Find the first index in B_active where the X-coordinate exceeds max_a_train_x
+            # np.argmax on a boolean array returns the first True index
+            b_cutoff_idx = np.argmax(B_plot[:, 0] > max_a_train_x)
 
-            # 2. The Alignment Plot
-            axs[1].scatter(B_plot[:, 0], B_plot[:, 1], c='gray', alpha=0.5, label='Task B (Novel Distorted)')
-            axs[1].plot(A_plot[:, 0], A_plot[:, 1], 'g--', linewidth=2, label='Task A (Ground Truth)')
-            axs[1].scatter(A_train[:, 0], A_train[:, 1], c='green', s=100, marker='*', label='A Train (Anchors)')
-            axs[1].scatter(B_belief_plot[:, 0], B_belief_plot[:, 1], c='red', s=40, marker='x',
-                           label='B Belief of A_train')
-            axs[1].scatter(C_plot[:, 0], C_plot[:, 1], c='blue', s=30, label='Stream C (Adapter Output)')
+            # Fallback just in case B's domain is completely contained within A's (rare with our generation)
+            if b_cutoff_idx == 0 and B_plot[-1, 0] <= max_a_train_x:
+                b_cutoff_idx = len(B_plot) - 1
+
+                # ==========================================
+            # VISUALIZATIONS (2x2 Grid)
+            # ==========================================
+            fig, axs = plt.subplots(2, 2, figsize=(20, 14))
+
+            # 1. The Learning Curve (Top Left)
+            axs[0, 0].plot(loss_history, color='purple', alpha=0.8)
+            axs[0, 0].set_title('Learning Curve (MSE Loss)')
+            axs[0, 0].set_xlabel('Epoch')
+            axs[0, 0].set_ylabel('Loss')
+            axs[0, 0].set_yscale('log')
+            axs[0, 0].grid(True)
+
+            # 2. The Alignment Plot (Top Right)
+            axs[0, 1].scatter(B_plot[:, 0], B_plot[:, 1], c='gray', alpha=0.5, label='Task B (Novel Distorted)')
+            axs[0, 1].plot(A_plot[:, 0], A_plot[:, 1], 'g--', linewidth=2, label='Task A (Ground Truth)')
+            axs[0, 1].scatter(A_train[:, 0], A_train[:, 1], c='green', s=100, marker='*', label='A Train (Anchors)')
+            axs[0, 1].scatter(B_belief_plot[:, 0], B_belief_plot[:, 1], c='red', s=40, marker='x',
+                              label='B Belief of A_train')
+            axs[0, 1].scatter(C_plot[:, 0], C_plot[:, 1], c='blue', s=30, label='Stream C (Adapter Output)')
             for i in range(sep):
-                axs[1].plot([A_train[i, 0], B_belief_plot[i, 0]],
-                            [A_train[i, 1], B_belief_plot[i, 1]],
-                            'r:', alpha=0.4)
-            axs[1].set_title('Zero-Shot Alignment on Novel Functions')
-            axs[1].legend()
-            axs[1].grid(True)
+                axs[0, 1].plot([A_train[i, 0], B_belief_plot[i, 0]], [A_train[i, 1], B_belief_plot[i, 1]], 'r:',
+                               alpha=0.4)
+            axs[0, 1].set_title('Zero-Shot Alignment on Novel Functions')
+            axs[0, 1].legend()
+            axs[0, 1].grid(True)
 
-            # 3. The Corrector Attention Heatmap
-            im = axs[2].imshow(corrector_attn, cmap='viridis', aspect='auto')
-            axs[2].set_title('Corrector Attention Distribution')
-            axs[2].set_xlabel('Keys: A_train Anchors (Index 0 to 19)')
-            axs[2].set_ylabel('Queries: B_active Points (Index 0 to 39)')
-            fig.colorbar(im, ax=axs[2], label='Attention Weight')
+            # 3. GROUND TRUTH DEFORMATION (Bottom Left)
+            t_B = debug_info['t_B']
+            distorted_t_B = debug_info['distorted_t_B']
+            base_B = debug_info['base_B']
+            task_B = debug_info['task_B']
+
+            axs[1, 0].plot(distorted_t_B, base_B, 'k--', alpha=0.4, linewidth=2, label='Pristine Manifold (Hidden)')
+            axs[1, 0].scatter(t_B, task_B, c='gray', s=20, label='Task B (Observed)')
+
+            # Draw displacement arrows
+            for i in range(len(t_B)):
+                axs[1, 0].annotate('', xy=(t_B[i], task_B[i]), xytext=(distorted_t_B[i], base_B[i]),
+                                   arrowprops=dict(arrowstyle="->", color="orange", alpha=0.6))
+
+            axs[1, 0].set_title('Ground Truth Displacement (Orange = The hidden warp)')
+            axs[1, 0].legend()
+            axs[1, 0].grid(True)
+
+            # 4. The Corrector Attention Heatmap (Bottom Right)
+            im = axs[1, 1].imshow(corrector_attn, cmap='viridis', aspect='auto')
+            axs[1, 1].set_title('Corrector Attention Distribution')
+            axs[1, 1].set_xlabel('Keys: A_train Anchors (Index 0 to 19)')
+            axs[1, 1].set_ylabel('Queries: B_active Points (Index 0 to 39)')
+
+            # --- NEW: Draw the Boundary Line ---
+            axs[1, 1].axhline(y=b_cutoff_idx, color='red', linestyle='--', linewidth=2,
+                              label='End of A_train Domain (Extrapolation Boundary)')
+            axs[1, 1].legend(loc='upper right', framealpha=0.9)
+
+            fig.colorbar(im, ax=axs[1, 1], label='Attention Weight')
 
             plt.tight_layout()
             plt.show()
-
-
     run_dynamic_sanity_check()
