@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, Tuple
 
 from pfns4hpo.utils import torch_nanmean
@@ -30,7 +31,7 @@ class MultiStreamObjective(nn.Module):
         for module in self.model.modules():
             if isinstance(module, CrossFusion):
                 total_aux_loss += module.get_aux_loss()
-            return total_aux_loss
+        return total_aux_loss
 
     def forward(
             self,
@@ -76,6 +77,30 @@ class MultiStreamObjective(nn.Module):
         # FETCH AND ADD AUXILIARY SPARSITY LOSS
         aux_loss = self._find_cross_fusion_aux_loss()
         optimization_loss = optimization_loss + (self.lambda_sparsity * aux_loss)
+
+        # # --- NEW: NLL Hinge Penalty for Unrelated Tasks ---
+        # consistency_val = 0.0
+        # if (
+        #         batch is not None
+        #         and hasattr(batch, "style")
+        #         and batch.style is not None
+        # ):
+        #     style = batch.style[::2].squeeze()  # Extract style for stream A tasks
+        #     unrelated_mask = (style == 0)
+        #
+        #     if unrelated_mask.any():
+        #         # Extract the NLL losses for just the unrelated tasks in the batch
+        #         # .detach() Stream A so we only penalize C without moving A's gradients
+        #         nll_A_unrelated = loss_stream_A[:, unrelated_mask, ...].detach()
+        #         nll_C_unrelated = loss_stream_C[:, unrelated_mask, ...]
+        #
+        #         # Hinge Penalty: Only penalize C if its NLL is HIGHER (worse) than A's NLL.
+        #         # Because both are NLL, the numerical scale matches the main optimization_loss perfectly.
+        #         consistency_loss = F.relu(nll_C_unrelated - nll_A_unrelated).mean()
+        #
+        #         optimization_loss = optimization_loss + consistency_loss
+        #         consistency_val = consistency_loss.item()
+        # # --------------------------------------------------
 
         # 4. Compute Metrics (The logic previously in TrainMetricsCallback)
         with torch.no_grad():
