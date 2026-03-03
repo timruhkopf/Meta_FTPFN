@@ -1,28 +1,27 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from typing import Tuple
 
-class ContinuousPositionalEncoding(nn.Module):
-    def __init__(self, d_model):
-        super().__init__()
-        self.d_model = d_model
-        # Create a spectrum of frequency bands
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
-        self.register_buffer('div_term', div_term)
-
-    def forward(self, x):
-        # x shape: (T, Batch, 1)
-        pe = torch.zeros(x.shape[0], x.shape[1], self.d_model, device=x.device)
-        # Apply sine to even indices, cosine to odd indices
-        pe[:, :, 0::2] = torch.sin(x * self.div_term)
-        pe[:, :, 1::2] = torch.cos(x * self.div_term)
-        return pe
+# class ContinuousPositionalEncoding(nn.Module):
+#     def __init__(self, d_model):
+#         super().__init__()
+#         self.d_model = d_model
+#         # Create a spectrum of frequency bands
+#         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+#         self.register_buffer('div_term', div_term)
+#
+#     def forward(self, x):
+#         # x shape: (T, Batch, 1)
+#         pe = torch.zeros(x.shape[0], x.shape[1], self.d_model, device=x.device)
+#         # Apply sine to even indices, cosine to odd indices
+#         pe[:, :, 0::2] = torch.sin(x * self.div_term)
+#         pe[:, :, 1::2] = torch.cos(x * self.div_term)
+#         return pe
 
 class NadarayaWatsonAdapter(nn.Module):
     # FIXME: d_hp needs to be removed, because we should take the pfn's encoded hyperparameters as input to account for variable sized hp spaces.
-    def __init__(self, d_model, n_heads, dropout=0.1, d_hp=1, nw_dropout=0.0, reuse_attn=True, hp_only_attn=True):
+    def __init__(self, d_model, n_heads, dropout=0.1, nw_dropout=0.0, reuse_attn=True, hp_only_attn=True):
         """
         A 3-stream meta-learning adapter that performs Non-Parametric Local Smoothing
         to align and extract knowledge from related tasks within a frozen Prior-Data Fitted Network (PFN).
@@ -59,14 +58,12 @@ class NadarayaWatsonAdapter(nn.Module):
                 design of the original PFN, which reuses attention for train/test splits on a
                 single item to maintain unified feature extraction logic and saves learnable parameters.
                 Defaults to True.
+        Note: This module expects the hyperparameters (`hp`) to already be encoded
+        by the PFN into the same `d_model` latent dimension.
         """
         super().__init__()
         self.d_model = d_model
         self.hp_only_attn = hp_only_attn
-
-        # NEW: Project the separate HP stream into the latent dimension for Q/K matching
-        self.hp_proj = nn.Linear(d_hp, d_model)
-        # self.hp_proj = nn.Identity() #ContinuousPositionalEncoding(d_model)
 
         # 1. The Corrector
         self.norm_nw_q = nn.LayerNorm(d_model)
@@ -112,7 +109,7 @@ class NadarayaWatsonAdapter(nn.Module):
     def forward(self, x, hp, *args, **kwargs):
         """
         x: Latent representations (T, 3*Batch, d_model)
-        hp: Separate hyperparameter coordinates (T, 3*Batch, d_hp)
+        hp: PFN-encoded hyperparameter coordinates (T, 3*Batch, d_model)
         """
         B_dim, sep = self.validate_forward_args(x, *args, **kwargs)
         R = B_dim // 3
@@ -123,7 +120,7 @@ class NadarayaWatsonAdapter(nn.Module):
         C = x[:, 2 * R:, :]
         device = A.device
 
-        # --- Extract Hyperparameter (HP) Streams ---
+        # --- Extract Encoded Hyperparameter Streams ---
         hp_A = hp[:, :R, :]
         hp_B = hp[:, R: 2 * R, :]
         hp_C = hp[:, 2 * R:, :]
@@ -144,14 +141,14 @@ class NadarayaWatsonAdapter(nn.Module):
         error = self.mlp_err(self.norm_nw_v(A_train - B_belief_A))
         B_active = B[:2 * sep]
 
-        # CRITICAL UPDATE: Q and K use purely the projected hyperparameters
-        q_nw = self.norm_nw_q(self.hp_proj(hp_B_active))
-        k_nw = self.norm_nw_k(self.hp_proj(hp_A_train))
+        # Q and K use the PFN's encoded hyperparameters directly
+        q_nw = self.norm_nw_q(hp_B_active)
+        k_nw = self.norm_nw_k(hp_A_train)
 
         corr_out, corr_weights = self.nw_attn(
-            q_nw,  # Query: Where are the active B points spatially?
-            k_nw,  # Key: Where are the A anchors spatially?
-            error  # Value: What is the latent feature distortion?
+            q_nw,  # Query: Encoded spatial position of active B points
+            k_nw,  # Key: Encoded spatial position of A anchors
+            error  # Value: Latent feature distortion
         )
 
         B_prime = B_active + corr_out
@@ -160,38 +157,25 @@ class NadarayaWatsonAdapter(nn.Module):
         # STAGE 2: THE EXTRACTOR
         # ==========================================
         if self.hp_only_attn:
-            # Keys for the extractor are the hyperparameters of B_active
-            k_ext = self.norm_k(self.hp_proj(hp_B_active))
-
-            # Values are the newly UNDISTORTED latent features
+            # Keys for the extractor are the encoded HPs of B_active
+            k_ext = self.norm_k(hp_B_active)
             v_ext = B_prime
 
             # Queries are the hyperparameters of C
             c_train_update, train_weights = self.attn_train(
-                self.norm_train_q(self.hp_proj(hp_C_train)), k_ext, v_ext
+                self.norm_train_q(hp_C_train), k_ext, v_ext
             )
 
             c_test_update, test_weights = self.attn_test(
-                self.norm_test_q(self.hp_proj(hp_C_test)), k_ext, v_ext
+                self.norm_test_q(hp_C_test), k_ext, v_ext
             )
 
-            c_dummy_update = torch.zeros_like(C_belief_A).to(device)
-            C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
-
-            C = C + C_update
-            C = C + self.ffn(self.norm_ffn(C))
         else:
-            # ==========================================
-            # STAGE 2: THE EXTRACTOR
-            # ==========================================
-            # Keys for the extractor are the hyperparameters of B_active
-            # fixme norm this?
-            k_ext = self.norm_k(self.hp_proj(hp_B_active)) # B_prime
-
-            # Values are the newly UNDISTORTED latent features
+            # Keys for the extractor are the encoded HPs of B_active
+            k_ext = self.norm_k(hp_B_active)
             v_ext = B_prime
 
-            # Queries use the ACTUAL latent features of C (reverted from hp_C)
+            # Queries use the ACTUAL latent features of C
             c_train_update, train_weights = self.attn_train(
                 self.norm_train_q(C_train), k_ext, v_ext
             )
@@ -200,11 +184,11 @@ class NadarayaWatsonAdapter(nn.Module):
                 self.norm_test_q(C_test), k_ext, v_ext
             )
 
-            c_dummy_update = torch.zeros_like(C_belief_A).to(device)
-            C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
+        c_dummy_update = torch.zeros_like(C_belief_A).to(device)
+        C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
 
-            C = C + C_update
-            C = C + self.ffn(self.norm_ffn(C))
+        C = C + C_update
+        C = C + self.ffn(self.norm_ffn(C))
 
         batch = torch.cat([A, B, C], dim=1)
         return batch, {
@@ -232,7 +216,7 @@ if __name__ == '__main__':
         def __init__(self, input_dim=2, d_model=64, n_heads=4,  dropout=0.0):
             super().__init__()
             self.up_proj = nn.Linear(input_dim, d_model)
-
+            self.hp_proj = nn.Linear(input_dim -1, d_model) # hp dim
             self.adapter = NadarayaWatsonAdapter(
                 d_model=d_model,
                 n_heads=n_heads,
@@ -247,6 +231,7 @@ if __name__ == '__main__':
             # Explicitly isolate the hyperparameters (the x-coordinates, index 0)
             # We keep the trailing dimension so shape is (T, 3*Batch, 1)
             hp = x[:, :, 0:1]
+            hp = self.hp_proj(hp)
 
             h_out, attn_weights = self.adapter(h, hp=hp, single_eval_pos=single_eval_pos)
             out = self.down_proj(h_out)
