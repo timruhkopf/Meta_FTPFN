@@ -21,7 +21,8 @@ class ContinuousPositionalEncoding(nn.Module):
         return pe
 
 class NadarayaWatsonAdapter(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1, nw_dropout=0.0, reuse_attn=True, hp_only_attn=True):
+    # FIXME: d_hp needs to be removed, because we should take the pfn's encoded hyperparameters as input to account for variable sized hp spaces.
+    def __init__(self, d_model, n_heads, dropout=0.1, d_hp=1, nw_dropout=0.0, reuse_attn=True, hp_only_attn=True):
         """
         A 3-stream meta-learning adapter that performs Non-Parametric Local Smoothing
         to align and extract knowledge from related tasks within a frozen Prior-Data Fitted Network (PFN).
@@ -64,8 +65,8 @@ class NadarayaWatsonAdapter(nn.Module):
         self.hp_only_attn = hp_only_attn
 
         # NEW: Project the separate HP stream into the latent dimension for Q/K matching
-        # self.hp_proj = nn.Linear(d_hp, d_model)
-        self.hp_proj = ContinuousPositionalEncoding(d_model)
+        self.hp_proj = nn.Linear(d_hp, d_model)
+        # self.hp_proj = nn.Identity() #ContinuousPositionalEncoding(d_model)
 
         # 1. The Corrector
         self.norm_nw_q = nn.LayerNorm(d_model)
@@ -184,7 +185,8 @@ class NadarayaWatsonAdapter(nn.Module):
             # STAGE 2: THE EXTRACTOR
             # ==========================================
             # Keys for the extractor are the hyperparameters of B_active
-            k_ext = B_prime #self.norm_k(self.hp_proj(hp_B_active))
+            # fixme norm this?
+            k_ext = self.norm_k(self.hp_proj(hp_B_active)) # B_prime
 
             # Values are the newly UNDISTORTED latent features
             v_ext = B_prime
@@ -289,10 +291,17 @@ if __name__ == '__main__':
         B_data = torch.cat([t_B, task_B_func(t_B)], dim=-1)
 
         # 3. Stream C (Queries)
-        # C_data_init = torch.zeros(T, batch_size, D)
-        # C_data_init[:, :, 0] = t_A[:, :, 0]
-        # C_data_init[:, :, 1] = torch.randn(T, batch_size) * 0.1
-        C_data_init = deepcopy(A_data)  # Start with the same shape as A, but it will be updated by the adapter
+        C_data_init = torch.zeros(T, batch_size, D)
+
+        # The x-coordinates (hyperparameters) are always fully known
+        C_data_init[:, :, 0] = t_A[:, :, 0]
+
+
+        # Allow the network to see the A_train ground truth
+        C_data_init[:sep, :, 1] = A_data[:sep, :, 1]
+
+        # Force the network to figure out the test region from Task B
+        C_data_init[sep:, :, 1] = torch.randn(T - sep, batch_size) * 0.1 #
 
         # 4. Belief Alignment
         # 4. Belief Alignment
@@ -314,6 +323,7 @@ if __name__ == '__main__':
             }
 
         return A_data, B_data_corrected, C_data_init, B_belief_A_data, debug_info
+
     # ==========================================
     # MAIN EXECUTION
     # ==========================================
@@ -363,7 +373,7 @@ if __name__ == '__main__':
                 pbar.set_postfix({"Loss": f"{current_loss:.6f}"})
 
 
-            if( epoch+1 )% 2000 == 0:
+            if ( epoch+1 )% 2000 == 0:
                 plot_results(sep, T, adapter, loss_history)
 
         # ==========================================
@@ -379,7 +389,8 @@ if __name__ == '__main__':
 
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
             # Using the continuous positional encodings for hp
-            hp = x[:, :, 0:1]
+            hp = x[:, :, 0:1] # adatper handles can extract the hyperparameters internally
+            adapter.eval()
             final_batch, attn_weights = adapter(x, single_eval_pos=sep)
 
             C_final = final_batch[:, 2:, :]
@@ -445,23 +456,27 @@ if __name__ == '__main__':
                 axs[1, 0].annotate('', xy=(t_B[i], task_B[i]), xytext=(distorted_t_B[i], base_B[i]),
                                    arrowprops=dict(arrowstyle="->", color="orange", alpha=0.6))
 
+            axs[1, 0].set_xlim(axs[0, 1].get_xlim())
             axs[1, 0].set_title('Ground Truth Displacement (Orange = The hidden warp)')
             axs[1, 0].legend()
             axs[1, 0].grid(True)
 
             # 4. The Corrector Attention Heatmap (Bottom Right)
-            im = axs[1, 1].imshow(corrector_attn, cmap='viridis', aspect='auto')
-            axs[1, 1].set_title('Corrector Attention Distribution')
-            axs[1, 1].set_xlabel('Keys: A_train Anchors (Index 0 to 19)')
-            axs[1, 1].set_ylabel('Queries: B_active Points (Index 0 to 39)')
+            # Transpose the matrix AND set origin to 'lower' for Cartesian alignment
+            im = axs[1, 1].imshow(corrector_attn.T, cmap='viridis', aspect='auto', origin='lower')
 
-            # --- NEW: Draw the Boundary Line ---
-            axs[1, 1].axhline(y=b_cutoff_idx, color='red', linestyle='--', linewidth=2,
+            axs[1, 1].set_title('Corrector Attention Distribution')
+            axs[1, 1].set_xlabel('Queries: B_active Points (Index 0 to 39)')
+            axs[1, 1].set_ylabel('Keys: A_train Anchors (Index 0 to 19)')
+
+            # Draw the Boundary Line
+            axs[1, 1].axvline(x=b_cutoff_idx, color='red', linestyle='--', linewidth=2,
                               label='End of A_train Domain (Extrapolation Boundary)')
             axs[1, 1].legend(loc='upper right', framealpha=0.9)
-
             fig.colorbar(im, ax=axs[1, 1], label='Attention Weight')
 
             plt.tight_layout()
             plt.show()
+
+            adapter.train()
     run_dynamic_sanity_check()
