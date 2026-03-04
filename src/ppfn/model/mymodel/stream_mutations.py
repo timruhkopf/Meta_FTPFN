@@ -67,8 +67,6 @@ class AppendATrainToBTestMutation(AbstractStreamMutation):
         # (Assuming your specific use case requires this feature swap)
         # Usually, this means making the 'test' features identical to 'train'
         # features for the appended segment.
-        a_train_x[:, 1::2, ...] = a_train_x[:, ::2, ...]
-        a_train_y[:, 1::2] = a_train_y[:, ::2]
 
         new_streams = {}
         for key, (x, y, mask) in streams.items():
@@ -102,7 +100,7 @@ class AppendATrainToBTestMutation(AbstractStreamMutation):
 
         return new_streams
 
-    def cleanup(self, output_streams, batch_streams, sep):
+    def splice_at_fwd_end(self, output_streams, batch_streams, sep):
         """
         We need to undo the mutation at the end of the forward pass to ensure that the loss will not see the appended
          A_train data in B_test

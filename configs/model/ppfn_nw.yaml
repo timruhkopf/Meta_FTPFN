@@ -26,8 +26,7 @@ model:
         - _target_: ppfn.model.mymodel.stream_mutations.ForceSameQueryMutation
         - _target_: ppfn.model.mymodel.stream_mutations.AppendATrainToBTestMutation
 
-    force_same_query: false # must be false! we want to look at B_test and
-    append_A_train_to_B_test: true
+
     pass_hp_from_frozen: true
 
     frozen_model:

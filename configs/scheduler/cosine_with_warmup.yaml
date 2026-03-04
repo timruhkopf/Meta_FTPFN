@@ -1,5 +1,5 @@
 
-_target_: trainer.scheduler.get_cosine_schedule_with_warmup
+_target_: ppfn.trainer.scheduler.get_cosine_schedule_with_warmup
 _partial_: true
 warmup_epochs: 20
 max_epochs: ${trainer.epochs}

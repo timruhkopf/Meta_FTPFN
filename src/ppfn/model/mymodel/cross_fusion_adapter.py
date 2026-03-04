@@ -3,6 +3,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ppfn.model.mymodel.meta_context import ForwardMetaContext
+
 
 class CrossFusionAdapter(nn.Module):
     def __init__(
@@ -18,6 +20,7 @@ class CrossFusionAdapter(nn.Module):
         self.C_as_Q = C_as_Q
         self.use_gate = use_gate
         self.add_linear = add_linear
+        self.address = None
 
         self.cross_attn = nn.MultiheadAttention(d_model, num_heads, dropout)
         if reuse_attention:
@@ -46,8 +49,6 @@ class CrossFusionAdapter(nn.Module):
         self.initialize_as_identity()
         self.single_eval_pos = None
 
-        # State variable to store the sparsity loss for the current forward pass
-        self.aux_gate_loss = torch.tensor(0.0)
 
     def initialize_as_identity(self):
         if not self.use_prenorm:
@@ -109,6 +110,8 @@ class CrossFusionAdapter(nn.Module):
             # Record L1 sparsity loss (average over sequence and batch)
             self.aux_gate_loss = gate_train.abs().mean() + gate_test.abs().mean()
 
+            ForwardMetaContext.set(f"gate_train/{self.address}", gate_train)
+
             # Apply gate
             train_delta = train_delta * gate_train
             test_delta = test_delta * gate_test
@@ -125,7 +128,3 @@ class CrossFusionAdapter(nn.Module):
         conditional = torch.cat([train_update, test_update], dim=0)
 
         return torch.cat([A, B, conditional], dim=1)
-
-    # Optional: A helper to locate this module in a large model
-    def get_aux_loss(self):
-        return self.aux_gate_loss

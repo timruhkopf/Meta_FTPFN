@@ -35,7 +35,7 @@ class StreamParser(nn.Module):
         for mutation in self.stream_mutations or []:
             o_streams, b_streams = mutation.splice_at_fwd_end(o_streams, b_streams, sep)
         batch, mask = self.assemble_batch(b_streams, sep)
-        output = self.assemble_output_streams(o_streams)[0]
+        output = self.assemble_output_streams(o_streams)
         return batch, mask, output
 
 

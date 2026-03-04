@@ -83,7 +83,7 @@ def main(cfg: DictConfig) -> None:
         #  and the model are accessing 'criterion'
         logger.info("Wrapping criterion with objective...")
         # this is a wrapper objective around the model's criterion
-        criterion = instantiate(cfg.trainer.objective, criterion=criterion, model=model)
+        criterion = instantiate(cfg.trainer.objective, criterion=criterion)
 
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__

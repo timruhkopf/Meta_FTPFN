@@ -30,7 +30,9 @@ class MetaTestCallback(AbstractCallback):
                 # and the iteration over the dedicated target task in the meta-test fold,
                 # where the batch has a single target task
                 self.trainer.model.eval()
+                self.trainer.criterion.eval()  # hot-fix: separate stream_parser in objective (different from the model's) requires this
                 aggregated_metrics = self._evaluate()
+                self.trainer.criterion.train()
                 self.trainer.model.train()
             else:
                 # The synthetic benchmarks will work in pairs, where half the batch

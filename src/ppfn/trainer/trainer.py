@@ -312,9 +312,13 @@ class PPFNTrainer:
 
         with (amp.autocast(device_type="cuda", enabled=self.use_amp)):
             output = self.model(batch, single_eval_pos=single_eval_pos, **kwargs)
-            targets = batch.y[single_eval_pos:, ...]
 
-            loss, metrics = self.criterion(output, targets, batch=batch, single_eval_pos=single_eval_pos)
+
+            loss, metrics = self.criterion(
+                output, batch=batch, single_eval_pos=single_eval_pos, **kwargs
+            )
+
+
 
         return loss, metrics
 
