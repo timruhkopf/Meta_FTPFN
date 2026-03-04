@@ -76,7 +76,7 @@ class CrossFusionAdapter(nn.Module):
                 nn.init.zeros_(self.test_attn.out_proj.bias)
 
 
-    def forward(self, A, B, C, sep, *args, **kwargs):
+    def forward(self, A, B, C, sep, **kwargs):
 
         # 1. Determine Query and Key/Value inputs for Attention
         Q_input = C if self.C_as_Q else A
@@ -110,7 +110,7 @@ class CrossFusionAdapter(nn.Module):
             # Record L1 sparsity loss (average over sequence and batch)
             self.aux_gate_loss = gate_train.abs().mean() + gate_test.abs().mean()
 
-            ForwardMetaContext.set(f"gate_train/{self.address}", gate_train)
+            ForwardMetaContext.set(f"gate_train/{self.address}",self.aux_gate_loss)
 
             # Apply gate
             train_delta = train_delta * gate_train
@@ -127,4 +127,4 @@ class CrossFusionAdapter(nn.Module):
         # Recombine train-test Sequence (dim=0) and Batch unaltered A, B with conditional C (dim=1)
         conditional = torch.cat([train_update, test_update], dim=0)
 
-        return torch.cat([A, B, conditional], dim=1)
+        return A, B, conditional

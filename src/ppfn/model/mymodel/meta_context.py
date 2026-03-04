@@ -22,7 +22,17 @@ class ForwardMetaContext:
     _state = threading.local()
 
     @classmethod
-    def set(cls, **kwargs):
+    def set(cls, key=None, value=None, **kwargs):
+        """
+        Supports:
+        1. set("gate_train/address", value)
+        2. set(any_valid_identifier=value)
+        """
+        # Handle the positional/arbitrary string key
+        if key is not None:
+            setattr(cls._state, key, value)
+
+        # Handle standard kwargs
         for k, v in kwargs.items():
             setattr(cls._state, k, v)
 
