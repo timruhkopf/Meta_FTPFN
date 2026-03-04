@@ -91,13 +91,12 @@ class PPFNTrainer:
         self.optimizer = optimizer(trainable_params)
         self.scheduler = scheduler(self.optimizer)
 
-
-        self.callbacks = callbacks or []
+        self.callbacks = callbacks or {}
         # TODO callbackhandler will need to be ddp rank aware to avoid multiple logging
         self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
 
         self.verbose = verbose
-        self.config = None # Placeholder, we pass this from outside if needed
+        self.config = None  # Placeholder, we pass this from outside if needed
 
         # Mixed precision & gradient settings
         self.scaler = amp.GradScaler(device=self.device) if use_amp else None
@@ -115,7 +114,6 @@ class PPFNTrainer:
         )
 
         self.callback_handler.on_event("on_trainer_init")
-
 
     def fit(self, epochs: int, steps: int):
         """
@@ -139,7 +137,7 @@ class PPFNTrainer:
         try:
             iterator = tqdm(range(epochs), disable=not self.verbose)
 
-            if hasattr(self.train_loader, '__iter__'):
+            if hasattr(self.train_loader, "__iter__"):
                 # classical trainloader
                 self.train_loader = iter(self.train_loader)
 
@@ -160,7 +158,7 @@ class PPFNTrainer:
                     "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
                 )
 
-                if feedback.get('stop_training', False):
+                if feedback.get("stop_training", False):
                     print("Early stopping triggered. Terminating training.")
                     break
 
@@ -168,8 +166,7 @@ class PPFNTrainer:
                     try:
                         # We merge epoch into the metrics dict or pass it as a kwarg
                         description = self.description_template.format(
-                            epoch=epoch,
-                            **epoch_metrics
+                            epoch=epoch, **epoch_metrics
                         )
                         iterator.set_description(description)
                     except KeyError as e:
@@ -204,8 +201,7 @@ class PPFNTrainer:
         epoch_start = time.time()
 
         for step in range(n_steps):
-
-            if hasattr(self.train_loader, 'get_batch'):
+            if hasattr(self.train_loader, "get_batch"):
                 # PRIORDATALOADER Legacy support
                 batch = self.train_loader.get_batch(device=self.device)
             else:
@@ -215,7 +211,8 @@ class PPFNTrainer:
                     "The PPFNTrainer expects that the dataset class already provides batches, "
                     "so the loader must have batch_size=1."
                 )
-                batch = batch[0]  # since we expect batch_size=1 with collate_fn=lambda x: x[0]
+                # since we expect batch_size=1 with collate_fn=lambda x: x[0]
+                batch = batch[0]
 
                 batch = batch.to(self.device)
 
@@ -275,9 +272,11 @@ class PPFNTrainer:
                 self.scaler.unscale_(self.optimizer)
 
             if self.grad_clip:
-
                 feedack = self.callback_handler.on_event(
-                    "on_clipping", epoch=self.current_epoch, step=step, metrics=step_metrics
+                    "on_clipping",
+                    epoch=self.current_epoch,
+                    step=step,
+                    metrics=step_metrics,
                 )
                 step_metrics.update(feedack)
 
@@ -298,19 +297,19 @@ class PPFNTrainer:
             }
         )
         if self.verbose:
-            step_metrics.update({
-                "train/single_eval_pos": single_eval_pos
-            })
+            step_metrics.update({"train/single_eval_pos": single_eval_pos})
 
         return step_metrics
 
-    def _forward_pass(self, batch: Batch, single_eval_pos, **kwargs) -> tuple[torch.Tensor, Dict[str, float]]:
+    def _forward_pass(
+        self, batch: Batch, single_eval_pos, **kwargs
+    ) -> tuple[torch.Tensor, Dict[str, float]]:
         """Perform a single forward pass and compute loss."""
         # Unpack batch; adapt based on your batch structure
         # if isinstance(batch, (tuple, list)):
         # batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
 
-        with (amp.autocast(device_type="cuda", enabled=self.use_amp)):
+        with amp.autocast(device_type="cuda", enabled=self.use_amp):
             output = self.model(batch, single_eval_pos=single_eval_pos, **kwargs)
 
 
@@ -342,7 +341,6 @@ class PPFNTrainer:
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         self.current_epoch = checkpoint["epoch"]
         self.best_loss = checkpoint["best_loss"]
-
 
 
 class DistributedTrainer(PPFNTrainer):
