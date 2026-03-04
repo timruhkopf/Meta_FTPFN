@@ -60,6 +60,7 @@ class NadarayaWatsonAdapter(nn.Module):
         self.d_model = d_model
         self.hp_only_attn = hp_only_attn
         self.address = address # backlink for logging and debugging purposes
+        self.reuse_attn = reuse_attn
 
         # 1. The Corrector
         self.norm_nw_q = nn.LayerNorm(d_model)
@@ -95,6 +96,62 @@ class NadarayaWatsonAdapter(nn.Module):
             nn.Linear(d_model * 4, d_model),
             nn.Dropout(dropout)
         )
+
+        self.initialize_as_identity()
+
+    def initialize_as_identity(self):
+        """
+        Initializes the adapter to act as an identity function initially.
+        Zeroes out the final projections of the Extractor, FFN, and Corrector.
+        """
+        # 1. The Extractor: Zero out the attention output projection
+        # This ensures `c_train_update` and `c_test_update` are strictly 0.
+        nn.init.zeros_(self.attn_train.out_proj.weight)
+        nn.init.zeros_(self.attn_train.out_proj.bias)
+
+        if not self.reuse_attn:
+            nn.init.zeros_(self.attn_test.out_proj.weight)
+            nn.init.zeros_(self.attn_test.out_proj.bias)
+
+        # 2. The FFN Modulator: Zero out the final linear layer
+        # In self.ffn, the second Linear layer is at index 3.
+        # (0: Linear, 1: GELU, 2: Dropout, 3: Linear, 4: Dropout)
+        nn.init.zeros_(self.ffn[3].weight)
+        nn.init.zeros_(self.ffn[3].bias)
+
+        # 3. The Corrector: Zero out the NW attention output projection
+        # This ensures `corr_out` is 0, meaning B_prime exactly equals B_active initially.
+        # This prevents the network from applying chaotic domain shifts before learning the manifold.
+        nn.init.zeros_(self.nw_attn.out_proj.weight)
+        nn.init.zeros_(self.nw_attn.out_proj.bias)
+
+        # Note: You do not need to zero out self.mlp_err because zeroing the
+        # nw_attn output projection already bottlenecks the correction to 0.
+
+    # TODO try a "near-identity" initialization where we initialize the weights to small random values instead of exact zeros.
+    # def initialize_as_identity(self, epsilon=1e-4):
+    #     """
+    #     Initializes the adapter to a near-identity state.
+    #     Allows for immediate gradient signal while preserving frozen model behavior.
+    #     """
+    #     # 1. The Extractor & Corrector (MultiheadAttention)
+    #     for mha in [self.nw_attn, self.attn_train, self.attn_test]:
+    #         # Zero the bias to prevent constant shifts
+    #         nn.init.zeros_(mha.out_proj.bias)
+    #         # Use a tiny normal distribution for weights
+    #         nn.init.normal_(mha.out_proj.weight, std=epsilon)
+    #
+    #     # 2. The FFN Modulator
+    #     # self.ffn[3] is the second Linear layer
+    #     nn.init.zeros_(self.ffn[3].bias)
+    #     nn.init.normal_(self.ffn[3].weight, std=epsilon)
+    #
+    #     # 3. The MLP Error (Optional but helpful)
+    #     # Priming the error transformation ensures the NW corrector
+    #     # starts looking for meaningful distortions immediately.
+    #     nn.init.zeros_(self.mlp_err[-1].bias)
+    #     nn.init.normal_(self.mlp_err[-1].weight, std=epsilon)
+
 
     def forward(self, hp, A, B, C, sep):
         """
@@ -152,8 +209,7 @@ class NadarayaWatsonAdapter(nn.Module):
         c_train_update, train_weights = self.attn_train(q_train, k_ext, v_ext)
         c_test_update, test_weights = self.attn_test(q_test, k_ext, v_ext)
 
-        c_dummy_update = torch.zeros_like(C_belief_A).to(device)
-        C_update = torch.cat([c_train_update, c_test_update, c_dummy_update], dim=0)
+        C_update = torch.cat([c_train_update, c_test_update, C_belief_A], dim=0)
 
         C = C + C_update
         C = C + self.ffn(self.norm_ffn(C))
