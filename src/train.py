@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-@hydra.main(version_base="1.1", config_path="../../configs", config_name="config")
+@hydra.main(version_base="1.1", config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """
     Main training entry point.

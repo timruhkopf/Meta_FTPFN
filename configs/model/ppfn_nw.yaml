@@ -1,16 +1,14 @@
 # @package _global_
-# Multi-layer model with cross-attention at layers 0 and 2
-# 1. Define the base configuration once using an anchor (&)
+
 layer_base: # &layer_logic
-  _target_: ppfn.model.mymodel.cross_fusion_adapter.CrossFusionAdapter
+  _target_: ppfn.model.mymodel.nw_adapter.NadarayaWatsonAdapter
   d_model: 512
-  num_heads: 4
+  n_heads: 4
   dropout: 0.1
-  use_prenorm: True
-  add_linear: False
-  use_gate: False
-  reuse_attention: False
-  C_as_Q: False
+  nw_dropout: 0.
+  reuse_attn: True
+  hp_only_attn: True
+  seq_len: 1000
 
 trainer:
   objective:
@@ -20,20 +18,27 @@ model:
   frozen_version: "0.0.1"
 
   model_class:
+
     _target_: ppfn.model.mymodel.ppfn_model.PPFN
     stream_parser:
       _target_: ppfn.model.mymodel.stream_parser.StreamParser
       stream_mutations:
         - _target_: ppfn.model.mymodel.stream_mutations.ForceSameQueryMutation
+        - _target_: ppfn.model.mymodel.stream_mutations.AppendATrainToBTestMutation
+
+    force_same_query: false # must be false! we want to look at B_test and
+    append_A_train_to_B_test: true
+    pass_hp_from_frozen: true
 
     frozen_model:
-      _target_: ppfn.model.baselines.ft_pfn.ft_pfn
+      _target_: ppfn.model.baselines.ft_pfn_padding.ft_pfn_padding
 
     _convert_: partial
     # to avoid instantiation issue that the name should not
     # be in dot notation! therefor, we make it a list of dictionaries and convert them
     # in the class
     interleaved_layers:
+#      - name:
 
       - name: "transformer_encoder.layers.0"
         layer: ${layer_base} #*layer_logic

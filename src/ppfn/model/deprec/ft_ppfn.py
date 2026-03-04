@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-
-
-
 class FT_PPFN(HierarchicalPFN):
     """
     Pre-conditioned Prior fitted Network (PPFN)
@@ -29,16 +26,22 @@ class FT_PPFN(HierarchicalPFN):
     """
 
     def __init__(
-        self,
-        frozen_model: nn.Module,
-        interleaved_layers: Mapping[str, nn.Module],
-        force_same_query: bool = False,
+            self,
+            frozen_model: nn.Module,
+            interleaved_layers: Mapping[str, nn.Module],
+            force_same_query: bool = False,
+            append_A_train_to_B_test: bool = False,
+            pass_hp_from_frozen: bool = False,
+            seq_len=1000,
     ):
         super().__init__(
             frozen_model=frozen_model,
             interleaved_layers=interleaved_layers,
         )
+        self.seq_len = seq_len
         self.force_same_query = force_same_query
+        self.append_A_train_to_B_test = append_A_train_to_B_test
+        self.pass_hp_from_frozen = pass_hp_from_frozen
 
         logger.info(
             f"FT_PPFN initialized with cross-fusion interleaved layers. "
@@ -46,7 +49,7 @@ class FT_PPFN(HierarchicalPFN):
         )
 
     def parse_train_batch(
-        self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None
+            self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None, hp=None
     ) -> tuple[MyBatch, Optional[torch.Tensor]]:
         """
         Modify the batch for cross-fusion training.
@@ -58,14 +61,29 @@ class FT_PPFN(HierarchicalPFN):
         sep = single_eval_pos
         device = batch.x.device
 
-        # add related tasks by rolling the batch
-        target_marginal_x = batch.x[:, ::2, :]
-        related_marginal_x = batch.x[:, 1::2, :]
-        target_conditional_x = batch.x[:, ::2, :]
+        x = batch.x
+        y = batch.y
 
-        target_marginal_y = batch.y[:, ::2]
-        related_marginal_y = batch.y[:, 1::2]
-        target_conditional_y = batch.y[:, ::2]
+        # Optionally append A_train features as B_test features for the related and target_conditional
+        if self.append_A_train_to_B_test:
+            a_train_x = x[:sep,]
+            a_train_x[:, 1::2, ...] = a_train_x[:, ::2, ...]  # copy A_train features to B_test
+
+            # append in seq dim to all tasks as test, so we can ask what the stream thinks about A_train
+            x = torch.cat([x, a_train_x], dim=0)
+
+            a_train_y = y[:sep,]
+            a_train_y[:, 1::2] = a_train_y[:, ::2]
+
+            y = torch.cat([y, a_train_y], dim=0)
+
+        target_marginal_x = x[:, ::2, :]
+        related_marginal_x = x[:, 1::2, :]
+        target_conditional_x = x[:, ::2, :]
+
+        target_marginal_y = y[:, ::2]
+        related_marginal_y = y[:, 1::2]
+        target_conditional_y = y[:, ::2]
 
         if src_key_padding_mask is not None:
             # adjust the padding mask accordingly
@@ -79,9 +97,10 @@ class FT_PPFN(HierarchicalPFN):
             )
 
         # force the related tasks to have the same query positions for cross-fusion
+        # A_test is the only thing that we care in the batch.
         if self.force_same_query:
-            related_marginal_x[sep:, ...] = batch.x[sep:, ::2, ...]
-            related_marginal_y[sep:, ...] = batch.y[sep:, ::2, ...]
+            related_marginal_x[sep:, ...] = x[sep:, ::2, ...]
+            related_marginal_y[sep:, ...] = y[sep:, ::2, ...]
 
         # Join the three streams into a single batch
         x = torch.cat(
@@ -104,7 +123,7 @@ class FT_PPFN(HierarchicalPFN):
         )
 
     def parse_eval_batch(
-        self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None
+            self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None, hp=None
     ) -> tuple[MyBatch, Optional[torch.Tensor]]:
         """
         Modify the batch for cross-fusion evaluation.
@@ -122,15 +141,29 @@ class FT_PPFN(HierarchicalPFN):
 
         sep = single_eval_pos
 
+        x = batch.x
+        y = batch.y
+
+        if self.append_A_train_to_B_test:
+            a_train_x = x[:sep, :1]
+            a_train_x[:, 1:, ...] = a_train_x[:, :1, ...]  # copy A_train features to B_test
+
+            # append in seq dim to all tasks as test, so we can ask what the stream thinks about A_train
+            x = torch.cat([x, a_train_x.expand(-1, B, -1)], dim=0)
+
+            a_train_y = y[:sep, :1]
+
+            y = torch.cat([y, a_train_y.expand(-1, B)], dim=0)
+
         # prepare the three streams (X tensors)
-        target_marginal_x = batch.x[:, :1, :].expand(-1, R, -1)
-        related_marginal_x = batch.x[:, 1:, :]
-        target_conditional_x = batch.x[:, :1, :].expand(-1, R, -1)
+        target_marginal_x = x[:, :1, :].expand(-1, R, -1)
+        related_marginal_x = x[:, 1:, :]
+        target_conditional_x = x[:, :1, :].expand(-1, R, -1)
 
         # prepare the three streams (Y tensors)
-        target_marginal_y = batch.y[:, :1].expand(-1, R)
-        related_marginal_y = batch.y[:, 1:]
-        target_conditional_y = batch.y[:, :1].expand(-1, R)
+        target_marginal_y = y[:, :1].expand(-1, R)
+        related_marginal_y = y[:, 1:]
+        target_conditional_y = y[:, :1].expand(-1, R)
 
         if src_key_padding_mask is not None:
             # adjust the padding mask accordingly
@@ -184,6 +217,7 @@ class FT_PPFN(HierarchicalPFN):
             batch,
             single_eval_pos,
             src_key_padding_mask=kwargs.get("src_key_padding_mask", None),
+            hp=kwargs.get("hp", None)
         )
 
         # Remove any caller-provided mask from kwargs to avoid accidentally
@@ -218,20 +252,43 @@ class FT_PPFN(HierarchicalPFN):
         return output
 
     def parse_batch(
-        self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None
+            self, batch: MyBatch, single_eval_pos, src_key_padding_mask=None, hp=None
     ) -> tuple[MyBatch, Optional[torch.Tensor]]:
         """
         Override parse_batch to handle both train and eval parsing.
         """
         return (
-            self.parse_train_batch(batch, single_eval_pos, src_key_padding_mask)
+            self.parse_train_batch(batch, single_eval_pos, src_key_padding_mask, hp)
             if self.training
-            else self.parse_eval_batch(batch, single_eval_pos, src_key_padding_mask)
+            else self.parse_eval_batch(batch, single_eval_pos, src_key_padding_mask, hp)
         )
 
     @property
     def criterion(self):
         return self.frozen_model.criterion
+
+    def joint_prediction(self, batch: MyBatch, **kwargs):
+        """
+        Override joint_prediction to ensure we return the correct part of the output
+        corresponding to the target conditional predictions (Stream C).
+        """
+        output = self.forward(batch, **kwargs)
+
+        # Extract Stream C (the last R tasks in the batch)
+        B = output.shape[1]
+        R = B // 3
+        stream_c_logits = output[:, -R:, ...]  # Stream C
+
+        # 1. Convert to probabilities (softmax over the 1k classes)
+        probs = torch.softmax(stream_c_logits, dim=-1)
+
+        # 2. Average over the R related tasks (dim=1)
+        joint_probs = probs.mean(dim=1)  # shape: [T_test, 1000]
+
+        # 3. (Optional) convert back to log-probs if your pipeline expects them
+        joint_log_probs = torch.log(joint_probs + 1e-8)
+
+        return joint_log_probs
 
     # def get_trainable_params(self, weight_decay):
     #     """

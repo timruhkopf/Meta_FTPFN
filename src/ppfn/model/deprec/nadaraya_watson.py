@@ -21,7 +21,16 @@ from typing import Tuple
 
 class NadarayaWatsonAdapter(nn.Module):
     # FIXME: d_hp needs to be removed, because we should take the pfn's encoded hyperparameters as input to account for variable sized hp spaces.
-    def __init__(self, d_model, n_heads, dropout=0.1, nw_dropout=0.0, reuse_attn=True, hp_only_attn=True):
+    def __init__(
+            self,
+            d_model,
+            n_heads,
+            dropout=0.1,
+            nw_dropout=0.0,
+            reuse_attn=True,
+            hp_only_attn=True,
+            seq_len=1000
+                 ):
         """
         A 3-stream meta-learning adapter that performs Non-Parametric Local Smoothing
         to align and extract knowledge from related tasks within a frozen Prior-Data Fitted Network (PFN).
@@ -62,6 +71,7 @@ class NadarayaWatsonAdapter(nn.Module):
         by the PFN into the same `d_model` latent dimension.
         """
         super().__init__()
+        self.seq_len = seq_len
         self.d_model = d_model
         self.hp_only_attn = hp_only_attn
 
@@ -99,19 +109,33 @@ class NadarayaWatsonAdapter(nn.Module):
             nn.Dropout(dropout)
         )
 
+        self.single_eval_pos = None
+        self.hp = None
+        self._attn_statistics = None
+
+
     def validate_forward_args(self, x, *args, **kwargs) -> Tuple[int, int]:
         single_eval_pos = kwargs.get("single_eval_pos", None)
+        if single_eval_pos is None:
+            single_eval_pos = self.single_eval_pos
         assert single_eval_pos is not None, "single_eval_pos must be provided"
+
+        hp = kwargs.get("hp", None)
+        if hp is None:
+            hp = self.hp
+        assert hp is not None, "hp (PFN-encoded hyperparameters) must be provided"
+
         B = x.shape[1]
         assert B % 3 == 0, "Batch size must be multiple of 3"
-        return B, single_eval_pos
+        return B, single_eval_pos, hp
 
-    def forward(self, x, hp, *args, **kwargs):
+    def forward(self, x, hp=None, *args, **kwargs):
         """
         x: Latent representations (T, 3*Batch, d_model)
         hp: PFN-encoded hyperparameter coordinates (T, 3*Batch, d_model)
         """
-        B_dim, sep = self.validate_forward_args(x, *args, **kwargs)
+        self._attn_statistics = None # reset attn statistics on each forward pass
+        B_dim, sep, hp = self.validate_forward_args(x, *args, **kwargs)
         R = B_dim // 3
 
         # --- Extract Latent Streams ---
@@ -127,19 +151,19 @@ class NadarayaWatsonAdapter(nn.Module):
 
         # --- Split Streams ---
         A_train = A[:sep]
-        B_train, B_test, B_belief_A = B[:sep], B[sep:2 * sep], B[2 * sep:]
-        C_train, C_test, C_belief_A = C[:sep], C[sep:2 * sep], C[2 * sep:]
+        B_train, B_test, B_belief_A = B[:sep], B[sep:self.seq_len], B[self.seq_len:]
+        C_train, C_test, C_belief_A = C[:sep], C[sep:self.seq_len], C[self.seq_len:]
 
         hp_A_train = hp_A[:sep]
-        hp_B_active = hp_B[:2 * sep]
+        hp_B_active = hp_B[:self.seq_len]
         hp_C_train = hp_C[:sep]
-        hp_C_test = hp_C[sep:2 * sep]
+        hp_C_test = hp_C[sep:self.seq_len]
 
         # ==========================================
         # STAGE 1: THE NW error propagation
         # ==========================================
         error = self.mlp_err(self.norm_nw_v(A_train - B_belief_A))
-        B_active = B[:2 * sep]
+        B_active = B[:self.seq_len]
 
         # Q and K use the PFN's encoded hyperparameters directly
         q_nw = self.norm_nw_q(hp_B_active)
@@ -191,11 +215,13 @@ class NadarayaWatsonAdapter(nn.Module):
         C = C + self.ffn(self.norm_ffn(C))
 
         batch = torch.cat([A, B, C], dim=1)
-        return batch, {
+
+        self._attn_statistics =  {
             "corrector": corr_weights,
             "train_attn_scores": train_weights,
             "test_attn_scores": test_weights
         }
+        return batch
 
 
 
@@ -213,8 +239,9 @@ if __name__ == '__main__':
     # STRICTLY LINEAR HIGH-DIM WRAPPER
     # ==========================================
     class LinearHighDimWrapper(nn.Module):
-        def __init__(self, input_dim=2, d_model=64, n_heads=4,  dropout=0.0):
+        def __init__(self, input_dim=2, d_model=64, n_heads=4,  dropout=0.0, seq_len=60):
             super().__init__()
+            self.seq_len = seq_len
             self.up_proj = nn.Linear(input_dim, d_model)
             self.hp_proj = nn.Linear(input_dim -1, d_model) # hp dim
             self.adapter = NadarayaWatsonAdapter(
@@ -293,7 +320,7 @@ if __name__ == '__main__':
         t_A_train = t_A[:sep]
         B_belief_A_data = torch.cat([t_A_train, task_B_func(t_A_train)], dim=-1)
 
-        B_data_corrected = torch.cat([B_data[:2 * sep], B_belief_A_data], dim=0)
+        B_data_corrected = torch.cat([B_data[:self.seq_len], B_belief_A_data], dim=0)
 
         # --- NEW: Extract the exact ground truth distortion mapping for visualization ---
         with torch.no_grad():
@@ -339,7 +366,7 @@ if __name__ == '__main__':
             x = torch.cat([A_data, B_data_corrected, C_data_init], dim=1)
 
             # Forward pass through the wrapper
-            out_batch, _ = adapter(x, single_eval_pos=sep)
+            out_batch = adapter(x, single_eval_pos=sep)
 
             # The indexing remains exactly the same
             C_out = out_batch[:, 2 * batch_size:, :]
@@ -376,7 +403,8 @@ if __name__ == '__main__':
             # Using the continuous positional encodings for hp
             hp = x[:, :, 0:1] # adatper handles can extract the hyperparameters internally
             adapter.eval()
-            final_batch, attn_weights = adapter(x, single_eval_pos=sep)
+            final_batch = adapter(x, single_eval_pos=sep)
+            attn_weights = adapter._attn_statistics
 
             C_final = final_batch[:, 2:, :]
             corrector_attn = attn_weights['corrector'].squeeze().cpu().numpy()

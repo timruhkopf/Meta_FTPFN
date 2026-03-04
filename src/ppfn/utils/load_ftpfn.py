@@ -3,11 +3,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import torch
-import torch.nn as nn
+
 from ifbo.surrogate import FTPFN
 
 
-def load_frozen_model() -> nn.Module:
+def load_frozen_model() -> FTPFN:
     """Load frozen pre-trained PPFN model from ifBO."""
 
     # Load from project root .env (4 levels up from this file)

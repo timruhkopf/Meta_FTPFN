@@ -33,6 +33,7 @@ class HierarchicalPFN(nn.Module):
         self,
         frozen_model: nn.Module,
         interleaved_layers: Union[Mapping[str, nn.Module], List],
+        pass_hp_to_interleaved: bool = True,
     ):
         """Initialize the InterleavedModel with a frozen model and interleaved layers.
 
@@ -46,6 +47,8 @@ class HierarchicalPFN(nn.Module):
         super().__init__()
         self.frozen_model = frozen_model
         self.paddable = True
+        self.pass_hp_to_interleaved = pass_hp_to_interleaved
+
         # check if frozen_model knows the src_key_padding_mask argument, if not, we need to make sure to propagate it to the interleaved layers
         if isinstance(self.frozen_model, TransformerModel):
             logger.info(
@@ -94,7 +97,9 @@ class HierarchicalPFN(nn.Module):
                 parent_module = self._get_parent_module(self.frozen_model, name)
                 setattr(parent_module, name.split(".")[-1], wrapped_module)
 
+        # to not break interface with the pfn, we push these side attributes into the wrapper model, and propagate them to the interleaved layers as needed
         self._single_eval_pos = None
+        self._hp = None
 
 
     @property
@@ -109,6 +114,18 @@ class HierarchicalPFN(nn.Module):
             if hasattr(layer, "single_eval_pos"):
                 layer.single_eval_pos = value
 
+    @property
+    def hp(self):
+        return self._hp
+
+    @hp.setter
+    def hp(self, value):
+        self._hp = value
+        # propagate to interleaved layers
+        for layer in self.interleaved_layers.values():
+            if hasattr(layer, "hp"):
+                layer.hp = value
+
     def _get_parent_module(self, model: nn.Module, module_name: str) -> nn.Module:
         """Get the parent module of a given module by its name."""
         parts = module_name.split(".")
@@ -117,7 +134,7 @@ class HierarchicalPFN(nn.Module):
             parent = getattr(parent, part)
         return parent
 
-    def forward(self, batch: Batch, single_eval_pos=None, **kwargs):
+    def forward(self, batch: Batch, single_eval_pos=None, hp=None, **kwargs):
 
         # parse input to meet ft_pfn format
         x = (batch.x, batch.y)
@@ -130,7 +147,15 @@ class HierarchicalPFN(nn.Module):
                 "single_eval_pos must be provided in the batch or as an argument."
             )
 
-        self.single_eval_pos = single_eval_pos  # propagate to interleaved layers
+        # propagate to interleaved layers to not break the pfn interface
+
+        if self.pass_hp_from_frozen:
+            # hp by convention will give us the information of all locations in the sequence!
+            hp = self.frozen_model.encoder.configuration_enc(batch.x[:, :, 2:])
+            self.hp = hp
+
+        kwargs.pop("hp", None)  # remove hp from kwargs to avoid passing it to the frozen model
+        self.single_eval_pos = single_eval_pos
 
         kwargs["single_eval_pos"] = single_eval_pos
         if not self.paddable and "src_key_padding_mask" in kwargs:
@@ -138,7 +163,10 @@ class HierarchicalPFN(nn.Module):
             kwargs.pop("src_key_padding_mask")
 
         value = self.frozen_model(x, **kwargs)
+
+        # reset the attributes to avoid side-effects
         self.single_eval_pos = None  # reset after forward
+        self.hp = None
 
         # TODO the value here can be intercepted by model callbacks to log metrics on
         #  the three streams, when we move towards an aggregation strategy!
