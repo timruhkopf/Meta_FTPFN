@@ -79,6 +79,8 @@ class Unified1dValidationWrapper(nn.Module):
         B_lat = h[:, R:2 * R, :]
         C_lat = h[:, 2 * R:, :]
 
+        hp = (hp[:, :R, :] , hp[:, R:2 * R, :] , hp[:, 2 * R:, :])
+
         # 5. Apply Adapter
         A_out, B_out, C_out = self.adapter(
             A=A_lat,

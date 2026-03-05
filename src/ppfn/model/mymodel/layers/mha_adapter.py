@@ -30,6 +30,27 @@ class MHA_StreamAdapter(nn.Module):
             nn.Dropout(dropout)
         )
 
+        # Apply Identity Initialization
+        self.init_as_identity()
+
+    def init_as_identity(self):
+        """
+        Forces the adapter to output zeros initially,
+        making the forward pass: C = C + 0
+        """
+        # 1. Zero out MHA output projection
+        nn.init.zeros_(self.cross_attn.out_proj.weight)
+        if self.cross_attn.out_proj.bias is not None:
+            nn.init.zeros_(self.cross_attn.out_proj.bias)
+
+        # 2. Zero out the final linear layer in FFN
+        # Accessing the last module in the Sequential block
+        final_ffn_layer = self.ffn[-1]
+        if isinstance(final_ffn_layer, nn.Linear):
+            nn.init.zeros_(final_ffn_layer.weight)
+            if final_ffn_layer.bias is not None:
+                nn.init.zeros_(final_ffn_layer.bias)
+
     def forward(self,A, B, C, sep, **kwargs):
         """
         x: Latent representations packed as (T, 3*Batch, d_model)

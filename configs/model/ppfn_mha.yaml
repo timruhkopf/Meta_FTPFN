@@ -4,13 +4,8 @@
 layer_base: # &layer_logic
   _target_: ppfn.model.mymodel.layers.mha_adapter.MHA_StreamAdapter
   d_model: 512
-  num_heads: 4
+  n_heads: 4
   dropout: 0.1
-  use_prenorm: True
-  add_linear: False
-  use_gate: False
-  reuse_attention: False
-  C_as_Q: False
 
 trainer:
   objective:
