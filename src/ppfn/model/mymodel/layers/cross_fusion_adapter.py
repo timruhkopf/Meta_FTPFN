@@ -128,3 +128,4 @@ class CrossFusionAdapter(nn.Module):
         conditional = torch.cat([train_update, test_update], dim=0)
 
         return A, B, conditional
+

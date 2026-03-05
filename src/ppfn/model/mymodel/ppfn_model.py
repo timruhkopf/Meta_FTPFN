@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Mapping, Union, List
 
 from ppfn.model.mymodel.stream_parser import StreamParser
-from ppfn.model.mymodel.adapter_wrapper import AdapterWrapper
+from ppfn.model.mymodel.layers.adapter_wrapper import AdapterWrapper
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 from ppfn.utils.mybatch import MyBatch
@@ -201,7 +201,7 @@ if __name__ == '__main__':
     from dataclasses import dataclass
 
 
-    from ppfn.model.mymodel.nw_adapter import NadarayaWatsonAdapter
+    from ppfn.model.mymodel.layers.nw_adapter import NadarayaWatsonAdapter
     from ppfn.model.mymodel.stream_mutations import ForceSameQueryMutation, AppendATrainToBTestMutation
 
 

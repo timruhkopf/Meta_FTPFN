@@ -2,7 +2,7 @@
 # Multi-layer model with cross-attention at layers 0 and 2
 # 1. Define the base configuration once using an anchor (&)
 layer_base: # &layer_logic
-  _target_: ppfn.model.mymodel.cross_fusion_adapter.CrossFusionAdapter
+  _target_: ppfn.model.mymodel.layers.cross_fusion_adapter.CrossFusionAdapter
   d_model: 512
   num_heads: 4
   dropout: 0.1
