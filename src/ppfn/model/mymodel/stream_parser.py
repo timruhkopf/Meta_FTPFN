@@ -16,32 +16,32 @@ class StreamParser(nn.Module):
         super().__init__()
         self.stream_mutations = stream_mutations
 
-    def forward(self, batch, src_key_padding_mask=None) -> tuple[MyBatch, torch.Tensor]:
+    def forward(self, batch, hp=None, src_key_padding_mask=None) -> tuple[MyBatch, torch.Tensor]:
         """ Main entry point for parsing the batch. It extracts the raw streams, applies mutations, and reassembles. """
         sep = batch.single_eval_pos
-        streams = self.get_raw_streams(batch, mask=src_key_padding_mask)
+        streams = self.get_raw_streams(batch, mask=src_key_padding_mask, hp=hp)
 
         for mutation in self.stream_mutations or []:
             streams = mutation(streams, sep)
 
         return self.assemble_batch(streams, sep)
 
-    def splice_at_fwd_end(self, output, batch, src_key_padding_mask=None):
-        """ Alternative entry point for splicing at the end of the forward pass, if needed. """
+    def splice_at_fwd_end(self, output, batch):
+        """ Strictly parses and reassembles outputs. Leaves the batch completely alone. """
         sep = batch.single_eval_pos
-        o_streams = self.parse_output_streams(output, sep, src_key_padding_mask=src_key_padding_mask)
-        b_streams = self.get_raw_streams(batch, mask=src_key_padding_mask)
+        o_streams = self.parse_output_streams(output, sep)
 
         for mutation in self.stream_mutations or []:
-            o_streams, b_streams = mutation.splice_at_fwd_end(o_streams, b_streams, sep)
-        batch, mask = self.assemble_batch(b_streams, sep)
+            # Only apply if the mutation actually defines a backward/output splice
+            if hasattr(mutation, 'splice_at_fwd_end'):
+                o_streams = mutation.splice_at_fwd_end(o_streams, sep)
+
         output = self.assemble_output_streams(o_streams)
-        return batch, mask, output
+        return output
 
 
-    # --- Batch Parsing and Assembly ---
 
-    def get_raw_streams(self, batch, mask=None):
+    def get_raw_streams(self, batch, mask=None, hp=None):
         """Extracts raw A/B/C streams from the interleaved batch format."""
         x, y = batch.x, batch.y
 
@@ -53,20 +53,19 @@ class StreamParser(nn.Module):
             # Train: Interleaved (Step size 2)
             return {
                 "A": (
-                    x[:, ::2, :],
-                    y[:, ::2],
-                    mask[::2, :] if mask is not None else None
+                    x[:, ::2, :], y[:, ::2],
+                    mask[::2, :] if mask is not None else None,
+                    hp[:, ::2, :] if hp is not None else None
                 ),
-
                 "B": (
-                    x[:, 1::2, :],
-                    y[:, 1::2],
-                    mask[1::2, :] if mask is not None else None
+                    x[:, 1::2, :], y[:, 1::2],
+                    mask[1::2, :] if mask is not None else None,
+                    hp[:, 1::2, :] if hp is not None else None
                 ),
                 "C": (
-                    x[:, ::2, :],
-                    y[:, ::2],
-                    mask[::2, :] if mask is not None else None
+                    x[:, ::2, :], y[:, ::2],
+                    mask[::2, :] if mask is not None else None,
+                    hp[:, ::2, :] if hp is not None else None
                 ),
             }
         else:
@@ -74,26 +73,26 @@ class StreamParser(nn.Module):
             R = x.shape[1] - 1
             return {
                 "A": (
-                    x[:, :1, :].expand(-1, R, -1),
-                    y[:, :1].expand(-1, R),
-                    mask[:1, :].expand(R, -1) if mask is not None else None
+                    x[:, :1, :].expand(-1, R, -1), y[:, :1].expand(-1, R),
+                    mask[:1, :].expand(R, -1) if mask is not None else None,
+                    hp[:, :1, :].expand(-1, R, -1) if hp is not None else None
                 ),
                 "B": (
-                    x[:, 1:, :],
-                    y[:, 1:],
-                    mask[1:, :] if mask is not None else None
+                    x[:, 1:, :], y[:, 1:],
+                    mask[1:, :] if mask is not None else None,
+                    hp[:, 1:, :] if hp is not None else None
                 ),
                 "C": (
-                    x[:, :1, :].expand(-1, R, -1),
-                    y[:, :1].expand(-1, R),
-                    mask[:1, :].expand(R, -1) if mask is not None else None
+                    x[:, :1, :].expand(-1, R, -1), y[:, :1].expand(-1, R),
+                    mask[:1, :].expand(R, -1) if mask is not None else None,
+                    hp[:, :1, :].expand(-1, R, -1) if hp is not None else None
                 ),
             }
 
-    def assemble_batch(self, streams, sep) -> tuple[MyBatch, torch.Tensor]:
-        A_x, A_y, A_mask = streams["A"]
-        B_x, B_y, B_mask = streams["B"]
-        C_x, C_y, C_mask = streams["C"]
+    def assemble_batch(self, streams, sep):
+        A_x, A_y, A_mask, A_hp = streams["A"]
+        B_x, B_y, B_mask, B_hp = streams["B"]
+        C_x, C_y, C_mask, C_hp = streams["C"]
 
         device = A_x.device
 
@@ -104,12 +103,14 @@ class StreamParser(nn.Module):
         if A_mask is not None and B_mask is not None and C_mask is not None:
             final_mask = torch.cat([A_mask, B_mask, C_mask], dim=0).to(device)
 
+        hp_tuple = (A_hp, B_hp, C_hp) if A_hp is not None else None
+
         return MyBatch(
             x=batch_x.to(device),
             y=batch_y.to(device),
             target_y=batch_y.to(device),
             single_eval_pos=sep
-        ), final_mask
+        ), final_mask, hp_tuple
 
     # --- Output Parsing (if needed) ---
     def parse_output_streams(self, output, sep, src_key_padding_mask=None):
@@ -122,10 +123,4 @@ class StreamParser(nn.Module):
         }
 
     def assemble_output_streams(self, o_streams):
-        A_x = o_streams["A"]
-        B_x = o_streams["B"]
-        C_x = o_streams["C"]
-
-        output = torch.cat([A_x, B_x, C_x], dim=1)
-
-        return output
+        return torch.cat([o_streams["A"], o_streams["B"], o_streams["C"]], dim=1)

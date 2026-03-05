@@ -27,7 +27,7 @@ model:
         - _target_: ppfn.model.mymodel.stream_mutations.ForceSameQueryMutation
 
     frozen_model:
-      _target_: ppfn.model.baselines.ft_pfn.ft_pfn
+      _target_: ppfn.model.baselines.ft_pfn_padding.ft_pfn_padding
 
     _convert_: partial
     # to avoid instantiation issue that the name should not

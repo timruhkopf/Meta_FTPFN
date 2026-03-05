@@ -158,18 +158,7 @@ class NadarayaWatsonAdapter(nn.Module):
         x: Latent representations (T, 3*Batch, d_model)
         hp: PFN-encoded hyperparameter coordinates (T, 3*Batch, d_model)
         """
-
-        device = A.device
-
-        total_batch = hp.shape[1]
-
-        # Since we concatenated A, B, and C in StreamParser:
-        R = total_batch // 3
-
-        # --- Extract Encoded Hyperparameter Streams ---
-        hp_A = hp[:, :R, :]
-        hp_B = hp[:, R: 2 * R, :]
-        hp_C = hp[:, 2 * R:, :]
+        hp_A, hp_B, hp_C = hp
 
         # --- Split Streams ---
         A_train = A[:sep]

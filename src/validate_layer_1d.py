@@ -275,14 +275,14 @@ def main(wrapper_model, steps=20000, batch_size=128, T=60, sep=20):
 
 
 if __name__ == '__main__':
-    # model = Unified1dValidationWrapper(
-    #     adapter_module=NadarayaWatsonAdapter(
-    #
-    #         d_model=64, seq_len=60, n_heads=4, dropout=0.0
-    #     ),
-    #     input_dim=2, d_model=64, seq_len=60
-    # )
-    # model.adapter.address = "NW_Adapter_Test"
+    model = Unified1dValidationWrapper(
+        adapter_module=NadarayaWatsonAdapter(
+
+            d_model=64, seq_len=60, n_heads=4, dropout=0.0
+        ),
+        input_dim=2, d_model=64, seq_len=60
+    )
+    model.adapter.address = "NW_Adapter_Test"
     #
     # model = Unified1dValidationWrapper(
     #     adapter_module=CrossFusionAdapter(
@@ -301,12 +301,12 @@ if __name__ == '__main__':
     # model.adapter.address = "MHA_Adapter_Test"
 
 
-    model = Unified1dValidationWrapper(
-        adapter_module=DeltaSurrogateAdapter(
-            d_model=16, d_hp=16, d_k=32,
-        ),
-        input_dim=2, d_model=16,
-    )
-    model.adapter.address = "CalibratedSurrogateUpdate"
+    # model = Unified1dValidationWrapper(
+    #     adapter_module=DeltaSurrogateAdapter(
+    #         d_model=16, d_hp=16, d_k=32,
+    #     ),
+    #     input_dim=2, d_model=16,
+    # )
+    # model.adapter.address = "CalibratedSurrogateUpdate"
 
     main(model, steps=20000, batch_size=128, T=60, sep=20)

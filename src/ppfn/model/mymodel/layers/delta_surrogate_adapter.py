@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ppfn.model.mymodel.meta_context import ForwardMetaContext
+
 
 class LowDimAttention(nn.Module):
 
@@ -21,7 +23,41 @@ class LowDimAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-    def forward(self, q_raw, k_raw, v_raw):
+    def gather_attn_telemetry(self, q, k, layer, task_name):
+        """
+        Gathers attention telemetry for BMA blending.
+
+        - Support Score ($uparrow$): High raw dot-product energy (I found relevant points).
+        - Entropy ($downarrow$): Low entropy (I found specific relevant points).
+
+        Why Unnormalized for Trust? When deciding between $B_0$ and $B_1$, the raw dot-product $Q K^T$ (before Softmax)
+        tells you the absolute geometric proximity. A high raw score means I found a near-perfect match;
+        a low raw score means I m averaging distant noise.
+
+        # TODO other metrics to consider:
+        - Alignment Error ($downarrow$): Small shared_domain_error (This task matches $A$s history).
+        - Task Length ($uparrow$):
+        """
+
+        # 1. Calculate Raw Scores
+        # (Batch, Heads, T_q, T_k)
+        attn_logits = torch.matmul(q, k.transpose(-2, -1)) / (self.d_k ** 0.5)
+
+        # 2. Extract Support (Pre-Softmax LogSumExp is a good density proxy)
+        # Higher density = more relevant tokens found in this task
+        support = torch.logsumexp(attn_logits, dim=-1).mean(dim=1)  # (Batch, T_q)
+
+        # 3. Calculate Softmax and Entropy
+        attn_probs = F.softmax(attn_logits, dim=-1)
+        # Entropy H = -sum(p * log(p))
+        entropy = -torch.sum(attn_probs * torch.log(attn_probs + 1e-9), dim=-1).mean(dim=1)
+
+        # 4. Telemetry (Sidecar)
+        # Store these for the final BMA blending logic
+        ForwardMetaContext.set(f"{layer}/{task_name}/support", support)
+        ForwardMetaContext.set(f"{layer}/{task_name}/entropy", entropy)
+
+    def forward(self, q_raw, k_raw, v_raw, layer='l1', task_name='B'):
         # q_raw: (T_q, B, d_hp), k_raw: (T_k, B, d_hp), v_raw: (T_k, B, d_model)
         T_q, B, _ = q_raw.shape
         T_k = k_raw.shape[0]
@@ -29,6 +65,8 @@ class LowDimAttention(nn.Module):
         q = self.q_proj(q_raw).view(T_q, B, self.nhead, self.head_dim_k).permute(1, 2, 0, 3)
         k = self.k_proj(k_raw).view(T_k, B, self.nhead, self.head_dim_k).permute(1, 2, 0, 3)
         v = self.v_proj(v_raw).view(T_k, B, self.nhead, self.head_dim_v).permute(1, 2, 0, 3)
+
+        self.gather_attn_telemetry(q, k, layer, task_name)
 
         dropout_rate = self.dropout_p if self.training else 0.0
         # Scaled dot product attention (FlashAttention compatible)
@@ -40,21 +78,28 @@ class LowDimAttention(nn.Module):
 
 class DeltaSurrogateAdapter(nn.Module):
 
-    def __init__(self, d_model, d_hp, d_k=64, nhead=4, dropout=0.1):
+    def __init__(self, d_model, d_hp, d_k=64, n_heads=4, dropout=0.1, seq_len=1000, reuse_attn=False):
         """
         Basic idea of this adapter is, that we can use only the HP coordinates for value retrieval,
         making the attention lower dimensional and much more efficient. This way we can quickly identify
         the latent error patterns based on B's belief on A_train in the domain of B and the actual A_train.
         Propagating this error to the
+
+        Note on reuse attn: since we are just asking for hp-based attention, what good does it do to have separate attn
+        modules.
         """
         super().__init__()
         self.d_model = d_model
         self.d_hp = d_hp
         self.d_k = d_k
+        self.seq_len = seq_len
 
-        self.attn_shared = LowDimAttention(d_model, d_hp, d_k, nhead, dropout)
-        self.attn_extrapolate = LowDimAttention(d_model, d_hp, d_k, nhead, dropout)
-        self.attn_calibrate = LowDimAttention(d_model, d_hp, d_k, nhead, dropout)
+        self.attn_shared = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
+        self.attn_extrapolate = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
+        if reuse_attn:
+            self.attn_calibrate = self.attn_shared
+        else:
+            self.attn_calibrate = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
 
         self.norm_shared_q = nn.LayerNorm(d_hp)
         self.norm_shared_k = nn.LayerNorm(d_hp)
@@ -88,13 +133,12 @@ class DeltaSurrogateAdapter(nn.Module):
         nn.init.constant_(self.ff_network[-1].weight, 0)
 
     def forward(self, A, B, C, sep, hp, **kwargs):
-        total_batch = hp.shape[1]
-        R = total_batch // 3
 
-        # --- Coordinate Slicing ---
-        hp_A_train = hp[:sep, :R, :]
-        hp_B_train = hp[:sep, R:2 * R, :]
-        hp_C_test = hp[sep:, 2 * R:, :]
+        hp_A, hp_B, hp_C = hp
+
+        hp_A_train = hp_A[:sep, :, :]
+        hp_B_train = hp_B[:sep, :, :]
+        hp_C_test = hp_C[sep:, :, :]
 
         # --- Latent Slicing (Aligned with Coordinate Batch R) ---
         A_train = A[:sep, :, :]
@@ -103,6 +147,7 @@ class DeltaSurrogateAdapter(nn.Module):
         C_test = C[sep:, :, :]
 
         # Path 1: Shared Domain Calibration
+        # Notice, how this will allow us to get attn scores telling us about the Venn diagram of A, B for each test token
         B_at_A = self.attn_shared(
             q_raw=self.norm_shared_q(hp_A_train),
             k_raw=self.norm_shared_k(hp_B_train),

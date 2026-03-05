@@ -20,6 +20,7 @@ class PPFN(nn.Module):
             interleaved_layers: Union[Mapping[str, nn.Module], list],
             stream_parser=StreamParser(),
             pass_hp_from_frozen: bool = False,
+            pass_hp_as_rawpaded: bool = False,
             seq_len=1000,
     ):
         super().__init__()
@@ -27,6 +28,10 @@ class PPFN(nn.Module):
         self.seq_len = seq_len
         self.stream_parser = stream_parser
         self.pass_hp_from_frozen = pass_hp_from_frozen
+        self.pass_hp_as_rawpaded = pass_hp_as_rawpaded
+
+        assert not (
+                    self.pass_hp_from_frozen and self.pass_hp_as_rawpaded), "Cannot pass HP from frozen model and as raw padded input at the same time. Choose one."
 
         # Check paddability
         self.paddable = not hasattr(self.frozen_model, "TransformerModel")
@@ -68,7 +73,6 @@ class PPFN(nn.Module):
                 parent = getattr(parent, part)
             setattr(parent, parts[-1], wrapped_module)
 
-
     def forward(self, batch, src_key_padding_mask=None, **kwargs):
         """
         1. Parse the batch into A/B/C streams and apply any specified mutations (e.g., ForceSameQuery, AppendATrainToBTest).
@@ -79,36 +83,38 @@ class PPFN(nn.Module):
         # Clear any existing meta context at the start of forward to avoid leakage between batches
         ForwardMetaContext.clear()
 
-        # Parse into A, B, C streams and maniputate as needed forcing the same query
-        batch, src_key_padding_mask = self.stream_parser(
-            batch,
+        hp = None
+        if self.pass_hp_from_frozen:
+            hp = self.frozen_model.encoder.configuration_enc(batch.x[:, :, 2:]) if self.pass_hp_from_frozen else None
 
+        if self.pass_hp_as_rawpaded:
+            hp = batch.x[:, :, 2:]  # Assuming the last D-2 dimensions are HP coordinates
+            hp = torch.nn.functional.pad(hp, (0, 10 - hp.shape[2]))  # Pad to a fixed size of 10 if needed
+
+        # Parse into A, B, C streams and maniputate as needed forcing the same query
+        batch, src_key_padding_mask, hp_tuple = self.stream_parser(
+            batch,
+            hp=hp,
             src_key_padding_mask=src_key_padding_mask if self.paddable else None,
         )
 
         # provide meta context to the adapter forward, that would break the pfn's forward signature
         ForwardMetaContext.set(
             single_eval_pos=batch.single_eval_pos,
-            hp=self.frozen_model.encoder.configuration_enc(batch.x[:, :, 2:]) if self.pass_hp_from_frozen else None
+            # FIXME: @amir: this is indexing is FT-PFN specific!!!
+            # rather than the projection, we can directly take the raw HP of variable size
+            # and zero pad it to a fixed size (compare VariableNumFeaturesEncoder)
+            hp=hp_tuple
         )
 
-        # Execute Frozen Model
-        # The injected AdapterWrappers will automatically pull `hp` and `single_eval_pos`
-        x = (batch.x, batch.y)
 
         kwargs['single_eval_pos'] = batch.single_eval_pos  # Ensure this is available for the criterion if needed
-
         if self.paddable:
             kwargs['src_key_padding_mask'] = src_key_padding_mask
 
+        x = (batch.x, batch.y)
         output = self.frozen_model(x, **kwargs)
-
-        batch, mask, output = self.stream_parser.splice_at_fwd_end(
-            output, batch, src_key_padding_mask=src_key_padding_mask if self.paddable else None
-        )
-
-        # FIXME: pass batch and mask to the criterion! - do we even need to do this? the batch should probably be the same as in the trainer
-        #  afterwards, and we created a new object from it in the fwd pass so no side effects?
+        output = self.stream_parser.splice_at_fwd_end(output, batch)
         return output
 
     @property
@@ -139,7 +145,6 @@ class PPFN(nn.Module):
         joint_log_probs = torch.log(joint_probs + 1e-8)
 
         return joint_log_probs
-
 
     def state_dict(self, *args, **kwargs):
         """
@@ -181,10 +186,10 @@ class PPFN(nn.Module):
 
     @classmethod
     def from_checkpoint(
-        cls,
-        path: str,
-        frozen_model: nn.Module,
-        interleaved_layers: Union[Mapping[str, nn.Module], List],
+            cls,
+            path: str,
+            frozen_model: nn.Module,
+            interleaved_layers: Union[Mapping[str, nn.Module], List],
     ):
         """Factory method: Creates the wrapper and loads weights immediately."""
         instance = cls(frozen_model, interleaved_layers)
@@ -192,14 +197,11 @@ class PPFN(nn.Module):
         return instance
 
 
-
-
 if __name__ == '__main__':
 
     import torch
     import torch.nn as nn
     from dataclasses import dataclass
-
 
     from ppfn.model.mymodel.layers.nw_adapter import NadarayaWatsonAdapter
     from ppfn.model.mymodel.stream_mutations import ForceSameQueryMutation, AppendATrainToBTestMutation
@@ -219,7 +221,8 @@ if __name__ == '__main__':
             # Mocks generating HP coordinates
             T, B, D = x.shape
             # the pfn has encoder.configuration_enc(batch.x[:, :, 2:]) so we need to patch here +2 to avoid size mismatch in the test
-            return torch.randn(T, B, D +2)
+            return torch.randn(T, B, D + 2)
+
 
     class DummyFrozenTransformer(nn.Module):
         def __init__(self, d_model):
@@ -232,8 +235,6 @@ if __name__ == '__main__':
             x, y = inputs
             # The frozen model just processes the concatenated batch normally
             return self.layer_1(x)
-
-
 
 
     device = torch.device("cpu")
