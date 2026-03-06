@@ -6,7 +6,7 @@ def test_ft_pfn_initialization(get_ft_pfn):
 
 def test_ft_pfn_forward_pass(get_ft_pfn, ft_batch_factory):
     """Test a forward pass through the ft_pfn model"""
-    (x, y), T_split = ft_batch_factory(T=32, B=9, D=5, Tsplit=25)
+    (x, y), T_split, _ = ft_batch_factory(T=32, B=9, D=5, Tsplit=25)
 
     pfn = get_ft_pfn
     output = pfn((x, y), single_eval_pos=T_split)

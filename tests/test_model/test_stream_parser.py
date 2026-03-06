@@ -4,16 +4,7 @@ import torch.nn as nn
 from dataclasses import dataclass
 
 from ppfn.model.mymodel.stream_parser import StreamParser
-
-
-# --- Mock Dependencies ---
-
-@dataclass
-class MyBatch:
-    x: torch.Tensor
-    y: torch.Tensor
-    target_y: torch.Tensor = None
-    single_eval_pos: int = 5
+from ppfn.utils.mybatch import MyBatch
 
 
 # Assuming StreamParser is imported from your module
@@ -26,6 +17,25 @@ def parser():
     """Provides a fresh StreamParser instance for each test."""
     return StreamParser()
 
+@pytest.fixture
+def eval_batch():
+    """
+    Creates an eval batch of 4 examples (1 target, 3 related).
+    Batch 0 (Target): All 0s
+    Batch 1 (Related 1): All 1s
+    Batch 2 (Related 2): All 2s
+    Batch 3 (Related 3): All 3s
+    """
+    seq_len, b_dim, d_model = 10, 4, 8
+    x = torch.zeros((seq_len, b_dim, d_model))
+    for i in range(1, b_dim):
+        x[:, i, :] = float(i)
+
+    y = torch.zeros((seq_len, b_dim))
+    for i in range(1, b_dim):
+        y[:, i] = float(i)
+
+    return MyBatch(x=x, y=y, target_y=y, single_eval_pos=5)
 
 @pytest.fixture
 def train_batch():
@@ -49,29 +59,7 @@ def train_batch():
     y[:, 2] = 2.0
     y[:, 3] = 3.0
 
-    return MyBatch(x=x, y=y, single_eval_pos=5)
-
-
-@pytest.fixture
-def eval_batch():
-    """
-    Creates an eval batch of 4 examples (1 target, 3 related).
-    Batch 0 (Target): All 0s
-    Batch 1 (Related 1): All 1s
-    Batch 2 (Related 2): All 2s
-    Batch 3 (Related 3): All 3s
-    """
-    seq_len, b_dim, d_model = 10, 4, 8
-    x = torch.zeros((seq_len, b_dim, d_model))
-    for i in range(1, b_dim):
-        x[:, i, :] = float(i)
-
-    y = torch.zeros((seq_len, b_dim))
-    for i in range(1, b_dim):
-        y[:, i] = float(i)
-
-    return MyBatch(x=x, y=y, single_eval_pos=5)
-
+    return MyBatch(x=x, y=y, target_y=y, single_eval_pos=5)
 
 # --- Test Cases ---
 

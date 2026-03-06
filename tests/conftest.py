@@ -5,6 +5,7 @@ import tempfile
 import shutil
 
 from ppfn.model.baselines.ft_pfn import ft_pfn
+from ppfn.utils.mybatch import MyBatch
 
 
 @pytest.fixture
@@ -97,23 +98,34 @@ def ft_batch_factory():
 
         # First feature: integer in [0, 1000]
         ints = torch.randint(low=0, high=1001, size=(T, B))  # [T, B, 1][web:1]
-        floats = torch.rand(T, B, D)  # [T, B, D-1][web:5]
+        xfloats = torch.rand(T, B, D)  # [T, B, D-1][web:5]
+        yfloats = torch.rand(T, B)  # [T, B]
 
-        x_train = floats[:Tsplit]
-        x_test = floats[Tsplit:]
-        y_train = ints[:Tsplit].float()
+        # format: index, fidelity, hp1, hp2, ..., hpN
+        x_train = torch.cat([ints[:Tsplit].unsqueeze(-1).float(), xfloats[:Tsplit]],
+                            dim=-1)  # prepend int feature to floats
+        x_test = torch.cat([ints[Tsplit:].unsqueeze(-1).float(), xfloats[Tsplit:]],
+                           dim=-1)  # prepend int feature to floats
+        y_train = yfloats[:Tsplit, ]
+        y_test = yfloats[Tsplit:]
 
         # this is the target format:
         x = (torch.cat([x_train, x_test], dim=0), y_train)
         # single_eval_pos=x_train.shape[0],
         # src_key_padding_mask=None
 
-        return x, Tsplit
+        return x, Tsplit, y_test
 
     return dummy_ft_batch
 
 
 @pytest.fixture
-def get_ft_pfn():
+def mybatch(ft_batch_factory):
+    (x, y), Tsplit, y_test = ft_batch_factory()
+    y = torch.cat([y, y_test], dim=0)  # concatenate train and test targets to match the expected format of MyBatch
+    return MyBatch(x=x, y=y, target_y=y, single_eval_pos=Tsplit, src_key_padding_mask=None)
 
+
+@pytest.fixture
+def get_ft_pfn():
     return ft_pfn()

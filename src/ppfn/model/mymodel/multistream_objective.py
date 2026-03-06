@@ -36,7 +36,7 @@ class MultiStreamObjective(nn.Module):
             self,
             output: torch.Tensor,
             single_eval_pos,
-            batch=None,
+            batch,
             src_key_padding_mask=None,
             **kwargs,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:

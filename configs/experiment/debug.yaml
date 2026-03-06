@@ -2,6 +2,7 @@
 defaults:
   - /callbacks:
       - mlflow
+      - validation_real
   - _self_
 
 experiment_name: debug

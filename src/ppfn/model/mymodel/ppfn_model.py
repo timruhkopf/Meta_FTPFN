@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Mapping, Union, List
 
+from ppfn.model.baselines.ft_pfn_padding import PaddableTransformerModel
 from ppfn.model.mymodel.stream_parser import StreamParser
 from ppfn.model.mymodel.layers.adapter_wrapper import AdapterWrapper
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
@@ -34,7 +35,7 @@ class PPFN(nn.Module):
                     self.pass_hp_from_frozen and self.pass_hp_as_rawpaded), "Cannot pass HP from frozen model and as raw padded input at the same time. Choose one."
 
         # Check paddability
-        self.paddable = not hasattr(self.frozen_model, "TransformerModel")
+        self.paddable = isinstance(self.frozen_model, PaddableTransformerModel)
 
         # Freeze the pre-trained model
         for param in self.frozen_model.parameters():
@@ -112,7 +113,7 @@ class PPFN(nn.Module):
         if self.paddable:
             kwargs['src_key_padding_mask'] = src_key_padding_mask
 
-        x = (batch.x, batch.y)
+        x = (batch.x, batch.y[:batch.single_eval_pos, ...])  # Only pass the train part to the model; the test part is what we want to predict
         output = self.frozen_model(x, **kwargs)
         output = self.stream_parser.splice_at_fwd_end(output, batch)
         return output
