@@ -15,7 +15,7 @@ class AbstractStreamMutation(nn.Module):
     def forward(self, streams, sep):
         raise NotImplementedError("Stream mutations must implement the __call__ method.")
 
-    def splice_at_fwd_end(self, output_streams, sep):
+    def splice_at_fwd_end(self, output_streams, batch):
         """ Optional method to apply mutations at the end of the forward pass instead of the beginning.
         Notice, that any change to the batch (incl. e.g. appending A_train also changed the labels contained in the batch object)"""
         return output_streams  # By default, do nothing. Override if needed.
@@ -57,6 +57,11 @@ class AppendATrainToBTestMutation(AbstractStreamMutation):
     'thinks' about the support points of Stream A (Target).
     """
 
+    def __init__(self):
+        super().__init__()
+        # hotfix!
+        self._len_a_train = None  # Will be set on the first forward pass when we know the shape of A_train
+
     def forward(self, streams, sep):
         # 1. Unpack all 4 elements
         A_x, A_y, A_mask, A_hp = streams["A"]
@@ -94,15 +99,19 @@ class AppendATrainToBTestMutation(AbstractStreamMutation):
 
             new_streams[key] = (new_x, new_y, new_mask, new_hp)
 
+        self._len_a_train = len(a_train_x) # hotfix
         return new_streams
 
-    def splice_at_fwd_end(self, output_streams, sep):
+    def splice_at_fwd_end(self, output_streams, batch):
         """
         Undoes the mutation on the model outputs. No batch cleanup needed.
         """
         out_streams = {}
+
+        T_test = batch.x.shape[0] - batch.single_eval_pos - self._len_a_train  # Original test length before appending A_train
         for key, logits in output_streams.items():
             # Slice off the appended A_train portion from the end of the sequence dimension
-            out_streams[key] = logits[:-sep, ...]
+            out_streams[key] = logits[:T_test, ...]
 
+        self._len_a_train = None
         return out_streams

@@ -1,5 +1,6 @@
 ckpt:
   _target_: ppfn.trainer.callbacks.checkpoint.CheckpointCallback
+  frequency:  ${validation_frequency}
   save_dir: ${hydra:run.dir}/checkpoints/
   name: "best_nll_CA"
   mode: "min"

@@ -40,6 +40,8 @@ class MLflowCallback(AbstractCallback):
             run_name=self.run_name, log_system_metrics=self.log_system_metrics
         )
 
+        # TODO log run_name and run_id
+
         # Log Git Metadata
         mlflow.set_tag("mlflow.folder", os.getcwd())
         mlflow.set_tag("mlflow.source.git.commit", get_git_hash())

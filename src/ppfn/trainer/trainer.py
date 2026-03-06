@@ -216,6 +216,12 @@ class PPFNTrainer:
 
                 batch = batch.to(self.device)
 
+            if batch.single_eval_pos == 0:
+                # in this edge case, both A and B are empty, we cannot meta-learn
+                # FIXME: this needs to removed from the dataset generation for efficiency
+                # Fixme: we want to default to A's unconditional!
+                continue
+
             # if batch.single_eval_pos is None:
             #     seq_len = torch.tensor(batch.x.shape[1])
             #     # sample according to the PriorDataLoader default

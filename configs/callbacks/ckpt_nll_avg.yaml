@@ -1,5 +1,6 @@
 nll_avg_ckpt:
   _target_: ppfn.trainer.callbacks.checkpoint.CheckpointCallback
+  frequency:  ${validation_frequency}
   save_dir: ${hydra:run.dir}/checkpoints/
   name: "best_avg_nll_CA_bench128"
   mode: "min"

@@ -7,7 +7,7 @@ layer_base: # &layer_logic
   dropout: 0.1
   d_hp:  10 # dim of the hp encoder output of the PFN
   d_k: 64 # dimension of the actual computation in the attention
-  reuse_attn: True
+
   seq_len: 1000
 
 trainer:
@@ -24,7 +24,7 @@ model:
       _target_: ppfn.model.mymodel.stream_parser.StreamParser
       stream_mutations:
         - _target_: ppfn.model.mymodel.stream_mutations.ForceSameQueryMutation
-#        - _target_: ppfn.model.mymodel.stream_mutations.AppendATrainToBTestMutation # TODO add this in
+        - _target_: ppfn.model.mymodel.stream_mutations.AppendATrainToBTestMutation # TODO add this in
 
 
     pass_hp_from_frozen: False

@@ -34,7 +34,7 @@ class StreamParser(nn.Module):
         for mutation in self.stream_mutations or []:
             # Only apply if the mutation actually defines a backward/output splice
             if hasattr(mutation, 'splice_at_fwd_end'):
-                o_streams = mutation.splice_at_fwd_end(o_streams, sep)
+                o_streams = mutation.splice_at_fwd_end(o_streams, batch)
 
         output = self.assemble_output_streams(o_streams)
         return output

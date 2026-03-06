@@ -1,5 +1,6 @@
 same_task_128:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
+  frequency:  ${validation_frequency} ${validation_frequency} ${validation_frequency}
   device: ${device}
   switch_to_eval: False
 
@@ -34,6 +35,7 @@ same_task_128:
 
 unrelated_128:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
+  frequency:  ${validation_frequency}
   device: ${device}
   switch_to_eval: False
 

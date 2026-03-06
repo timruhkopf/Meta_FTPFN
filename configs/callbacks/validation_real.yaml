@@ -1,6 +1,7 @@
 lcbench:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
+  frequency: ${validation_frequency}
   dataset:
     _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
     benchmark_name: lcbench_tabular
@@ -12,6 +13,7 @@ lcbench:
 taskset:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
   device: ${device}
+  frequency:  ${validation_frequency}
   dataset:
     _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
     benchmark_name: taskset_tabular
@@ -22,6 +24,7 @@ taskset:
 
 pd1:
   _target_: ppfn.trainer.callbacks.meta_test.MetaTestCallback
+  frequency:  ${validation_frequency}
   device: ${device}
   dataset:
     _target_: ppfn.dataset.mfpbench.meta_test_dataset.MFPBenchMetaTestDataset
