@@ -8,7 +8,6 @@ logger.setLevel(logging.INFO)
 
 class GracefulExit(Exception):
     """Custom exception to trigger clean shutdown on signals."""
-
     pass
 
 
