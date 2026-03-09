@@ -1,18 +1,21 @@
 import torch
 import torch.nn as nn
 
-from ppfn.model.mymodel.meta_context import ForwardMetaContext
-
 
 class MHA_StreamAdapter(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1):
+    def __init__(self, d_model, n_heads, dropout=0.1, use_task_pe=True):
         """
-        A baseline 3-stream adapter where the target stream (C) simply attends
-        to the training points of the related task stream (B_train) via standard
-        cross-attention, without any prior domain unwarping.
+        A 3-stream adapter where the target stream (C) attends to a concatenated
+        context of (A_train, B_train). Learned task embeddings are added to
+        distinguish the source domain of the keys/values.
         """
         super().__init__()
         self.d_model = d_model
+
+        # Learned Task Embeddings: Index 0 for Task A, Index 1 for Task B
+        self.use_task_pe = use_task_pe
+        if use_task_pe:
+            self.task_embedding = nn.Embedding(2, d_model)
 
         # Cross-Attention Components
         self.norm_q = nn.LayerNorm(d_model)
@@ -44,37 +47,58 @@ class MHA_StreamAdapter(nn.Module):
             nn.init.zeros_(self.cross_attn.out_proj.bias)
 
         # 2. Zero out the final linear layer in FFN
-        # Accessing the last module in the Sequential block
         final_ffn_layer = self.ffn[-1]
         if isinstance(final_ffn_layer, nn.Linear):
             nn.init.zeros_(final_ffn_layer.weight)
             if final_ffn_layer.bias is not None:
                 nn.init.zeros_(final_ffn_layer.bias)
 
-    def forward(self,A, B, C, sep, **kwargs):
-        """
-        x: Latent representations packed as (T, 3*Batch, d_model)
-        single_eval_pos: The sequence index separating train from test (sep)
-        """
+        # 3. Initialize task embeddings with small values so they don't
+        # heavily disrupt the initial identity flow
+        nn.init.normal_(self.task_embedding.weight, mean=0.0, std=0.02)
 
-        # Isolate B_train for Stream C to query
+    def forward(self, A, B, C, sep, **kwargs):
+        """
+        A, B, C: Latent representations of shape (T, Batch, d_model)
+        sep: The sequence index separating train from test
+        """
+        device = A.device
+
+        # 1. Isolate the training contexts
+        A_train = A[:sep]
         B_train = B[:sep]
 
-        # CROSS-ATTENTION: C queries B_train
+        if self.use_task_pe:
+            # 2. Fetch and apply task embeddings (Broadcasting handles the Batch and T dimensions)
+            emb_A = self.task_embedding(torch.tensor(0, device=device))
+            emb_B = self.task_embedding(torch.tensor(1, device=device))
+
+            A_train_pe = A_train + emb_A
+            B_train_pe = B_train + emb_B
+            C_query = C_query = C + emb_A
+
+            # 3. Concatenate along the sequence dimension (dim=0)
+            # Resulting shape: (2 * sep, Batch, d_model)
+            context = torch.cat([A_train_pe, B_train_pe], dim=0)
+        else:
+            C_query = C
+            context = torch.cat([A_train, B_train], dim=0)
+
+        # 4. CROSS-ATTENTION: C queries the joint (A + B) context
         attn_out, attn_weights = self.cross_attn(
-            self.norm_q(C),
-            self.norm_k(B_train),
-            self.norm_v(B_train)
+            self.norm_q(C_query),
+            self.norm_k(context),
+            self.norm_v(context)
         )
 
         # First Residual Connection
         C = C + attn_out
 
-        # Second Residual Connection
+        # Second Residual Connection (Uncommented for completeness)
         # C = C + self.ffn(self.norm_ffn(C))
 
-        ForwardMetaContext.set( "attn_scores", attn_weights)
+        # Note: attn_weights will now be of shape (Batch, T_C, 2 * sep)
+        # The first half corresponds to attention on A, the second half on B
+        # ForwardMetaContext.set("attn_scores", attn_weights)
 
         return A, B, C
-
-
