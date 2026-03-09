@@ -33,6 +33,7 @@ class CheckpointCallback(AbstractCallback):
         resume_from: Optional[Union[str, Path]] = None,  # New: Path to checkpoint
         read_only: bool = False,  # New: If True, skip saving
         min_save_interval: int = 600, # New: Minimum seconds between disk saves
+        frequency: int = 1, # Check every N epochs
         min_save_epoch: int = 10, # New: Don't save to disk until after this epoch
         **kwargs,
     ):
@@ -49,6 +50,7 @@ class CheckpointCallback(AbstractCallback):
         self.save_dir = Path(save_dir)
         self.resume_path = Path(resume_from) if resume_from else None
         self.read_only = read_only
+        self.frequency = frequency
 
         if isinstance(monitor, str):
             monitor = [monitor]
@@ -121,31 +123,32 @@ class CheckpointCallback(AbstractCallback):
 
     def log_on_epoch_end(self, epoch: int, metrics: Dict[str, Any]):
         """Decides if we should save, then triggers background task."""
-        # 1. Calculate Score
-        current_scores = [
-            metrics.get(m) for m in self.monitor if metrics.get(m) is not None
-        ]
-        if not current_scores:
-            return
-        current_score = sum(current_scores) / len(current_scores)
+        if epoch % self.frequency == 0:
+            # 1. Calculate Score
+            current_scores = [
+                metrics.get(m) for m in self.monitor if metrics.get(m) is not None
+            ]
+            if not current_scores:
+                return
+            current_score = sum(current_scores) / len(current_scores)
 
-        # 2. Check Logic (Improvement + Time Guard)
-        is_best = (self.mode == "min" and current_score < self.best_score) or (
-            self.mode == "max" and current_score > self.best_score
-        )
+            # 2. Check Logic (Improvement + Time Guard)
+            is_best = (self.mode == "min" and current_score < self.best_score) or (
+                self.mode == "max" and current_score > self.best_score
+            )
 
-        if is_best:
-            self.best_score = current_score
-            self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
-            self._needs_saving = True  # Always mark as dirty if it's the new best
-            logger.info(f"✨ New best captured in memory (Epoch {epoch})")
+            if is_best:
+                self.best_score = current_score
+                self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
+                self._needs_saving = True  # Always mark as dirty if it's the new best
+                logger.info(f"✨ New best captured in memory (Epoch {epoch})")
 
-        now = time.time()
-        time_since_last = now - self.last_save_time
+            now = time.time()
+            time_since_last = now - self.last_save_time
 
-        # Only save if: We have a new version AND we are past the min epoch AND the timer expired
-        if self._needs_saving and epoch >= self.min_epoch and time_since_last >= self.min_save_interval:
-            self._trigger_save(now)
+            # Only save if: We have a new version AND we are past the min epoch AND the timer expired
+            if self._needs_saving and epoch >= self.min_epoch and time_since_last >= self.min_save_interval:
+                self._trigger_save(now)
 
     def _trigger_save(self, timestamp: float):
         """Internal helper to push pending snapshot to the background thread."""
