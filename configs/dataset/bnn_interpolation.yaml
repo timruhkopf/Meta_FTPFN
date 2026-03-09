@@ -11,7 +11,7 @@ store_prior:
     _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
     _partial_: True
     transform:
-      _target_: ppfn.dataset.get_batch.task_transforms.OutputInterpolationTransform
+      _target_: ppfn.dataset.get_batch.transforms.bnn_interpolation.OutputInterpolationTransform
       alpha: Null
       sample_alpha_fn: Null
       resample_y0_ymax: False

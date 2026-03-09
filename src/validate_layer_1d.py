@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from ppfn.model.mymodel.layers.adapter_wrapper import Unified1dValidationWrapper
-from ppfn.model.mymodel.layers.delta_surrogate_adapter import  DeltaSurrogateAdapter
+from ppfn.model.mymodel.layers.delta_surrogate_adapter import DeltaSurrogateAdapter, DeltaV2
 # from validated_layers_1d import generate_shared_complex_batch
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 from ppfn.model.mymodel.layers.nw_adapter import NadarayaWatsonAdapter
@@ -308,5 +308,12 @@ if __name__ == '__main__':
     #     input_dim=2, d_model=16,
     # )
     # model.adapter.address = "CalibratedSurrogateUpdate"
+
+    model = Unified1dValidationWrapper(
+        adapter_module=DeltaV2(
+            d_model=16, d_hp=16, d_k=32,
+        ), input_dim=2, d_model=16,
+    )
+    model.adapter.address = "DeltaV2_SurrogateUpdate"
 
     main(model, steps=20000, batch_size=128, T=60, sep=20)

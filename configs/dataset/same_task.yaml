@@ -11,5 +11,5 @@ store_prior:
     _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
     _partial_: True
     transform:
-      _target_: ppfn.dataset.get_batch.task_transforms.SameTaskTransform
+      _target_: ppfn.dataset.get_batch.transforms.same_task.SameTaskTransform
       resample_y0_ymax: False

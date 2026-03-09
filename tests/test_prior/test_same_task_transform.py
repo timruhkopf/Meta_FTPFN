@@ -4,7 +4,7 @@ import numpy as np
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from ppfn.dataset.get_batch.task_transforms import SameTaskTransform
+from ppfn.dataset.get_batch.transforms.same_task import SameTaskTransform
 from ppfn.dataset.prior import MultiFidelityTask
 
 
