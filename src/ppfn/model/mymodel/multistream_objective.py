@@ -98,15 +98,16 @@ class MultiStreamObjective(nn.Module):
                 "nll/C": loss_C.mean().item(),
             }
 
-            # Handle style-based grouping
-            if batch is not None and getattr(batch, "style", None) is not None:
-                # Caution: [::2] assumes train-time interleaving.
-                # Ensure this matches the extracted R dimension!
-                style = batch.style[::2].squeeze()
-                metrics.update({
-                    "nll/similar_task": nll_diff[:, style != 0].mean().item(),
-                    "nll/unrelated_task": nll_diff[:, style == 0].mean().item(),
-                })
+            # drop this in favor of actual callbacks with validation samples
+            # # Handle style-based grouping
+            # if batch is not None and getattr(batch, "style", None) is not None:
+            #     # Caution: [::2] assumes train-time interleaving.
+            #     # Ensure this matches the extracted R dimension!
+            #     style = batch.style[::2].squeeze()
+            #     metrics.update({
+            #         "nll/similar_task": nll_diff[:, style != 0].mean().item(),
+            #         "nll/unrelated_task": nll_diff[:, style == 0].mean().item(),
+            #     })
 
             if self.verbose:
                 metrics["nan_share"] = nan_share.item()
