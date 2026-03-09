@@ -21,7 +21,7 @@ same_task_128:
         share_unrelated: 0.
         num_features: 12
         transform:
-          _target_: ppfn.dataset.get_batch.task_transforms.SameTaskTransform
+          _target_: ppfn.dataset.get_batch.transforms.SameTaskTransform
           resample_y0_ymax: False
 
       single_eval_pos: 128
