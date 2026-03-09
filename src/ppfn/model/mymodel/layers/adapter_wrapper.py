@@ -50,6 +50,10 @@ class Unified1dValidationWrapper(nn.Module):
         self.down_proj = nn.Linear(d_model, input_dim)
         self.seq_len = seq_len
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     def forward(self, A, B, C, B_belief_A, sep):
         """
         Accepts raw data streams (T, Batch, D).

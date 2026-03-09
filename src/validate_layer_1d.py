@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from ppfn.model.mymodel.layers.adapter_wrapper import Unified1dValidationWrapper
-from ppfn.model.mymodel.layers.delta_surrogate_adapter import DeltaSurrogateAdapter, DeltaV2
+from ppfn.model.mymodel.layers.delta_surrogate_adapter import DeltaSurrogateAdapter
 # from validated_layers_1d import generate_shared_complex_batch
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 from ppfn.model.mymodel.layers.nw_adapter import NadarayaWatsonAdapter
@@ -65,11 +65,20 @@ def plot_attention_heatmap(ax, fig, attn_matrix, b_cutoff_idx=None, title="Atten
 
 def run_inference_for_plot(wrapper_model, sep, T, batch_size=1):
     wrapper_model.eval()
+    device = wrapper_model.device
     with torch.no_grad():
         # Data generation gives us the streams naturally
         (A_train, A_test, B_train, B_test,
          C_train, C_test, B_belief_A_train,
          sep, debug_info) = generate_shared_complex_batch(batch_size, T, sep)
+
+        A_train = A_train.to(device)
+        A_test = A_test.to(device)
+        B_train = B_train.to(device)
+        B_test = B_test.to(device)
+        C_train = C_train.to(device)
+        C_test = C_test.to(device)
+        B_belief_A_train = B_belief_A_train.to(device)
 
         # 2. Mask the Y-values for testing (Preventing data leakage)
         # We replace the y-values (index 1) with noise or zeros for the extrapolation targets
@@ -231,6 +240,14 @@ def main(wrapper_model, steps=20000, batch_size=128, T=60, sep=20):
          C_train, C_test, B_belief_A_train,
          sep, debug_info) = generate_shared_complex_batch(batch_size, T, sep)
 
+        A_train = A_train.to(device)
+        A_test = A_test.to(device)
+        B_train = B_train.to(device)
+        B_test = B_test.to(device)
+        C_train = C_train.to(device)
+        C_test = C_test.to(device)
+        B_belief_A_train = B_belief_A_train.to(device)
+
         # 2. Mask the Y-values for testing (Preventing data leakage)
         # We replace the y-values (index 1) with noise or zeros for the extrapolation targets
         noise = torch.randn_like(C_test[:, :, 1]) * 0.1
@@ -270,7 +287,7 @@ def main(wrapper_model, steps=20000, batch_size=128, T=60, sep=20):
         if (step + 1) % 200 == 0:
             pbar.set_postfix({"Loss": f"{current_loss:.6f}"})
 
-        if (step + 1) % 2000 == 0:
+        if (step + 1) % 10000 == 0:
             plot_results(sep, T, wrapper_model, loss_history)
 
 
@@ -309,11 +326,11 @@ if __name__ == '__main__':
     # )
     # model.adapter.address = "CalibratedSurrogateUpdate"
 
-    model = Unified1dValidationWrapper(
-        adapter_module=DeltaV2(
-            d_model=16, d_hp=16, d_k=32,
-        ), input_dim=2, d_model=16,
-    )
-    model.adapter.address = "DeltaV2_SurrogateUpdate"
+    # model = Unified1dValidationWrapper(
+    #     adapter_module=DeltaV2(
+    #         d_model=16, d_hp=16, d_k=32,
+    #     ), input_dim=2, d_model=16,
+    # )
+    # model.adapter.address = "DeltaV2_SurrogateUpdate"
 
     main(model, steps=20000, batch_size=128, T=60, sep=20)
