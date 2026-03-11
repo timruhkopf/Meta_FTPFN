@@ -75,7 +75,7 @@ class MHA_StreamAdapter(nn.Module):
 
             A_train_pe = A_train + emb_A
             B_train_pe = B_train + emb_B
-            C_query = C_query = C + emb_A
+            C_query = C + emb_A
 
             # 3. Concatenate along the sequence dimension (dim=0)
             # Resulting shape: (2 * sep, Batch, d_model)

@@ -128,30 +128,6 @@ class NadarayaWatsonAdapter(nn.Module):
         # Note: You do not need to zero out self.mlp_err because zeroing the
         # nw_attn output projection already bottlenecks the correction to 0.
 
-    # TODO try a "near-identity" initialization where we initialize the weights to small random values instead of exact zeros.
-    # def initialize_as_identity(self, epsilon=1e-4):
-    #     """
-    #     Initializes the adapter to a near-identity state.
-    #     Allows for immediate gradient signal while preserving frozen model behavior.
-    #     """
-    #     # 1. The Extractor & Corrector (MultiheadAttention)
-    #     for mha in [self.nw_attn, self.attn_train, self.attn_test]:
-    #         # Zero the bias to prevent constant shifts
-    #         nn.init.zeros_(mha.out_proj.bias)
-    #         # Use a tiny normal distribution for weights
-    #         nn.init.normal_(mha.out_proj.weight, std=epsilon)
-    #
-    #     # 2. The FFN Modulator
-    #     # self.ffn[3] is the second Linear layer
-    #     nn.init.zeros_(self.ffn[3].bias)
-    #     nn.init.normal_(self.ffn[3].weight, std=epsilon)
-    #
-    #     # 3. The MLP Error (Optional but helpful)
-    #     # Priming the error transformation ensures the NW corrector
-    #     # starts looking for meaningful distortions immediately.
-    #     nn.init.zeros_(self.mlp_err[-1].bias)
-    #     nn.init.normal_(self.mlp_err[-1].weight, std=epsilon)
-
 
     def forward(self, A, B, C, sep, hp, **kwargs):
         """
