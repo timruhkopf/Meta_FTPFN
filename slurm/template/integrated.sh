@@ -165,7 +165,7 @@ FINAL_CMD_ARGS=(
 #    "mlflow.tracking_uri=file://$FINAL_MLRUNS"
 )
 echo "FINAL_CMD_ARGS: ${FINAL_CMD_ARGS[*]}"
-$PYTHON_EXEC $REPO_DIR/src/ppfn/train.py "${FINAL_CMD_ARGS[@]}" &
+$PYTHON_EXEC $REPO_DIR/src/train.py "${FINAL_CMD_ARGS[@]}" &
 
     # move the hydra run dir to the local tmp as well to avoid writes to file system
 
