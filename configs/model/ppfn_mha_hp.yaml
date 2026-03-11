@@ -2,7 +2,7 @@
 # Multi-layer model with cross-attention at layers 0 and 2
 # 1. Define the base configuration once using an anchor (&)
 layer_base: # &layer_logic
-  _target_: ppfn.model.mymodel.layers.mha_adapter.MHA_StreamAdapter
+  _target_: ppfn.model.mymodel.layers.mha_adapter_v2.MHA_SpatioRepresentationalAdapter
   d_model: 512
   n_heads: 4
   dropout: 0.1
@@ -16,14 +16,13 @@ model:
 
   model_class:
     _target_: ppfn.model.mymodel.ppfn_model.PPFN
-    pass_hp_from_frozen: False
-    pass_hp_as_rawpaded: False
+    pass_hp_from_frozen: true
     stream_parser:
       _target_: ppfn.model.mymodel.stream_parser.StreamParser
 
 
     frozen_model:
-      _target_: ppfn.model.baselines.ft_pfn.ft_pfn
+      _target_: ppfn.model.baselines.ft_pfn_padding.ft_pfn_padding
 
     _convert_: partial
     # to avoid instantiation issue that the name should not
@@ -33,13 +32,13 @@ model:
 
       - name: "transformer_encoder.layers.0"
         layer: ${layer_base} #*layer_logic
-#      - name: "transformer_encoder.layers.1"
-#        layer: ${layer_base} #*layer_logic
-#      - name: "transformer_encoder.layers.2"
-#        layer: ${layer_base} #*layer_logic
-#      - name: "transformer_encoder.layers.3"
-#        layer: ${layer_base} #*layer_logic
-#      - name: "transformer_encoder.layers.4"
-#        layer: ${layer_base} #*layer_logic
-#      - name: "transformer_encoder.layers.5"
-#        layer: ${layer_base} #*layer_logic
+      - name: "transformer_encoder.layers.1"
+        layer: ${layer_base} #*layer_logic
+      - name: "transformer_encoder.layers.2"
+        layer: ${layer_base} #*layer_logic
+      - name: "transformer_encoder.layers.3"
+        layer: ${layer_base} #*layer_logic
+      - name: "transformer_encoder.layers.4"
+        layer: ${layer_base} #*layer_logic
+      - name: "transformer_encoder.layers.5"
+        layer: ${layer_base} #*layer_logic
