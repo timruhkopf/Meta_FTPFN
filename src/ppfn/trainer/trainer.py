@@ -55,6 +55,7 @@ class PPFNTrainer:
         scheduler=None,
         description_template: str | None = None,
         loss_multiplier: float = 1.0,
+        eons=1,
     ):
         """
         Initialize the trainer.
@@ -81,6 +82,8 @@ class PPFNTrainer:
         self.criterion = criterion
         self.device = device
         self.use_amp = use_amp
+        self.eons = eons # this is a hack to avoid the overhead of generating and storing!! all that prior data; instead this is a revert
+        # to the classical training loop where we just iterate over the dataloader multiple times
 
         # Get trainable parameters from the model
         if hasattr(model, 'get_trainable_params'):
@@ -135,43 +138,48 @@ class PPFNTrainer:
         # Then check the resulting log!
 
         try:
-            iterator = tqdm(range(epochs), disable=not self.verbose)
+            for eon in range(self.eons):
+                iterator = tqdm(range(epochs), disable=not self.verbose)
 
-            if hasattr(self.train_loader, "__iter__"):
-                # classical trainloader
-                self.train_loader = iter(self.train_loader)
+                if self.eons > 1:
+                    logger.info(f"Starting eon {eon + 1}/{self.eons}...")
 
-            for epoch in iterator:
-                self.current_epoch = epoch
+                # Check if the underlying dataset has the shuffle method
+                dataset = getattr(self.train_loader, 'dataset', self.train_loader)
+                if hasattr(dataset, 'shuffle'):
+                    dataset.shuffle()
 
-                self.callback_handler.on_event("on_epoch_start", epoch=epoch)
+                # Create a FRESH iterator for this eon without overwriting the loader
+                self.train_iter = iter(self.train_loader)
 
-                epoch_metrics = self.train_epoch(steps)
+                for epoch in iterator:
+                    self.current_epoch = epoch
+                    self.callback_handler.on_event("on_epoch_start", epoch=epoch)
+                    epoch_metrics = self.train_epoch(steps)
+                    feedback = self.callback_handler.on_event(
+                        "on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                    )
 
-                feedback = self.callback_handler.on_event(
-                    "on_epoch_end", epoch=epoch, metrics=epoch_metrics
-                )
+                    epoch_metrics.update(feedback)
 
-                epoch_metrics.update(feedback)
+                    self.callback_handler.on_event(
+                        "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                    )
 
-                self.callback_handler.on_event(
-                    "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
-                )
+                    if feedback.get("stop_training", False):
+                        print("Early stopping triggered. Terminating training.")
+                        break
 
-                if feedback.get("stop_training", False):
-                    print("Early stopping triggered. Terminating training.")
-                    break
-
-                if self.verbose:
-                    try:
-                        # We merge epoch into the metrics dict or pass it as a kwarg
-                        description = self.description_template.format(
-                            epoch=epoch, **epoch_metrics
-                        )
-                        iterator.set_description(description)
-                    except KeyError as e:
-                        # Fallback or warning if user provided a key that doesn't exist
-                        iterator.set_description(f"Epoch {epoch} (Template Error: Missing {e})")
+                    if self.verbose:
+                        try:
+                            # We merge epoch into the metrics dict or pass it as a kwarg
+                            description = self.description_template.format(
+                                epoch=epoch, **epoch_metrics
+                            )
+                            iterator.set_description(description)
+                        except KeyError as e:
+                            # Fallback or warning if user provided a key that doesn't exist
+                            iterator.set_description(f"Epoch {epoch} (Template Error: Missing {e})")
 
         except KeyboardInterrupt:
             print("Training interrupted by user")
@@ -206,7 +214,7 @@ class PPFNTrainer:
                 batch = self.train_loader.get_batch(device=self.device)
             else:
                 # standard dataloader
-                batch = next(self.train_loader)
+                batch = next(self.train_iter)
                 assert isinstance(batch, List) and len(batch) == 1, (
                     "The PPFNTrainer expects that the dataset class already provides batches, "
                     "so the loader must have batch_size=1."

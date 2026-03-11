@@ -56,9 +56,8 @@ class StoredPriorDataset(torch.utils.data.Dataset):
             )
             # raise FileNotFoundError( f"No chunk files found in {self.storage_path}. Please run store_prior() to generate data.")
 
-
         if shuffle and len(self.chunk_files) > 0:
-            self.chunk_files = np.random.permutation(self.chunk_files).tolist()
+            self.shuffle()
 
         self.get_batch_fn = get_batch_fn
 
@@ -79,6 +78,14 @@ class StoredPriorDataset(torch.utils.data.Dataset):
             first_chunk = self.load_chunk(0)
             self.items_per_chunk = len(first_chunk)
             self.total_size = len(self.chunk_files) * self.items_per_chunk
+
+    def shuffle(self):
+        self.chunk_files = np.random.permutation(self.chunk_files).tolist()
+
+        # KEY CHANGE: Invalidate the cache so the next __getitem__ forces a disk load
+        self.current_chunk_id = -1
+        self.cached_chunk_data = None
+
 
     def load_chunk(self, chunk_id: int):
         # Optimization: Only load from disk if we aren't already holding this chunk
