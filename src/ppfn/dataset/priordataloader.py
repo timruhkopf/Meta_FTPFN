@@ -180,16 +180,16 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 if single_eval_pos is None:
                     if eval_pos_sampler is None:
                         # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
-                        single_eval_pos = int(
+                        sep = int(
                             np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
                         )
                     else:
-                        single_eval_pos = eval_pos_sampler()
+                        sep = eval_pos_sampler()
 
                 batch = get_batch_fn(
                     batch_size=batch_size,
                     seq_len=seq_len,
-                    single_eval_pos=single_eval_pos,
+                    single_eval_pos=sep,
                     **get_batch_kwargs,
                 )
 
@@ -247,7 +247,7 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                     dummy_task = deepcopy(chunk_tasks[0])
                     # Override the path to the temp directory and restrict to 1 batch
                     dummy_task["path"] = temp_dir
-                    dummy_task["chunk_size"] = 10
+                    dummy_task["chunk_size"] = 20
                     dummy_task["batch_size"] = 10
 
                     # Execute the single batch locally

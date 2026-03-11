@@ -230,14 +230,7 @@ class PPFNTrainer:
                 # Fixme: we want to default to A's unconditional!
                 continue
 
-            # if batch.single_eval_pos is None:
-            #     seq_len = torch.tensor(batch.x.shape[1])
-            #     # sample according to the PriorDataLoader default
-            #     single_eval_pos = int(
-            #         torch.floor(torch.exp(torch.rand(1) * torch.log(seq_len + 1))) - 1
-            #     )
-            #     warnings.warn("single_eval_pos not set in batch; using random value.")
-            # else:
+
             single_eval_pos = batch.single_eval_pos
 
             step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
