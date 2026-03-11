@@ -12,7 +12,7 @@ store_prior: # method call
 
   n_chunks: 300 # 400  # array size
   chunk_size: 6660 # 5000 # number of items (tasks) per file
-  batch_size: 60 # 25 # number of tasks in a batch number of batches = n_chunks * chunk_size / batch_size
+  batch_size: 30 # 25 # number of tasks in a batch number of batches = n_chunks * chunk_size / batch_size
   seq_len: 1000
   batch_kwargs:
     share_unrelated: 0.33
