@@ -74,7 +74,7 @@ if ! command -v uv &> /dev/null; then
 fi
 
 # Use 'uv run' to automatically handle the .venv
-PYTHON_EXEC="uv run --frozen"
+PYTHON_EXEC="uv run --frozen --env-file .env"
 
 # --- 2. Dynamic Resource Detection ---
 if [ -n "$SLURM_JOB_GPUS" ]; then
