@@ -185,6 +185,8 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                         )
                     else:
                         sep = eval_pos_sampler()
+                else:
+                    sep = single_eval_pos
 
                 batch = get_batch_fn(
                     batch_size=batch_size,
@@ -210,6 +212,8 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 }
                 # todo on USR1 signal of process (--signal=B:TERM@120) break and dump the current
                 # progress
+
+            logger.info(f"Seps: {[v['single_eval_pos'] for v in chunk_storage.values()]}")
 
             chunk_file = Path(path) / f"chunk_{chunk_id}.pt"
             torch.save(chunk_storage, chunk_file)
