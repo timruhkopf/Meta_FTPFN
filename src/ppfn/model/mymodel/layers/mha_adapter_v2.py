@@ -31,7 +31,16 @@ class HistogramAttentionGate(nn.Module):
         """
         # 1. Map attention weights [0, 1] to bin indices [0, num_bins - 1]
         # Example: weight 0.15 with 10 bins becomes index 1.
-        bin_indices = torch.clamp((attn_weights * self.num_bins).long(), max=self.num_bins - 1)
+
+        if torch.isnan(attn_weights).any():
+            # Handle the NaN (e.g., zero them out, or print a warning)
+            attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+
+        bin_indices = torch.clamp(
+            (attn_weights * self.num_bins).long(),
+            min=0,
+            max=self.num_bins - 1
+        )
 
         # 2. Convert to one-hot to count occurrences
         # Shape: (Batch, T_query, T_key, num_bins)
