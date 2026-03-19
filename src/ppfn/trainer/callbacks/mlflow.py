@@ -14,11 +14,11 @@ logger.setLevel(logging.INFO)
 
 class MLflowCallback(AbstractCallback):
     def __init__(
-        self,
-        experiment_name: str = "ppfn_training",
-        run_name: str | None = None,
-        mlflow_tracking_uri: str | None = None,
-        log_system_metrics: bool = True,
+            self,
+            experiment_name: str = "ppfn_training",
+            run_name: str | None = None,
+            mlflow_tracking_uri: str | None = None,
+            log_system_metrics: bool = True,
     ):
         super().__init__()
         self.experiment_name = experiment_name
@@ -64,9 +64,12 @@ class MLflowCallback(AbstractCallback):
         if self.trainer.config is not None:
             mlflow.log_dict(self.trainer.config, "config.yaml")
 
-    def log_on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
-        # Log metrics to MLflow
-        mlflow.log_metrics(metrics, step=epoch)
+    def log_on_epoch_end(self, epoch: int, eon: int, metrics: Dict[str, float], **kwargs):
+        # Formula: (current_eon * total_epochs_in_one_eon) + current_epoch
+        global_step = (eon * self.trainer.epochs) + epoch
+
+        # Log metrics to MLflow using the continuous step
+        mlflow.log_metrics(metrics, step=global_step)
 
     def log_on_train_end(self, **kwargs):
         if mlflow.active_run():

@@ -125,6 +125,7 @@ class PPFNTrainer:
         Args:
             epochs: Number of epochs to train
         """
+        self.epochs = epochs  # helper for eon logging in mlflow callback
         logger.info("Starting training...")
         self.callback_handler.on_event("on_train_start")
 
@@ -155,7 +156,9 @@ class PPFNTrainer:
                 for epoch in iterator:
                     self.current_epoch = epoch
                     self.callback_handler.on_event("on_epoch_start", epoch=epoch)
+
                     epoch_metrics = self.train_epoch(steps)
+
                     feedback = self.callback_handler.on_event(
                         "on_epoch_end", epoch=epoch, metrics=epoch_metrics
                     )
@@ -163,7 +166,7 @@ class PPFNTrainer:
                     epoch_metrics.update(feedback)
 
                     self.callback_handler.on_event(
-                        "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                        "log_on_epoch_end", epoch=epoch, eon=eon, metrics=epoch_metrics
                     )
 
                     if feedback.get("stop_training", False):
@@ -198,6 +201,7 @@ class PPFNTrainer:
             self.callback_handler.on_event("log_on_train_end")
 
         logger.info("Training complete.")
+        self.epochs=None
 
     def train_epoch(self, n_steps) -> Dict[str, float]:
         self.model.train()

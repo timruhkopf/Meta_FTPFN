@@ -17,7 +17,7 @@ defaults:
 device: "cuda"
 experiment_name: ???
 run_name: ${oc.env:SLURM_JOB_ID, Null} #  will be set by mlflow at random
-mlflow_tracking_uri: Null
+
 
 validation_frequency: 3
 
