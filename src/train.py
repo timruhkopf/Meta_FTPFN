@@ -26,6 +26,9 @@ def main(cfg: DictConfig) -> None:
     # Pretty print config
     logger.info("\n" + OmegaConf.to_yaml(cfg))
 
+    # log hydra overrides in .err files for easier debugging:
+    logger.error(f"Overrides: {hydra.core.hydra_config.HydraConfig.get()['overrides']['task']}")
+
     # Device
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -35,6 +38,8 @@ def main(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(cfg.seed)
+
+    logger.info(f"Set random seed to {cfg.seed}")
 
     # Create dataloaders
     logger.info("Creating dataloaders...")
