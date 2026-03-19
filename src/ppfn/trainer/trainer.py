@@ -213,46 +213,52 @@ class PPFNTrainer:
         epoch_start = time.time()
 
         for step in range(n_steps):
-            if hasattr(self.train_loader, "get_batch"):
-                # PRIORDATALOADER Legacy support
-                batch = self.train_loader.get_batch(device=self.device)
-            else:
-                # standard dataloader
-                batch = next(self.train_iter)
-                assert isinstance(batch, List) and len(batch) == 1, (
-                    "The PPFNTrainer expects that the dataset class already provides batches, "
-                    "so the loader must have batch_size=1."
+            try:
+                if hasattr(self.train_loader, "get_batch"):
+                    # PRIORDATALOADER Legacy support
+                    batch = self.train_loader.get_batch(device=self.device)
+                else:
+                    # standard dataloader
+                    batch = next(self.train_iter)
+                    assert isinstance(batch, List) and len(batch) == 1, (
+                        "The PPFNTrainer expects that the dataset class already provides batches, "
+                        "so the loader must have batch_size=1."
+                    )
+                    # since we expect batch_size=1 with collate_fn=lambda x: x[0]
+                    batch = batch[0]
+
+                    batch = batch.to(self.device)
+
+                if batch.single_eval_pos == 0:
+                    # in this edge case, both A and B are empty, we cannot meta-learn
+                    # FIXME: this needs to removed from the dataset generation for efficiency
+                    # Fixme: we want to default to A's unconditional!
+                    logger.error("Received batch with single_eval_pos=0 at step {step}, skipping this batch due to meta-learning minimal requirements.")
+                    continue
+
+
+                single_eval_pos = batch.single_eval_pos
+
+                step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
+
+                # Accumulate metrics per step
+                for key, value in step_metrics.items():
+                    if key not in epoch_metrics:
+                        epoch_metrics[key] = 0.0
+                    epoch_metrics[key] += value
+
+                epoch_metrics["num_batches"] += 1
+
+                # Call step callbacks
+                self.callback_handler.on_event(
+                    "on_step_end", epoch=self.current_epoch, step=step, metrics=step_metrics
                 )
-                # since we expect batch_size=1 with collate_fn=lambda x: x[0]
-                batch = batch[0]
 
-                batch = batch.to(self.device)
+                self.global_step += 1
 
-            if batch.single_eval_pos == 0:
-                # in this edge case, both A and B are empty, we cannot meta-learn
-                # FIXME: this needs to removed from the dataset generation for efficiency
-                # Fixme: we want to default to A's unconditional!
-                continue
-
-
-            single_eval_pos = batch.single_eval_pos
-
-            step_metrics = self._train_step(step, batch, single_eval_pos=single_eval_pos)
-
-            # Accumulate metrics per step
-            for key, value in step_metrics.items():
-                if key not in epoch_metrics:
-                    epoch_metrics[key] = 0.0
-                epoch_metrics[key] += value
-
-            epoch_metrics["num_batches"] += 1
-
-            # Call step callbacks
-            self.callback_handler.on_event(
-                "on_step_end", epoch=self.current_epoch, step=step, metrics=step_metrics
-            )
-
-            self.global_step += 1
+            except StopIteration:
+                logger.warning("DataLoader exhausted before reaching n_steps. Ending epoch early.")
+                break
 
         # Average metrics for epoch (except time)
         num_batches = epoch_metrics.pop("num_batches")
