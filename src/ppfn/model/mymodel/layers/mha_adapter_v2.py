@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
 class HistogramAttentionGate(nn.Module):
@@ -8,70 +9,78 @@ class HistogramAttentionGate(nn.Module):
         super().__init__()
         self.num_bins = num_bins
 
-        # The gate evaluates the normalized histogram of attention weights
+        # Input is now num_bins + 2 (for Entropy and Max Weight)
+        gate_input_dim = num_bins + 2
+
         self.gate_mlp = nn.Sequential(
-            nn.Linear(num_bins, d_model // 2),
+            nn.Linear(gate_input_dim, d_model // 2),
             nn.GELU(),
             nn.Linear(d_model // 2, 1),
             nn.Sigmoid()
         )
 
-        # Initialize biases to favor an open gate (~0.73) initially
-        # so gradients can flow to the attention mechanism early in training.
+        # Initialize bias to ~0.73
         nn.init.zeros_(self.gate_mlp[0].bias)
         nn.init.constant_(self.gate_mlp[2].bias, 1.0)
         nn.init.xavier_uniform_(self.gate_mlp[0].weight)
         nn.init.xavier_uniform_(self.gate_mlp[2].weight)
 
     def forward(self, attn_weights, C, C_update):
-        """
-        attn_weights: (Batch, T_query, T_key) - from nn.MultiheadAttention
-        C: (T_query, Batch, d_model) - current state
-        C_update: (T_query, Batch, d_model) - proposed update from MHA
-        """
-        # 1. Map attention weights [0, 1] to bin indices [0, num_bins - 1]
-        # Example: weight 0.15 with 10 bins becomes index 1.
-
         if torch.isnan(attn_weights).any():
-            # Handle the NaN (e.g., zero them out, or print a warning)
             attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
 
+        # 1. Histogram Calculation
         bin_indices = torch.clamp(
             (attn_weights * self.num_bins).long(),
-            min=0,
-            max=self.num_bins - 1
+            min=0, max=self.num_bins - 1
         )
-
-        # 2. Convert to one-hot to count occurrences
-        # Shape: (Batch, T_query, T_key, num_bins)
         hist_one_hot = F.one_hot(bin_indices, num_classes=self.num_bins).float()
-
-        # 3. Sum over the Keys dimension (dim=-2) to get the counts per bin
-        # Shape: (Batch, T_query, num_bins)
         hist_counts = hist_one_hot.sum(dim=-2)
 
-        # 4. Normalize by the number of keys so the histogram sums to 1.0
         T_key = attn_weights.shape[-1]
         hist_normalized = hist_counts / T_key
 
-        # 5. DETACH THE HISTOGRAM (Stop-Gradient)
-        # This is the crucial step preventing gradient sabotage.
-        gate_input = hist_normalized.detach()
+        # 2. Entropy Calculation: H = -sum(p * log(p + eps))
+        epsilon = 1e-9
+        entropy = -torch.sum(attn_weights * torch.log(attn_weights + epsilon), dim=-1)
 
-        # 6. Pass through MLP. Transpose to match C's (Seq, Batch, Feature) shape.
-        # Transposed shape: (T_query, Batch, num_bins)
-        gate_input = gate_input.transpose(0, 1)
+        # 3. Max Weight Calculation
+        max_weight = torch.max(attn_weights, dim=-1)[0]
 
-        # gate_values shape: (T_query, Batch, 1)
-        gate_values = self.gate_mlp(gate_input)
+        # 4. Detach and Assemble Gate Input
+        hist_detached = hist_normalized.detach()
+        entropy_detached = entropy.unsqueeze(-1).detach()
+        max_weight_detached = max_weight.unsqueeze(-1).detach()
 
-        # 7. Apply the gated residual
+        # Shape: (Batch, T_query, num_bins + 2)
+        gate_input = torch.cat([hist_detached, entropy_detached, max_weight_detached], dim=-1)
+
+        # 5. Pass through MLP
+        gate_input = gate_input.transpose(0, 1)  # Shape: (T_query, Batch, num_bins + 2)
+        gate_values = self.gate_mlp(gate_input)  # Shape: (T_query, Batch, 1)
+
+        # 6. Apply gated residual
         C_gated = C + (gate_values * C_update)
 
         return C_gated, gate_values
 
 
-from ppfn.model.mymodel.meta_context import ForwardMetaContext  # Assuming this is your logging import
+class SwiGLU(nn.Module):
+    """Modern SwiGLU activation block to replace standard GELU FFN"""
+
+    def __init__(self, d_model, hidden_dim_multiplier=2):
+        super().__init__()
+        # Multiplying by 2 to keep parameter count roughly equivalent to your old d_model * 4
+        hidden_dim = d_model * hidden_dim_multiplier
+        self.w12 = nn.Linear(d_model, hidden_dim * 2)
+        self.w3 = nn.Linear(hidden_dim, d_model)
+
+    def forward(self, x):
+        x12 = self.w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        return self.w3(F.silu(x1) * x2)
+
+
 
 
 class MHA_SpatioRepresentationalAdapter(nn.Module):
@@ -79,54 +88,38 @@ class MHA_SpatioRepresentationalAdapter(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.use_task_pe = use_task_pe
-        self.address = "mha_spatio_adapter"  # For logging
+        self.address = "mha_spatio_adapter"
 
         if use_task_pe:
             self.task_embedding = nn.Embedding(2, d_model)
 
-        # Projections to fuse Representation + HP back to d_model
         self.q_proj = nn.Linear(d_model * 2, d_model)
         self.k_proj = nn.Linear(d_model * 2, d_model)
 
-        # Cross-Attention
         self.norm_q = nn.LayerNorm(d_model)
         self.norm_k = nn.LayerNorm(d_model)
         self.norm_v = nn.LayerNorm(d_model)
         self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
 
-        # NEW: The Histogram Gate
         self.hist_gate = HistogramAttentionGate(d_model, num_bins=10)
 
-        # FFN Modulator
         self.norm_ffn = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * 4, d_model),
-            nn.Dropout(dropout)
-        )
+        self.ffn = SwiGLU(d_model)
+        self.ffn_drop = nn.Dropout(dropout)
 
-        self.init_as_identity()
+        # NEW: ReZero Parameters for Identity Initialization
+        self.mha_alpha = nn.Parameter(torch.zeros(1))
+        self.ffn_alpha = nn.Parameter(torch.zeros(1))
 
-    def init_as_identity(self):
-        # 1. Zero out MHA output projection
-        nn.init.zeros_(self.cross_attn.out_proj.weight)
-        if self.cross_attn.out_proj.bias is not None:
-            nn.init.zeros_(self.cross_attn.out_proj.bias)
+        self.init_weights()
 
-        # 2. Zero out the final linear layer in FFN (Index 3, NOT -1)
-        final_linear_layer = self.ffn[3]
-        nn.init.zeros_(final_linear_layer.weight)
-        if final_linear_layer.bias is not None:
-            nn.init.zeros_(final_linear_layer.bias)
+    def init_weights(self):
+        # 1. No more zeroing out the out_proj or FFN weights!
+        # We rely on the ReZero alphas for the step 0 identity map.
 
-        # 3. Initialize Task Embeddings (Small normal to break symmetry)
         if self.use_task_pe:
             nn.init.normal_(self.task_embedding.weight, mean=0.0, std=0.02)
 
-        # 4. Initialize Q and K Spatio-Representational Fusions
-        # Normal initialization here is safe because the out_proj catches and zeroes it.
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.zeros_(self.q_proj.bias)
         nn.init.xavier_uniform_(self.k_proj.weight)
@@ -172,18 +165,23 @@ class MHA_SpatioRepresentationalAdapter(nn.Module):
             self.norm_v(context_v)
         )
 
-        # NEW: Apply the detached Histogram Gate instead of raw addition
-        # C_update is attn_out. The gate returns the gated C and the gate values.
+        # Apply ReZero alpha to MHA update BEFORE the gate
+        attn_out = attn_out * self.mha_alpha
+
+        # The gate evaluates the raw weights, but applies to the scaled attn_out
         C, gate_values = self.hist_gate(attn_weights, C, attn_out)
 
-        # Apply FFN (Uncommented assuming you want the FFN modulator active)
-        C = C + self.ffn(self.norm_ffn(C))
+        # FFN with ReZero alpha
+        ffn_out = self.ffn_drop(self.ffn(self.norm_ffn(C)))
+        C = C + (ffn_out * self.ffn_alpha)
 
-        # Log the gate values to monitor the rejection rate!
+        # Logging
         ForwardMetaContext.log_stats(
             layer_name=self.address,
             stats_dict=dict(
-                gate_mean=gate_values.mean().item()
+                gate_mean=gate_values.mean().item(),
+                mha_alpha=self.mha_alpha.item(),
+                ffn_alpha=self.ffn_alpha.item()
             )
         )
 
