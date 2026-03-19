@@ -171,7 +171,11 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                 get_batch_kwargs={},
                 half_precision=False,
                 single_eval_pos=None,
+                lower_bound_eval_pos=1,
         ):
+            """
+            param lower_bound_eval_pos: We must at least have one token from the related tasks for our meta training
+            """
             chunk_storage = {}
             for i, chunk in enumerate(range(chunk_size // batch_size)):
 
@@ -181,7 +185,8 @@ class StoredPriorDataset(torch.utils.data.Dataset):
                     if eval_pos_sampler is None:
                         # sample single eval pos log-uniformly ({1, ..., seq_len} log-uniformly - 1)
                         sep = int(
-                            np.floor(np.exp(np.random.uniform(0, np.log(seq_len + 1)))) - 1
+
+                            np.floor(np.exp(np.random.uniform(lower_bound_eval_pos, np.log(seq_len + 1)))) - 1
                         )
                     else:
                         sep = eval_pos_sampler()

@@ -27,7 +27,7 @@ class AbstractCallback:
         calls are done. The final and complete dict will be passed to log_on_epoch_end."""
         pass
 
-    def log_on_epoch_end(self, epoch: int, metrics: Dict[str, float], **kwargs):
+    def log_on_epoch_end(self, epoch: int, eon:int, metrics: Dict[str, float], **kwargs):
         """This allows us to separate logging from other epoch end actions; this way
         we know for sure, that the on_epoch_end computations are done before logging."""
         pass

@@ -44,7 +44,7 @@ def test_async_save_completion(callback, tmp_path):
     metrics = {"val/loss": 0.1}
 
     # Trigger save
-    callback.log_on_epoch_end(epoch=1, metrics=metrics)
+    callback.log_on_epoch_end(epoch=1, eon=0, metrics=metrics)
 
     # This acts as the 'join' for the thread
     callback.on_train_end()
@@ -76,7 +76,7 @@ def test_min_save_interval_blocking(callback, tmp_path):
         mock_time.return_value = 1000.0
 
         # First save (Success)
-        callback.log_on_epoch_end(epoch=1, metrics={"val/loss": 0.5})
+        callback.log_on_epoch_end(epoch=1, eon=0, metrics={"val/loss": 0.5})
         callback.on_train_end()  # Wait for thread
 
         json_file = tmp_path / f"best_{callback.name}.json"
@@ -87,7 +87,7 @@ def test_min_save_interval_blocking(callback, tmp_path):
 
         # 2. Advance time only 10 seconds (T=1010) -> Should be BLOCKED
         mock_time.return_value = 1010.0
-        callback.log_on_epoch_end(epoch=2, metrics={"val/loss": 0.1})
+        callback.log_on_epoch_end(epoch=2, eon=0, metrics={"val/loss": 0.1})
         callback._executor.shutdown(wait=True)  # Ensure any tasks finish
 
         assert not json_file.exists(), (
@@ -104,7 +104,7 @@ def test_atomic_save_mechanism(callback):
         patch("torch.save") as mock_torch_save,
         patch.object(Path, "replace") as mock_replace,
     ):
-        callback.log_on_epoch_end(epoch=1, metrics=metrics)
+        callback.log_on_epoch_end(epoch=1, eon=0, metrics=metrics)
         callback.on_train_end()  # Ensure worker runs
 
         # Verify it saved to .tmp first
@@ -121,7 +121,7 @@ def test_snapshot_on_main_thread(callback, mock_trainer):
     metrics = {"val/loss": 0.1}
 
     # Track the call to state_dict
-    callback.log_on_epoch_end(epoch=1, metrics=metrics)
+    callback.log_on_epoch_end(epoch=1, eon=0, metrics=metrics)
 
     # The main thread should have called state_dict immediately
     mock_trainer.model.state_dict.assert_called()
@@ -131,7 +131,7 @@ def test_snapshot_on_main_thread(callback, mock_trainer):
 def test_sidecar_metadata_accuracy(callback, tmp_path):
     """Ensures JSON sidecar is accurate despite being saved asynchronously."""
     metrics = {"val/loss": 0.42}
-    callback.log_on_epoch_end(epoch=99, metrics=metrics)
+    callback.log_on_epoch_end(epoch=99, eon=0, metrics=metrics)
     callback.on_train_end()
 
     json_path = tmp_path / f"best_{callback.name}.json"
@@ -185,7 +185,7 @@ def test_read_only_mode(tmp_path, mock_trainer):
     )
     cb.set_trainer(mock_trainer)
 
-    cb.log_on_epoch_end(epoch=1, metrics={"val/loss": 0.1})
+    cb.log_on_epoch_end(epoch=1, eon=0, metrics={"val/loss": 0.1})
     cb.on_train_end()
 
     # No files should be created

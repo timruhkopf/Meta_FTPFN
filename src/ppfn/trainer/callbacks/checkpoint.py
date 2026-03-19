@@ -121,7 +121,7 @@ class CheckpointCallback(AbstractCallback):
                 f"⚠️ Checkpoint path {self.resume_path} was provided but does not exist."
             )
 
-    def log_on_epoch_end(self, epoch: int, metrics: Dict[str, Any]):
+    def log_on_epoch_end(self, epoch: int, eon:int, metrics: Dict[str, Any]):
         """Decides if we should save, then triggers background task."""
         if epoch % self.frequency == 0:
             # 1. Calculate Score
@@ -139,7 +139,7 @@ class CheckpointCallback(AbstractCallback):
 
             if is_best:
                 self.best_score = current_score
-                self._pending_snapshot = self._prepare_snapshot(epoch, metrics)
+                self._pending_snapshot = self._prepare_snapshot(epoch, eon, metrics)
                 self._needs_saving = True  # Always mark as dirty if it's the new best
                 logger.info(f"✨ New best captured in memory (Epoch {epoch})")
 
@@ -162,7 +162,7 @@ class CheckpointCallback(AbstractCallback):
             # we've successfully offloaded this version to the worker.
             logger.info(f"💾 Async disk save started for epoch {snapshot['epoch']}")
 
-    def _prepare_snapshot(self, epoch: int, metrics: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_snapshot(self, epoch: int, eon:int,  metrics: Dict[str, Any]) -> Dict[str, Any]:
         """Snapshots current state into CPU memory. Runs on MAIN thread."""
         serializable_metrics = {}
         for k, v in metrics.items():
@@ -174,6 +174,7 @@ class CheckpointCallback(AbstractCallback):
         # Deep copy/move weights to CPU to prevent race conditions during training
         snapshot = {
             "epoch": epoch,
+            "eon": eon,
             "global_step": self.trainer.global_step,
             "model_state_dict": {
                 k: v.cpu().clone() if isinstance(v, torch.Tensor) else v
@@ -211,6 +212,7 @@ class CheckpointCallback(AbstractCallback):
                 "name": self.name,
                 "best_score": snapshot["best_score"],
                 "epoch": snapshot["epoch"],
+                "eon": snapshot["eon"],
                 "step": snapshot["global_step"],
                 "metrics_at_save": snapshot["metrics"],
             }
