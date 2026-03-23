@@ -1,7 +1,11 @@
 import mlflow
 import os
+import subprocess
+import tempfile
 
 from typing import Dict
+from pathlib import Path
+
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 
 import logging
@@ -59,6 +63,29 @@ class MLflowCallback(AbstractCallback):
             mlflow.log_params(params)
         except Exception:
             logger.warning("Could not log Hydra overrides.")
+
+        # Log Git Metadata & Diff
+        current_hash = get_git_hash()
+        mlflow.set_tag("mlflow.folder", os.getcwd())
+        mlflow.set_tag("mlflow.source.git.commit", current_hash)
+
+        try:
+            # Capture the current uncommitted changes
+            git_diff = subprocess.check_output(["git", "diff"], stderr=subprocess.STDOUT).decode("utf-8")
+
+            if git_diff.strip():
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as tmp:
+                    tmp.write(git_diff)
+                    tmp_path = tmp.name
+
+                mlflow.log_artifact(tmp_path, artifact_path="scripts")
+                # Clean up the local temp file
+                Path(tmp_path).unlink()
+                logger.info("Uncommitted git changes logged as diff.patch")
+            else:
+                logger.info("No uncommitted git changes detected.")
+        except Exception as e:
+            logger.warning(f"Failed to capture git diff: {e}")
 
         # Log Config Dict
         if self.trainer.config is not None:

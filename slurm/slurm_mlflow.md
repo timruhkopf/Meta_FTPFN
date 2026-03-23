@@ -88,3 +88,32 @@ on local:
 ps aux | grep "ssh -L 8080"
 kill <PID>
 ```
+
+
+
+
+# Addendum: 
+Ulysses: 
+
+```bash
+
+sudo chown -R $USER $HOME/PycharmProjects/Meta_FTPFN/mlruns
+uv run mlflow ui --backend-store-uri file:///$HOME/PycharmProjects/Meta_FTPFN/mlruns --port 5010 --host 0.0.0.0
+uv run mlflow ui --backend-store-uri sqlite://$HOME/PycharmProjects/Meta_FTPFN/mlflow.db --port 5010 --host 0.0.0.0
+```
+
+on local 
+```bash
+ssh -N -L 8080:localhost:5010 ulysses
+```
+
+in browser: 
+```
+http://localhost:8080
+```
+
+
+# Download from cluster to local
+```bash
+rsync -avzP nhwpruht@transfer.cluster.uni-hannover.de:$BIGWORK/Meta_FTPFN/mlruns $HOME/VSCode/Meta_FTPFN/slurm/downloads/mlruns_03_19
+```

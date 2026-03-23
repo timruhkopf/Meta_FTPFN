@@ -8,4 +8,4 @@ defaults:
 experiment_name: debug
 run_name: Null
 
-mlflow_tracking_uri: 'sqlite:///mlflow.db'
+mlflow_tracking_uri: 'sqlite:///home/ruhkopf/VSCode/Meta_FTPFN/mlflow.db'
