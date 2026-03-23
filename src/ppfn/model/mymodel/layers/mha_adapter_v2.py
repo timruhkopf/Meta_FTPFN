@@ -50,7 +50,7 @@ class HistogramAttentionGate(nn.Module):
         # 4. Detach and Assemble Gate Input
         hist_detached = hist_normalized.detach()
         entropy_detached = entropy.unsqueeze(-1).detach()
-        max_weight_detached = max_weight.unsqueeze(-1).detach()
+        max_weight_detached = max_weight.unsqueeze(-1).detach() # basically the sink value?
 
         # Shape: (Batch, T_query, num_bins + 2)
         gate_input = torch.cat([hist_detached, entropy_detached, max_weight_detached], dim=-1)

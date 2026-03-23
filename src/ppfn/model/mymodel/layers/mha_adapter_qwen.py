@@ -139,8 +139,8 @@ class ThreeStreamAdapter(nn.Module):
         self.ffn_drop = nn.Dropout(dropout)
 
         # ReZero Parameters
-        # self.mha_alpha = nn.Parameter(torch.zeros(1))
-        # self.ffn_alpha = nn.Parameter(torch.zeros(1))
+        self.mha_alpha = nn.Parameter(torch.zeros(1))
+        self.ffn_alpha = nn.Parameter(torch.zeros(1))
 
         if self.use_task_pe:
             nn.init.normal_(self.task_embedding.weight, mean=0.0, std=0.02)
@@ -185,10 +185,10 @@ class ThreeStreamAdapter(nn.Module):
         )
 
         # 5. Apply ReZero and Residual Updates
-        C = C + (attn_out ) # * self.mha_alpha)
+        C = C + (attn_out * self.mha_alpha)
 
         ffn_out = self.ffn_drop(self.ffn(self.norm_ffn(C)))
-        C = C + (ffn_out) # * self.ffn_alpha)
+        C = C + (ffn_out * self.ffn_alpha)
 
         # 6. Telemetry
         ForwardMetaContext.log_stats(
