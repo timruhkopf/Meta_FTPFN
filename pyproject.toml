@@ -89,3 +89,13 @@ PFNs4HPO = { path = "./external/ifbo_icml2024/src/PFNs4HPO/", editable = true }
 neps_lcpfn_hpo = { path = "./external/ifbo_icml2024/src/neps_lcpfn_hpo/", editable = true }
 pfns_hpo = { path = "./external/ifbo_icml2024/src/pfns_hpo/", editable = true }
 
+
+# Add a minimal PEP 517 build-system configuration so tools like pip can
+# build/install this project. Also configure setuptools to find packages
+# inside the `src/` layout.
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
