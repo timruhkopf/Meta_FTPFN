@@ -66,7 +66,7 @@ class LowDimAttention(nn.Module):
         k = self.k_proj(k_raw).view(T_k, B, self.nhead, self.head_dim_k).permute(1, 2, 0, 3)
         v = self.v_proj(v_raw).view(T_k, B, self.nhead, self.head_dim_v).permute(1, 2, 0, 3)
 
-        self.gather_attn_telemetry(q, k, layer, task_name)
+        # self.gather_attn_telemetry(q, k, layer, task_name)
 
         dropout_rate = self.dropout_p if self.training else 0.0
         # Scaled dot product attention (FlashAttention compatible)
@@ -76,10 +76,12 @@ class LowDimAttention(nn.Module):
         return self.out_proj(attn_out)
 
 
+
 class DeltaSurrogateAdapter(nn.Module):
 
-    def __init__(self, d_model, d_hp, d_k=64, n_heads=4, dropout=0.1, seq_len=1000, reuse_attn=False):
+    def __init__(self, d_model, d_hp, d_k=64, n_heads=4, dropout=0.1, seq_len=1000):
         """
+
         Basic idea of this adapter is, that we can use only the HP coordinates for value retrieval,
         making the attention lower dimensional and much more efficient. This way we can quickly identify
         the latent error patterns based on B's belief on A_train in the domain of B and the actual A_train.
@@ -94,25 +96,19 @@ class DeltaSurrogateAdapter(nn.Module):
         self.d_k = d_k
         self.seq_len = seq_len
 
-        self.attn_shared = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
+        # Only two attentions needed now (Extractor and Corrector)
         self.attn_extrapolate = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
-        if reuse_attn:
-            self.attn_calibrate = self.attn_shared
-        else:
-            self.attn_calibrate = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
+        self.attn_calibrate = LowDimAttention(d_model, d_hp, d_k, n_heads, dropout)
 
-        self.norm_shared_q = nn.LayerNorm(d_hp)
-        self.norm_shared_k = nn.LayerNorm(d_hp)
-        self.norm_shared_v = nn.LayerNorm(d_model)
-        self.norm_ext_q = nn.LayerNorm(d_hp)
-        self.norm_ext_k = nn.LayerNorm(d_hp)
+        # hp_A and hp_C are identical, so we share the coordinate LayerNorms
+        self.norm_hp_q = nn.LayerNorm(d_hp)
+        self.norm_hp_k = nn.LayerNorm(d_hp)
+
+        # Values still need separate norms as they come from different latent sources
         self.norm_ext_v = nn.LayerNorm(d_model)
-        self.norm_cal_q = nn.LayerNorm(d_hp)
-        self.norm_cal_k = nn.LayerNorm(d_hp)
         self.norm_cal_v = nn.LayerNorm(d_model)
 
         self.layer_norm_1 = nn.LayerNorm(d_model)
-        self.layer_norm_2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         self.ff_network = nn.Sequential(
             nn.Linear(d_model, d_model * 4),
@@ -127,61 +123,62 @@ class DeltaSurrogateAdapter(nn.Module):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None: nn.init.constant_(m.bias, 0)
-        nn.init.constant_(self.attn_shared.out_proj.weight, 0)
         nn.init.constant_(self.attn_extrapolate.out_proj.weight, 0)
         nn.init.constant_(self.attn_calibrate.out_proj.weight, 0)
         nn.init.constant_(self.ff_network[-1].weight, 0)
 
     def forward(self, A, B, C, sep, hp, **kwargs):
-
         hp_A, hp_B, hp_C = hp
 
-        hp_A_train = hp_A[:sep, :, :]
-        hp_B_train = hp_B[:sep, :, :]
-        hp_C_test = hp_C[sep:, :, :]
+        # --- Stream Slicing (Utilizing appended beliefs) ---
+        A_train = A[:sep]
+        B_train = B[:sep]
+        B_belief_A = B[self.seq_len:]  # B's exact test prediction on A_train
 
-        # --- Latent Slicing (Aligned with Coordinate Batch R) ---
-        A_train = A[:sep, :, :]
-        B_train = B[:sep, :, :]
-        C_train = C[:sep, :, :]
-        C_test = C[sep:, :, :]
+        C_train = C[:sep]
+        C_test = C[sep:self.seq_len]
 
-        # Path 1: Shared Domain Calibration
-        # Notice, how this will allow us to get attn scores telling us about the Venn diagram of A, B for each test token
-        B_at_A = self.attn_shared(
-            q_raw=self.norm_shared_q(hp_A_train),
-            k_raw=self.norm_shared_k(hp_B_train),
-            v_raw=self.norm_shared_v(B_train)
-        )
-        shared_domain_error = B_at_A - A_train
+        # hp_A and hp_C share the same coordinate space
+        hp_A_train = hp_A[:sep]  # Represents both A_train and C_train coords
+        hp_B_train = hp_B[:sep]
+        hp_C_test = hp_C[sep:self.seq_len]  # Represents both A_test and C_test coords
 
-        # Path 2a: Extrapolation
-        # FIXME: we can use B_belief_A_train from the PFN instead, saving an attention and error compounding / attn washing
+        # --- Path 1: Exact Shared Domain Calibration ---
+        # No attention needed. We calculate the exact local distortion error.
+        shared_domain_error = B_belief_A - A_train
+
+        # --- Path 2a: Extrapolation ---
+        # Error estimate
         B_raw_at_C = self.attn_extrapolate(
-            q_raw=self.norm_ext_q(hp_C_test),
-            k_raw=self.norm_ext_k(hp_B_train),
+            q_raw=self.norm_hp_q(hp_C_test),
+            k_raw=self.norm_hp_k(hp_B_train),
             v_raw=self.norm_ext_v(B_train)
         )
 
-        # Path 2b: Calibration (Using fixed argument names)
+        # --- Path 2b: Calibration (Smoothing the error) ---
         error_at_C = self.attn_calibrate(
-            q_raw=self.norm_cal_q(hp_C_test),
-            k_raw=self.norm_cal_k(hp_A_train),
+            q_raw=self.norm_hp_q(hp_C_test),
+            k_raw=self.norm_hp_k(hp_A_train),
             v_raw=self.norm_cal_v(shared_domain_error)
         )
 
         C_test_update = B_raw_at_C - error_at_C
 
-        # Modern Pre-Norm style
-        C_test_update = self.dropout(C_test_update)
-        C_test = C_test + C_test_update
-        C_test = self.layer_norm_1(C_test)
+        # --- Residuals ---
+        C_test_res = C_test + self.dropout(C_test_update)
 
-        ff_out = self.dropout(self.ff_network(C_test))
-        C_test = C_test + ff_out
-        C_test_final = self.layer_norm_2(C_test)
+        ff_input = self.layer_norm_1(C_test_res)
+        ff_out = self.dropout(self.ff_network(ff_input))
 
+        C_test_final = C_test_res + ff_out
+
+        # --- Recombine and Return ---
         C_output = torch.cat([C_train, C_test_final], dim=0)
+
+        # Assuming the pipeline expects the beliefs to be maintained in the output stream
+        if C.shape[0] > self.seq_len:
+            C_belief = C[self.seq_len:]
+            C_output = torch.cat([C_output, C_belief], dim=0)
 
         return A, B, C_output
 
