@@ -123,7 +123,7 @@ class NewLayer(nn.Module):
     source for the a separated infomration flow, where we have k and v different from q in order to compute what to extract:
     https://arxiv.org/pdf/2107.14795 Perciever IO
     """
-    def __init__(self, dmodel=128, use_gate=False):
+    def __init__(self, dmodel=128, use_gate=True):
         super().__init__()
         self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel*2)
         self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, )
@@ -339,81 +339,83 @@ import os
 #             "y_qB_true": y_qB_true
 #         }
 
+import torch
+
 class VectorizedComplexTaskGenerator:
     """
-    The "Hidden Harmonic Mixture" Prior
-    We will generate a highly complex, unpredictable "base shape" using a sum of several high-frequency sine
-    waves with randomized parameters.
-
-    According to the Nyquist-Shannon sampling theorem, 4 points are entirely insufficient to reconstruct a high-frequency
-    mixture. If the model only looks at A, it will fail catastrophically.
-    However, we will give Task B dense observations of this crazy base shape.
-    Task A will simply be a shifted and scaled version of Task B.
-
-    To succeed, the model must look at B to learn the high-frequency "fingerprint," and then use the 4 sparse points of A
-    purely to figure out how to stretch and slide that fingerprint into place.
+    The "Hidden Harmonic Mixture" Prior with Negative Transfer Injection.
     """
     def __init__(self, x_min=-5.0, x_max=5.0, noise_std=0.05, num_components=4):
         self.x_min = x_min
         self.x_max = x_max
         self.noise_std = noise_std
-        # Number of sine waves to mix. 4 is usually plenty to create an unpredictable shape.
         self.num_components = num_components
 
-    def sample_batch(self, batch_size, n_context=30, n_query=50, device='cpu'):
-        # 1. Randomize the "Hidden Blueprint" (Sum of Sines)
-        # Shape: [Components, 1, Batch, 1] for broadcasting against [Sequence, Batch, 1]
-        amps = torch.empty(self.num_components, 1, batch_size, 1, device=device).uniform_(0.5, 2.0)
-        # High frequencies make it impossible to guess from 4 points
-        freqs = torch.empty(self.num_components, 1, batch_size, 1, device=device).uniform_(0.5, 3.0)
-        phases = torch.empty(self.num_components, 1, batch_size, 1, device=device).uniform_(0, 2 * torch.pi)
+    def sample_batch(self, batch_size, n_context=30, n_query=50, share_unrelated=0.2, device='cpu'):
+        # 1. Randomize the "Hidden Blueprint" for A
+        amps_A = torch.empty(self.num_components, 1, batch_size, 1, device=device).uniform_(0.5, 2.0)
+        freqs_A = torch.empty(self.num_components, 1, batch_size, 1, device=device).uniform_(0.5, 3.0)
+        phases_A = torch.empty(self.num_components, 1, batch_size, 1, device=device).uniform_(0, 2 * torch.pi)
 
-        # 2. Transformations for Task A
-        # Task A is Task B, but scaled, shifted vertically, and shifted horizontally
+        # 2. Prepare Blueprint for B (Default to matching A)
+        amps_B = amps_A.clone()
+        freqs_B = freqs_A.clone()
+        phases_B = phases_A.clone()
+
+        # Overwrite a portion of B's blueprint with completely unrelated functions
+        num_unrelated = int(batch_size * share_unrelated)
+        if num_unrelated > 0:
+            amps_B[:, :, -num_unrelated:, :] = torch.empty(self.num_components, 1, num_unrelated, 1, device=device).uniform_(0.5, 2.0)
+            freqs_B[:, :, -num_unrelated:, :] = torch.empty(self.num_components, 1, num_unrelated, 1, device=device).uniform_(0.5, 3.0)
+            phases_B[:, :, -num_unrelated:, :] = torch.empty(self.num_components, 1, num_unrelated, 1, device=device).uniform_(0, 2 * torch.pi)
+
+        # 3. Transformations for Task A (Applied to Blueprint A)
         scale_A = torch.empty(1, batch_size, 1, device=device).uniform_(0.5, 1.5)
         v_shift_A = torch.empty(1, batch_size, 1, device=device).uniform_(-2.0, 2.0)
         h_shift_A = torch.empty(1, batch_size, 1, device=device).uniform_(-1.0, 1.0)
 
-        # 3. Sample X coordinates
+        # 4. Sample X coordinates
         x_cA = torch.empty(n_context, batch_size, 1, device=device).uniform_(self.x_min, self.x_max)
         x_cB = torch.empty(n_context, batch_size, 1, device=device).uniform_(self.x_min, self.x_max)
         x_qA = torch.linspace(self.x_min, self.x_max, n_query, device=device).view(-1, 1, 1).repeat(1, batch_size, 1)
 
-        # Helper to evaluate the complex base function
-        def eval_base_function(x):
-            # x is [T, B, 1] -> unsqueeze to [1, T, B, 1]
+        # Helper to evaluate based on explicit parameters
+        def eval_function(x, amps, freqs, phases):
             x_expanded = x.unsqueeze(0)
-            # Broadcasting magic computes all components simultaneously
             terms = amps * torch.sin(freqs * x_expanded + phases)
-            # Sum across the components dimension (dim=0)
             return terms.sum(dim=0)
 
-        # 4. Evaluate Y coordinates
-        # Task B is exactly the base blueprint
-        y_cB = eval_base_function(x_cB) + torch.randn_like(x_cB) * self.noise_std
+        # 5. Evaluate Y coordinates
+        # Task B evaluates its own blueprint (which might be unrelated)
+        y_cB = eval_function(x_cB, amps_B, freqs_B, phases_B) + torch.randn_like(x_cB) * self.noise_std
 
-        # Task A slides the blueprint horizontally, scales it, and shifts it vertically
-        y_cA_clean = scale_A * eval_base_function(x_cA - h_shift_A) + v_shift_A
+        # Task A evaluates Blueprint A with spatial and amplitude transformations
+        y_cA_clean = scale_A * eval_function(x_cA - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
         y_cA = y_cA_clean + torch.randn_like(x_cA) * self.noise_std
 
-        # 5. Ground truth for plotting and loss
-        y_qA_true = scale_A * eval_base_function(x_qA - h_shift_A) + v_shift_A
-        y_qB_true = eval_base_function(x_qA)
+        # 6. Ground truth for plotting and loss
+        y_qA_true = scale_A * eval_function(x_qA - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
+        y_qB_true = eval_function(x_qA, amps_B, freqs_B, phases_B)
+
+        # 7. Add boolean mask for tracking which tasks are unrelated traps
+        is_unrelated = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        if num_unrelated > 0:
+            is_unrelated[-num_unrelated:] = True
 
         return {
             "x_cA": x_cA, "y_cA": y_cA,
             "x_cB": x_cB, "y_cB": y_cB,
             "x_qA": x_qA, "y_qA_true": y_qA_true,
-            "y_qB_true": y_qB_true
+            "y_qB_true": y_qB_true,
+            "is_unrelated": is_unrelated # Use this to split your evaluation loss!
         }
 
-
-def create_padded_batch(generator, batch_size, n_A=4, n_B=30, n_query=50, device='cpu'):
+def create_padded_batch(generator, batch_size, n_A=4, n_B=30, n_query=50, device='cpu', share_unrelated=0.2):
     """Handles variable sequence lengths and appends queries to match T dim."""
     T_max_context = max(n_A, n_B)
     T_total = T_max_context + n_query
 
-    batch = generator.sample_batch(batch_size, n_context=T_max_context, n_query=n_query, device=device)
+    batch = generator.sample_batch(batch_size, n_context=T_max_context, n_query=n_query, device=device, share_unrelated=share_unrelated)
 
     # 1. Create Base Context Masks (Shape: [Batch, T_max_context])
     seq_indices = torch.arange(T_max_context, device=device).unsqueeze(0).expand(batch_size, T_max_context)
@@ -489,135 +491,123 @@ class MetaTransferModel(nn.Module):
 # ==========================================
 # 3. Training & Plotting Loop
 # ==========================================
-def plot_training_step(step, batch, y_pred, loss_history, n_A, n_B, save_path):
-    # Fix: Ensure all tensors are float32 before converting to numpy
-    # .float() converts bfloat16 -> float32
+import numpy as np
+import matplotlib.pyplot as plt
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+def plot_single_task(ax, batch, y_pred, batch_idx, n_A, n_B, title):
+    """Helper to plot a specific batch index on a given axis."""
     sep = batch["sep"]
 
-    # 1. Extract and Cast Data
-    # Adding .float() before .cpu().numpy() fixes the ScalarType error
-    mask_A_np = batch["mask_A"][0, :sep].cpu().numpy()
-    mask_B_np = batch["mask_B"][0, :sep].cpu().numpy()
+    # Slice for the specific batch_idx
+    mask_A_np = batch["mask_A"][batch_idx, :sep].cpu().numpy()
+    mask_B_np = batch["mask_B"][batch_idx, :sep].cpu().numpy()
 
-    x_cA = batch["x_cA"][:sep, 0, 0].float().cpu().numpy()[~mask_A_np]
-    y_cA = batch["y_cA"][:sep, 0, 0].float().cpu().numpy()[~mask_A_np]
-    x_cB = batch["x_cB"][:sep, 0, 0].float().cpu().numpy()[~mask_B_np]
-    y_cB = batch["y_cB"][:sep, 0, 0].float().cpu().numpy()[~mask_B_np]
+    x_cA = batch["x_cA"][:sep, batch_idx, 0].float().cpu().numpy()[~mask_A_np]
+    y_cA = batch["y_cA"][:sep, batch_idx, 0].float().cpu().numpy()[~mask_A_np]
+    x_cB = batch["x_cB"][:sep, batch_idx, 0].float().cpu().numpy()[~mask_B_np]
+    y_cB = batch["y_cB"][:sep, batch_idx, 0].float().cpu().numpy()[~mask_B_np]
 
-    x_q = batch["x_qA"][:, 0, 0].float().cpu().numpy()
-    y_qA_true = batch["y_qA_true"][:, 0, 0].float().cpu().numpy()
-    y_qB_true = batch["y_qB_true"][:, 0, 0].float().cpu().numpy()
+    x_q = batch["x_qA"][:, batch_idx, 0].float().cpu().numpy()
+    y_qA_true = batch["y_qA_true"][:, batch_idx, 0].float().cpu().numpy()
+    y_qB_true = batch["y_qB_true"][:, batch_idx, 0].float().cpu().numpy()
 
-    # The fix for your specific error:
-    y_p = y_pred[:, 0, 0].detach().float().cpu().numpy()
+    y_p = y_pred[:, batch_idx, 0].detach().float().cpu().numpy()
 
-    # 2. Enhanced Visualization
-    # Plotting the "Source" task B in the background
-    ax1.plot(x_q, y_qB_true, color='red', linestyle='--', alpha=0.2, label='Source Task B (Full)')
-    ax1.scatter(x_cB, y_cB, c='red', marker='x', s=20, alpha=0.4, label=f'Source Pts ({n_B})')
+    ax.plot(x_q, y_qB_true, color='red', linestyle='--', alpha=0.2, label='Source Task B (Full)')
+    ax.scatter(x_cB, y_cB, c='red', marker='x', s=20, alpha=0.4, label=f'Source Pts ({n_B})')
 
-    # Plotting the "Target" task A
-    ax1.plot(x_q, y_qA_true, color='blue', linewidth=1.5, alpha=0.6, label='Target Task A (GT)')
-    ax1.scatter(x_cA, y_cA, c='blue', edgecolors='black', s=80, zorder=5, label=f'Target Pts ({n_A})')
+    ax.plot(x_q, y_qA_true, color='blue', linewidth=1.5, alpha=0.6, label='Target Task A (GT)')
+    ax.scatter(x_cA, y_cA, c='blue', edgecolors='black', s=80, zorder=5, label=f'Target Pts ({n_A})')
 
-    # The Prediction
-    ax1.plot(x_q, y_p, color='green', linewidth=2.5, label='Model Prediction (A|B)')
+    ax.plot(x_q, y_p, color='green', linewidth=2.5, label='Model Prediction (A|B)')
 
-    ax1.set_title(f"Step {step}: Meta-Transfer (VRAM Optimized)")
-    ax1.set_xlabel("x")
-    ax1.set_ylabel("y")
-    ax1.legend(loc='upper right', fontsize='small', frameon=True)
-    ax1.grid(True, which='both', linestyle=':', alpha=0.5)
+    ax.set_title(title)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.legend(loc='upper right', fontsize='small', frameon=True)
+    ax.grid(True, which='both', linestyle=':', alpha=0.5)
 
-    # 3. Smoothed Loss Curve
-    if len(loss_history) > 0:
-        ax2.plot(loss_history, color='purple', alpha=0.3)
-        # Add a moving average to see the trend through the noise
-        if len(loss_history) > 50:
-            avg_loss = np.convolve(loss_history, np.ones(50) / 50, mode='valid')
-            ax2.plot(np.arange(49, len(loss_history)), avg_loss, color='purple', linewidth=2)
 
-    ax2.set_title("Training Loss (MSE)")
-    ax2.set_yscale('log')
-    ax2.set_xlabel("Steps")
-    ax2.grid(True, which='both', linestyle=':', alpha=0.5)
+def plot_training_step(step, batch, y_pred, loss_hist_rel, loss_hist_unrel, n_A, n_B, save_path):
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(22, 6))
+
+    is_unrelated = batch["is_unrelated"].cpu().numpy()
+
+    # Find the first available indices for related and unrelated tasks
+    idx_rel = np.where(~is_unrelated)[0]
+    idx_unrel = np.where(is_unrelated)[0]
+
+    # Plot Related Task
+    if len(idx_rel) > 0:
+        plot_single_task(ax1, batch, y_pred, idx_rel[0], n_A, n_B, f"Step {step}: Related (Should Transfer)")
+    else:
+        ax1.set_title("No Related Task in this Eval Batch")
+
+    # Plot Unrelated Task
+    if len(idx_unrel) > 0:
+        plot_single_task(ax2, batch, y_pred, idx_unrel[0], n_A, n_B, f"Step {step}: Unrelated (Trap! Should Ignore B)")
+    else:
+        ax2.set_title("No Unrelated Task in this Eval Batch")
+
+    # Plot Loss Curves
+    if len(loss_hist_rel) > 0:
+        ax3.plot(loss_hist_rel, color='blue', alpha=0.2, label='Related (Raw)')
+        ax3.plot(loss_hist_unrel, color='red', alpha=0.2, label='Unrelated (Raw)')
+
+        if len(loss_hist_rel) > 50:
+            avg_rel = np.convolve(loss_hist_rel, np.ones(50) / 50, mode='valid')
+            avg_unrel = np.convolve(loss_hist_unrel, np.ones(50) / 50, mode='valid')
+            ax3.plot(np.arange(49, len(loss_hist_rel)), avg_rel, color='blue', linewidth=2, label='Related (Avg)')
+            ax3.plot(np.arange(49, len(loss_hist_unrel)), avg_unrel, color='red', linewidth=2, label='Unrelated (Avg)')
+
+    ax3.set_title("Training Loss Separated (MSE)")
+    ax3.set_yscale('log')
+    ax3.set_xlabel("Steps")
+    ax3.legend(loc='upper right')
+    ax3.grid(True, which='both', linestyle=':', alpha=0.5)
 
     plt.tight_layout()
-
-    # Ensure directory exists and save
     save_path.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path / f"step_{step:05d}.png", dpi=150)
     plt.close(fig)
-#
-# def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_every=200):
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     print(f"Training on: {device}")
-#
-#     generator = VectorizedComplexTaskGenerator()
-#     model = MetaTransferModel(input_dim=1, dmodel=128).to(device)
-#
-#     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-#     # Add this right below the optimizer:
-#     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps, eta_min=1e-5)
-#     criterion = nn.MSELoss()
-#
-#     os.makedirs("training_plots", exist_ok=True)
-#     loss_history = []
-#
-#     iterator = tqdm(range(steps + 1))
-#
-#     for step in iterator:
-#         model.train()
-#         optimizer.zero_grad()
-#
-#         batch = create_padded_batch(generator, batch_size, n_A, n_B, n_query, device)
-#
-#
-#
-#         y_pred = model(batch)
-#
-#         loss = criterion(y_pred, batch["y_qA_true"])
-#         loss.backward()
-#         optimizer.step()
-#         scheduler.step()
-#
-#         loss_history.append(loss.item())
-#
-#         if step % 10 == 0:
-#             iterator.set_description(f"Step {step}/{steps} | Loss: {loss.item():.4f}")
-#
-#         if step % plot_every == 0:
-#             # print(f"Step {step}/{steps} | Loss: {loss.item():.4f}")
-#             model.eval()
-#             with torch.no_grad():
-#                 # Evaluate a clean batch for plotting
-#                 eval_batch = create_padded_batch(generator, 1, n_A, n_B, n_query, device)
-#                 eval_pred = model(eval_batch)
-#                 plot_training_step(step, eval_batch, eval_pred, loss_history, n_A, n_B)
 
-def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, save_path=Path('.'), plot_every=200, compile_model=True):
+
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from pathlib import Path
+from tqdm import tqdm
+
+
+def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, save_path=Path('.'), plot_every=200,
+                     compile_model=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
     generator = VectorizedComplexTaskGenerator()
     model = MetaTransferModel(input_dim=1, dmodel=128).to(device)
 
-    # CHANGED: Add PyTorch compilation for massive speedups on Ampere GPUs
+    # Add PyTorch compilation for massive speedups on Ampere GPUs
     if compile_model and torch.__version__.startswith('2.') and device.type == 'cuda':
         print("Compiling model for faster execution...")
         model = torch.compile(model)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps, eta_min=1e-5)
-    criterion = nn.MSELoss()
 
-    # CHANGED: Initialize GradScaler for Automatic Mixed Precision (AMP)
+    # CHANGED: reduction='none' so we can split the loss before averaging
+    criterion = nn.MSELoss(reduction='none')
+
+    # Initialize GradScaler for Automatic Mixed Precision (AMP)
     scaler = torch.amp.GradScaler('cuda', enabled=True)
 
     os.makedirs("training_plots", exist_ok=True)
-    loss_history = []
+
+    # CHANGED: Track related and unrelated losses separately
+    loss_history_rel = []
+    loss_history_unrel = []
 
     iterator = tqdm(range(steps + 1))
 
@@ -625,57 +615,81 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, save_
         model.train()
         optimizer.zero_grad()
 
-        # Data generation is already perfectly on-device
-        batch = create_padded_batch(generator, batch_size, n_A, n_B, n_query, device)
+        # CHANGED: Inject 20% unrelated tasks to force the model to learn gating/escape token
+        batch = create_padded_batch(generator, batch_size, n_A, n_B, n_query, device, share_unrelated=0.2)
 
-        # CHANGED: Wrap the forward pass and loss calculation in autocast (bfloat16)
+        # Wrap the forward pass and loss calculation in autocast (bfloat16)
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             y_pred = model(batch)
-            loss = criterion(y_pred, batch["y_qA_true"])
 
-        # CHANGED: Use the scaler to backward and step (prevents underflow in FP16/BF16)
-        scaler.scale(loss).backward()
+            # Calculate unreduced loss: Shape [T_query, Batch, 1]
+            loss_tensor = criterion(y_pred, batch["y_qA_true"])
 
-        # --- NEW: GRADIENT CLIPPING BLOCK ---
+            # Average over sequence dimension (dim=0) and feature dimension (dim=2)
+            # to get loss per batch item: Shape [Batch]
+            loss_per_item = loss_tensor.mean(dim=(0, 2))
+
+            # The total loss to actually backpropagate
+            total_loss = loss_per_item.mean()
+
+        # Use the scaler to backward (prevents underflow in FP16/BF16)
+        scaler.scale(total_loss).backward()
+
+        # --- GRADIENT CLIPPING BLOCK ---
         # 1. Unscale the gradients so the norm is calculated correctly
         scaler.unscale_(optimizer)
 
         # 2. Clip the gradients (max_norm=1.0 is standard for Transformers/MLPs)
-        # This prevents the "Exploding Gradient" problem
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
+
+        # --- LOSS SPLITTING & LOGGING ---
+        # Split the loss based on the boolean mask (we cast to float32 before calling item
+        # to ensure compatibility with BF16)
+        is_unrel = batch["is_unrelated"]
+
+        if (~is_unrel).any():
+            l_rel = loss_per_item[~is_unrel].mean().float().item()
+            loss_history_rel.append(l_rel)
+        else:
+            loss_history_rel.append(loss_history_rel[-1] if loss_history_rel else 0.0)
+
+        if is_unrel.any():
+            l_unrel = loss_per_item[is_unrel].mean().float().item()
+            loss_history_unrel.append(l_unrel)
+        else:
+            loss_history_unrel.append(loss_history_unrel[-1] if loss_history_unrel else 0.0)
 
         if step == 0:
             mem_allocated = torch.cuda.max_memory_allocated(device) / 1024 ** 3
             mem_reserved = torch.cuda.max_memory_reserved(device) / 1024 ** 3
             print(f"\n[GPU Monitor] Step 0: Max Allocated: {mem_allocated:.2f}GB | Max Reserved: {mem_reserved:.2f}GB")
-            # Optional: Reset peak stats so you can check again later
             torch.cuda.reset_peak_memory_stats(device)
 
         scheduler.step()
 
-        loss_history.append(loss.item())
-
         if step % 10 == 0:
-            iterator.set_description(f"Step {step}/{steps} | Loss: {loss.item():.4f}")
+            iterator.set_description(
+                f"Step {step}/{steps} | Rel: {loss_history_rel[-1]:.4f} | Unrel: {loss_history_unrel[-1]:.4f}")
 
         if step % plot_every == 0:
             model.eval()
             with torch.no_grad():
-                # Evaluate a clean batch for plotting
-                eval_batch = create_padded_batch(generator, 1, n_A, n_B, n_query, device)
+                # CHANGED: Evaluate a batch of 10, split 50/50, to ensure we have both types to plot
+                eval_batch = create_padded_batch(generator, 10, n_A, n_B, n_query, device, share_unrelated=0.5)
 
-                # CHANGED: Ensure eval also runs in autocast if the model was trained in it
+                # Ensure eval also runs in autocast
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     eval_pred = model(eval_batch)
 
-                plot_training_step(step, eval_batch, eval_pred, loss_history, n_A, n_B, save_path)
-
+                # CHANGED: Pass both loss histories to the 1x3 plotting function
+                plot_training_step(step, eval_batch, eval_pred, loss_history_rel, loss_history_unrel, n_A, n_B,
+                                   save_path)
 # ==========================================
 # 4. Run Execution
 # ==========================================
 if __name__ == "__main__":
     # We use n_A = 4 (sparse target) and n_B = 30 (dense source)
-    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500, save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/local/"))
+    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500, save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/active_gate/"))
     print("Training complete! Check the 'training_plots' folder.")
