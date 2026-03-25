@@ -118,6 +118,11 @@ class MLP(nn.Module):
 
 
 class NewLayer(nn.Module):
+    """
+
+    source for the a separated infomration flow, where we have k and v different from q in order to compute what to extract:
+    https://arxiv.org/pdf/2107.14795 Perciever IO
+    """
     def __init__(self, dmodel=128):
         super().__init__()
         self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel*2)
@@ -447,52 +452,66 @@ class MetaTransferModel(nn.Module):
 # 3. Training & Plotting Loop
 # ==========================================
 def plot_training_step(step, batch, y_pred, loss_history, n_A, n_B):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    # Fix: Ensure all tensors are float32 before converting to numpy
+    # .float() converts bfloat16 -> float32
 
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     sep = batch["sep"]
 
-    # Extract masks for the context portion ONLY
+    # 1. Extract and Cast Data
+    # Adding .float() before .cpu().numpy() fixes the ScalarType error
     mask_A_np = batch["mask_A"][0, :sep].cpu().numpy()
     mask_B_np = batch["mask_B"][0, :sep].cpu().numpy()
 
-    # Slice out the context portions, then apply mask
-    x_cA = batch["x_cA"][:sep, 0, 0].cpu().numpy()[~mask_A_np]
-    y_cA = batch["y_cA"][:sep, 0, 0].cpu().numpy()[~mask_A_np]
-    x_cB = batch["x_cB"][:sep, 0, 0].cpu().numpy()[~mask_B_np]
-    y_cB = batch["y_cB"][:sep, 0, 0].cpu().numpy()[~mask_B_np]
+    x_cA = batch["x_cA"][:sep, 0, 0].float().cpu().numpy()[~mask_A_np]
+    y_cA = batch["y_cA"][:sep, 0, 0].float().cpu().numpy()[~mask_A_np]
+    x_cB = batch["x_cB"][:sep, 0, 0].float().cpu().numpy()[~mask_B_np]
+    y_cB = batch["y_cB"][:sep, 0, 0].float().cpu().numpy()[~mask_B_np]
 
-    # Queries were appended after 'sep'
-    x_q = batch["x_qA"][:, 0, 0].cpu().numpy()
-    y_qA_true = batch["y_qA_true"][:, 0, 0].cpu().numpy()
-    y_qB_true = batch["y_qB_true"][:, 0, 0].cpu().numpy()
+    x_q = batch["x_qA"][:, 0, 0].float().cpu().numpy()
+    y_qA_true = batch["y_qA_true"][:, 0, 0].float().cpu().numpy()
+    y_qB_true = batch["y_qB_true"][:, 0, 0].float().cpu().numpy()
 
-    # Preds are just the query sequence length, so no slicing needed
-    y_p = y_pred[:, 0, 0].detach().cpu().numpy()
+    # The fix for your specific error:
+    y_p = y_pred[:, 0, 0].detach().float().cpu().numpy()
 
-    # Task Plot
-    ax1.plot(x_q, y_qA_true, 'b--', alpha=0.5, label='True $f_A$ (Target)')
-    ax1.plot(x_q, y_qB_true, 'r-', alpha=0.3, label='True $f_B$ (Source)')
-    ax1.scatter(x_cA, y_cA, c='blue', marker='o', s=50, label=f'Context A ({n_A} pts)')
-    ax1.scatter(x_cB, y_cB, c='red', marker='X', s=50, alpha=0.6, label=f'Context B ({n_B} pts)')
-    ax1.plot(x_q, y_p, color='green', linewidth=3, label='Model Pred A|B')
+    # 2. Enhanced Visualization
+    # Plotting the "Source" task B in the background
+    ax1.plot(x_q, y_qB_true, color='red', linestyle='--', alpha=0.2, label='Source Task B (Full)')
+    ax1.scatter(x_cB, y_cB, c='red', marker='x', s=20, alpha=0.4, label=f'Source Pts ({n_B})')
 
-    ax1.set_title(f"Meta-Transfer Prediction at Step {step}")
-    ax1.legend()
-    ax1.grid(True, linestyle=':', alpha=0.7)
+    # Plotting the "Target" task A
+    ax1.plot(x_q, y_qA_true, color='blue', linewidth=1.5, alpha=0.6, label='Target Task A (GT)')
+    ax1.scatter(x_cA, y_cA, c='blue', edgecolors='black', s=80, zorder=5, label=f'Target Pts ({n_A})')
 
-    # Loss Curve
-    ax2.plot(loss_history, color='purple')
+    # The Prediction
+    ax1.plot(x_q, y_p, color='green', linewidth=2.5, label='Model Prediction (A|B)')
+
+    ax1.set_title(f"Step {step}: Meta-Transfer (VRAM Optimized)")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.legend(loc='upper right', fontsize='small', frameon=True)
+    ax1.grid(True, which='both', linestyle=':', alpha=0.5)
+
+    # 3. Smoothed Loss Curve
+    if len(loss_history) > 0:
+        ax2.plot(loss_history, color='purple', alpha=0.3)
+        # Add a moving average to see the trend through the noise
+        if len(loss_history) > 50:
+            avg_loss = np.convolve(loss_history, np.ones(50) / 50, mode='valid')
+            ax2.plot(np.arange(49, len(loss_history)), avg_loss, color='purple', linewidth=2)
+
     ax2.set_title("Training Loss (MSE)")
-    ax2.set_xlabel("Steps")
     ax2.set_yscale('log')
-    ax2.grid(True, linestyle=':', alpha=0.7)
+    ax2.set_xlabel("Steps")
+    ax2.grid(True, which='both', linestyle=':', alpha=0.5)
 
     plt.tight_layout()
-    directory = Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/local2/")
 
-    directory.mkdir(parents=True, exist_ok=True)
-
-    plt.savefig(directory  / f"step_{step:04d}.png")
+    # Ensure directory exists and save
+    save_path = Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/local2/")
+    save_path.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path / f"step_{step:05d}.png", dpi=150)
     plt.close(fig)
 #
 # def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_every=200):
@@ -579,6 +598,14 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_
 
         # CHANGED: Use the scaler to backward and step (prevents underflow in FP16/BF16)
         scaler.scale(loss).backward()
+
+        # --- NEW: GRADIENT CLIPPING BLOCK ---
+        # 1. Unscale the gradients so the norm is calculated correctly
+        scaler.unscale_(optimizer)
+
+        # 2. Clip the gradients (max_norm=1.0 is standard for Transformers/MLPs)
+        # This prevents the "Exploding Gradient" problem
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
 
@@ -613,5 +640,5 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_
 # ==========================================
 if __name__ == "__main__":
     # We use n_A = 4 (sparse target) and n_B = 30 (dense source)
-    train_meta_model(steps=50000, batch_size=8192, n_A=5, n_B=30, plot_every=500)
+    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500)
     print("Training complete! Check the 'training_plots' folder.")
