@@ -123,7 +123,7 @@ class NewLayer(nn.Module):
     source for the a separated infomration flow, where we have k and v different from q in order to compute what to extract:
     https://arxiv.org/pdf/2107.14795 Perciever IO
     """
-    def __init__(self, dmodel=128):
+    def __init__(self, dmodel=128, use_gate=False):
         super().__init__()
         self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel*2)
         self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, )
@@ -134,6 +134,19 @@ class NewLayer(nn.Module):
         self.C_test_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4,vdim=dmodel)
 
         self.out_proj = MLP(dmodel * 2, dmodel, dmodel*2)
+
+        self.use_gate = use_gate
+        if use_gate:
+            self.gate_proj = nn.Sequential(
+                nn.Linear(4 * dmodel, dmodel),
+                nn.Sigmoid()
+            )
+
+        # Learnable dummy key and value (Shape: [1, 1, feature_dim])
+        self.dummy_key = nn.Parameter(torch.randn(1, 1, 2 * dmodel))
+        # Note: Adjust dummy_value dimension based on whether you concatenated hp into value earlier
+        self.dummy_value = nn.Parameter(torch.randn(1, 1, dmodel))
+
 
         self.init_weights()
 
@@ -186,8 +199,6 @@ class NewLayer(nn.Module):
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim+b_dim], ABC[:, a_dim+b_dim:]
 
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates.
-        # fixme: how does padding work here? does it act only on the keys and values, or also on the queries? if the latter,
-        #  then we need to make sure to not mask out the C_test queries
         C_test_feat, _ = self.C_test_attention(hp_C_test, hp_C_train, C_feat, key_padding_mask=mask_C_train)
 
 
@@ -196,15 +207,27 @@ class NewLayer(nn.Module):
         # throw in A_feat and B_feat into one context for C to cross attend to.
         # TODO Here we don't want the softmax constraint, because it will have a sum-to-one constraint across A and B,
         #  but we want the model to be able to choose to attend to B
+
+        batch_size = A.shape[1]
+
+
+        # Expand dummy tokens to match batch size: [1, Batch, D]
+        d_key = self.dummy_key.expand(1, batch_size, -1)
+        d_val = self.dummy_value.expand(1, batch_size, -1)
+
         query = torch.cat([
             torch.cat([hp_C_train, C_feat], dim=-1) ,
             torch.cat([hp_C_test, C_test_feat], dim=-1)
         ], dim=0)
         key = torch.cat([
             torch.cat([hp_A_train, A_feat], dim=-1),
-            torch.cat([hp_B_train, B_feat], dim=-1)], dim=0
-        )
-        value = torch.cat([A_feat, B_feat], dim=0) # we only want the features to be the value
+            torch.cat([hp_B_train, B_feat], dim=-1),
+            d_key  # <--- The Escape Valve
+        ], dim=0)
+        value = torch.cat([
+            A_feat, B_feat,
+            d_val # <--- The Escape Valve
+        ], dim=0) # we only want the features to be the value
         # we cannot attend to the B features, because they are not grounded in the same domain as C
         # TODO ideally, we'd know how B looks like in C's domain (B_train'), then we could make the value the raw B_train' payload (without hp).
 
@@ -218,14 +241,29 @@ class NewLayer(nn.Module):
         else:
             cross_attn_mask = None
 
+        # We must also append a 'False' to the cross_attn_mask so the dummy token is never masked out
+        if cross_attn_mask is not None:
+            dummy_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
+            cross_attn_mask = torch.cat([cross_attn_mask, dummy_mask], dim=1)
+
         # Pass the mask to cross-attention
         C_cross, _ = self.cross_attention(query, key, value, key_padding_mask=cross_attn_mask)
 
         # 4. Residual update to C
         # C is originally (T, B, D). We project C_cross down to match.
+        # Evaluate the query AGAINST the retrieved context
+        # This is heavily inspired by Highway Networks and GRUs. It is local, point-by-point, and fully aware of the relationship between $C$ and $B$.
+        # This allows the network to say: "I asked for a local maximum (Query), but the feature vector I got back from B looks like a steep drop (C_cross). This is useless to me. Close the gate."
+        if self.use_gate:
+            gate_input = torch.cat([query, C_cross], dim=-1)
+            gate = self.gate_proj(gate_input)
+        else:
+            gate = 1.0
 
+        # Gated Residual update
+        C = C + gate * self.out_proj(C_cross)
 
-        C = C + self.out_proj(C_cross)
+        # C = C + self.out_proj(C_cross)
 
         return A, B, C
 
@@ -451,7 +489,7 @@ class MetaTransferModel(nn.Module):
 # ==========================================
 # 3. Training & Plotting Loop
 # ==========================================
-def plot_training_step(step, batch, y_pred, loss_history, n_A, n_B):
+def plot_training_step(step, batch, y_pred, loss_history, n_A, n_B, save_path):
     # Fix: Ensure all tensors are float32 before converting to numpy
     # .float() converts bfloat16 -> float32
 
@@ -509,7 +547,6 @@ def plot_training_step(step, batch, y_pred, loss_history, n_A, n_B):
     plt.tight_layout()
 
     # Ensure directory exists and save
-    save_path = Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/local2/")
     save_path.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path / f"step_{step:05d}.png", dpi=150)
     plt.close(fig)
@@ -560,7 +597,7 @@ def plot_training_step(step, batch, y_pred, loss_history, n_A, n_B):
 #                 eval_pred = model(eval_batch)
 #                 plot_training_step(step, eval_batch, eval_pred, loss_history, n_A, n_B)
 
-def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_every=200):
+def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, save_path=Path('.'), plot_every=200, compile_model=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
@@ -568,7 +605,7 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_
     model = MetaTransferModel(input_dim=1, dmodel=128).to(device)
 
     # CHANGED: Add PyTorch compilation for massive speedups on Ampere GPUs
-    if torch.__version__.startswith('2.') and device.type == 'cuda':
+    if compile_model and torch.__version__.startswith('2.') and device.type == 'cuda':
         print("Compiling model for faster execution...")
         model = torch.compile(model)
 
@@ -633,12 +670,12 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, plot_
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     eval_pred = model(eval_batch)
 
-                plot_training_step(step, eval_batch, eval_pred, loss_history, n_A, n_B)
+                plot_training_step(step, eval_batch, eval_pred, loss_history, n_A, n_B, save_path)
 
 # ==========================================
 # 4. Run Execution
 # ==========================================
 if __name__ == "__main__":
     # We use n_A = 4 (sparse target) and n_B = 30 (dense source)
-    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500)
+    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500, save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/local/"))
     print("Training complete! Check the 'training_plots' folder.")
