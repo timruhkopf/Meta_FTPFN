@@ -528,7 +528,6 @@ def plot_single_task(ax, batch, y_pred, batch_idx, n_A, n_B, title):
     ax.legend(loc='upper right', fontsize='small', frameon=True)
     ax.grid(True, which='both', linestyle=':', alpha=0.5)
 
-
 def plot_training_step(step, batch, y_pred, loss_hist_rel, loss_hist_unrel, n_A, n_B, save_path):
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(22, 6))
 
@@ -538,15 +537,15 @@ def plot_training_step(step, batch, y_pred, loss_hist_rel, loss_hist_unrel, n_A,
     idx_rel = np.where(~is_unrelated)[0]
     idx_unrel = np.where(is_unrelated)[0]
 
-    # Plot Related Task
+    # Plot Related Task (Counterfactual A)
     if len(idx_rel) > 0:
-        plot_single_task(ax1, batch, y_pred, idx_rel[0], n_A, n_B, f"Step {step}: Related (Should Transfer)")
+        plot_single_task(ax1, batch, y_pred, idx_rel[0], n_A, n_B, f"Step {step}: Related (Helpful B)")
     else:
         ax1.set_title("No Related Task in this Eval Batch")
 
-    # Plot Unrelated Task
+    # Plot Unrelated Task (Counterfactual B)
     if len(idx_unrel) > 0:
-        plot_single_task(ax2, batch, y_pred, idx_unrel[0], n_A, n_B, f"Step {step}: Unrelated (Trap! Should Ignore B)")
+        plot_single_task(ax2, batch, y_pred, idx_unrel[0], n_A, n_B, f"Step {step}: Unrelated (Same A, Random B)")
     else:
         ax2.set_title("No Unrelated Task in this Eval Batch")
 
@@ -571,7 +570,6 @@ def plot_training_step(step, batch, y_pred, loss_hist_rel, loss_hist_unrel, n_A,
     save_path.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path / f"step_{step:05d}.png", dpi=150)
     plt.close(fig)
-
 
 import os
 import torch
@@ -676,14 +674,23 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, save_
         if step % plot_every == 0:
             model.eval()
             with torch.no_grad():
-                # CHANGED: Evaluate a batch of 10, split 50/50, to ensure we have both types to plot
-                eval_batch = create_padded_batch(generator, 10, n_A, n_B, n_query, device, share_unrelated=0.5)
+                # 1. Generate a batch of 2 purely RELATED tasks
+                eval_batch = create_padded_batch(generator, 2, n_A, n_B, n_query, device, share_unrelated=0.0)
+
+                # 2. The Counterfactual Injection:
+                # Force Batch Item 1 to have the EXACT same Target (A) as Batch Item 0,
+                # but keep its own randomly generated Source (B).
+                keys_to_copy = ["x_cA", "y_cA", "x_qA", "y_qA_true", "x_cC", "y_cC"]
+                for k in keys_to_copy:
+                    eval_batch[k][:, 1, :] = eval_batch[k][:, 0, :]
+
+                # 3. Explicitly label Batch Item 1 as the unrelated trap
+                eval_batch["is_unrelated"] = torch.tensor([False, True], device=device)
 
                 # Ensure eval also runs in autocast
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     eval_pred = model(eval_batch)
 
-                # CHANGED: Pass both loss histories to the 1x3 plotting function
                 plot_training_step(step, eval_batch, eval_pred, loss_history_rel, loss_history_unrel, n_A, n_B,
                                    save_path)
 # ==========================================
@@ -691,5 +698,5 @@ def train_meta_model(steps=2000, batch_size=32, n_A=5, n_B=30, n_query=50, save_
 # ==========================================
 if __name__ == "__main__":
     # We use n_A = 4 (sparse target) and n_B = 30 (dense source)
-    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500, save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/active_gate/"))
+    train_meta_model(steps=25000, batch_size=8192, n_A=5, n_B=30, plot_every=500, save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/active_gate_new_plotting2/"))
     print("Training complete! Check the 'training_plots' folder.")
