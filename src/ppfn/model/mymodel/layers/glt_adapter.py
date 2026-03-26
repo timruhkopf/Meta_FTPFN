@@ -47,8 +47,6 @@ class GatedLatentTransferLayer(nn.Module):
         super().__init__()
         self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel * 2)
         self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, )
-        self.linear_AB2 = nn.Linear(dmodel * 2, dmodel)
-        self.linear_C = nn.Linear(dmodel * 2, dmodel)
         self.cross_attention = nn.MultiheadAttention(embed_dim=2 * dmodel, vdim=dmodel, num_heads=4, )
 
         self.C_test_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, vdim=dmodel)
@@ -115,6 +113,7 @@ class GatedLatentTransferLayer(nn.Module):
             # Concat along batch dimension (dim=0) because ABC has 3*Batch size
             self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
         else:
+            mask_C_train = None
             self_attn_mask = None
 
         # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
