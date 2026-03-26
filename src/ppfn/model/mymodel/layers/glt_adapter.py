@@ -20,11 +20,29 @@ class MLP(nn.Module):
 
 class GatedLatentTransferLayer(nn.Module):
     """
+    Gated Latent Transfer (GLT) Layer
 
-    source for the a separated infomration flow, where we have k and v different from q in order to compute what to extract:
-    https://arxiv.org/pdf/2107.14795 Perciever IO
+    An asymmetric transfer learning layer designed to extract features from a source task (B)
+    and inject them into a target task (A/C) while defending against negative transfer.
+
+    Architecture Highlights:
+    1. Shared Self-Attention: Contextualizes A, B, and C independently to extract
+       relational features (e.g., local gradients, extrema).
+    2. Spatial Interpolation: Uses cross-attention to estimate (inter-/exterpolate) features for query
+       locations (C_test) based on known context (C_train).
+    3. Cross-Attention for Transfer: C attends to both A and B's features, allowing it to
+         selectively integrate information from B. It uses dummy tokens as an "escape valve" to ignore B when it's unhelpful.
+         This avoids the necessity of a softmax constraint
+    5. Gating and residual update:
+
+        - Query-Aware Gate: A post-retrieval sigmoid gate that compares the
+          requested query against the retrieved feature to scale the residual update.
+          loosely inspired by Qwen3Attention
+          Gated Attention for Large Language Models: Non-linearity, Sparsity, and Attention-Sink-Free. https://arxiv.org/abs/2505.06708
+          https://github.com/qiuzh20/gated_attention/blob/f4c2a5f6ffd6ec709e0c60072c95ed4f5ce5b5d2/modeling_qwen3.py#L237
+
+    Inspired by: Perceiver IO (Jaegle et al., 2021) and Neural Processes.
     """
-
     def __init__(self, dmodel=128, use_gate=True):
         super().__init__()
         self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel * 2)
@@ -55,6 +73,13 @@ class GatedLatentTransferLayer(nn.Module):
         """Neutral Initialization to fade-in the adapters layers """
 
     def forward(self, A, B, C, sep, hp, mask_A=None, mask_B=None, *args, **kwargs):
+        """
+            Args:
+                A, B, C: Tensors of shape [T_total, Batch, D] (Data payloads)
+                sep: Integer indicating the split point between train (context) and test (query)
+                hp: Tuple of (hp_A, hp_B, hp_C) coordinate embeddings [T_total, Batch, D]
+                mask_A, mask_B: Boolean masks [Batch, T_total] (True = padding)
+        """
         device = A.device
         hp_A, hp_B, hp_C = hp
 
@@ -99,7 +124,8 @@ class GatedLatentTransferLayer(nn.Module):
         a_dim, b_dim = A_train.shape[1], B_train.shape[1]
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim + b_dim], ABC[:, a_dim + b_dim:]
 
-        # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ---------------------------------------
+        # 3. Expand C_feat to C_test_feat by hp attention across coordinates. --------------------------------
+        # spatial interpolation to get C_test_feat for the query points
         C_test_feat, _ = self.C_test_attention(hp_C_test, hp_C_train, C_feat, key_padding_mask=mask_C_train)
 
         # 4. Cross Attention from C to A's and B's features ---------------------------------------
@@ -146,7 +172,7 @@ class GatedLatentTransferLayer(nn.Module):
         # Pass the mask to cross-attention
         C_cross, _ = self.cross_attention(query, key, value, key_padding_mask=cross_attn_mask)
 
-        # 4. Residual update to C --------------------------------------------
+        # 5. Residual update to C with gating--------------------------------------------
         # C is originally (T, B, D). We project C_cross down to match.
         # Evaluate the query AGAINST the retrieved context
         # This is heavily inspired by Highway Networks and GRUs.
