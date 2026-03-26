@@ -5,7 +5,7 @@ import torch.optim as optim
 from pathlib import Path
 from tqdm import tqdm
 
-from ppfn.model.mymodel.layers.manifold_adapter import MLP, NewLayer
+from ppfn.model.mymodel.layers.glt_adapter import MLP, GatedLatentTransferLayer
 from ppfn.model.mymodel.layers.validation_manifold_adapter.plotting import plot_training_step
 from ppfn.model.mymodel.layers.validation_manifold_adapter.prior import create_padded_batch, \
     VectorizedComplexTaskGenerator
@@ -21,7 +21,7 @@ class MetaTransferModel(nn.Module):
         # Use MLPs for better representation as discussed
         self.y_proj = MLP(input_dim, dmodel, dmodel)
         self.x_proj = MLP(input_dim, dmodel, dmodel)
-        self.transfer_layer = NewLayer(dmodel=dmodel)
+        self.transfer_layer = GatedLatentTransferLayer(dmodel=dmodel)
         self.out_proj = MLP(dmodel, input_dim, dmodel)
 
     def forward(self, batch):
@@ -34,8 +34,7 @@ class MetaTransferModel(nn.Module):
         hp_B = self.x_proj(batch["x_cB"])
         hp_C = self.x_proj(batch["x_cC"])
 
-        # Call NewLayer
-        # Assuming your NewLayer still handles the sep splitting internally!
+        # Call GatedLatentTransferLayer
         _, _, C_out = self.transfer_layer(
             A, B, C, sep=batch["sep"], hp=(hp_A, hp_B, hp_C),
             mask_A=batch["mask_A"], mask_B=batch["mask_B"]

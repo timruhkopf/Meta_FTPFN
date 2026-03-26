@@ -1,47 +1,6 @@
-"""
-
-Hyperparameter evaluation:
-* we have access to the coordinates of both A_train, B_train and C_test
- (which is what we can query for on A and B as well).
-
-* we can always query for any hp coordinates (as estimate of y) and compare functional values
-
-* Express B through A or the other way around?
-
-* We always have C as a workbench context, preserving A and B as raw unaltered and unconditional contexts
-
-Modeling approaches:
-* Learn a relative encoding:
- self attention on A_train, B_train and then do some form of cross attention based on the relative encodings.
-
-* learn a difference function based on the interpolation points between A and B, and then apply that difference to
-  where we need to project B into A in order to transfer its information.
-
-* Gating: the query should decide on SDPA, whether to cross-attend to B, and how much to update itself.
-
-* Residual learning: C = C+update
-
-* We can conceive warping of the input space between the two tasks - which implies that we learn how to "move the anchors"
- i.e. the hp coordinates of A to best align with B
-
-* we can try to identify how much the model want to rely on the related task by looking at the attention weights to A vs B
-  this can inform our final blending weights.
-
-
-# TODO for Prior:
-#  - [ ] Just have A and B  shifted versions of each other, have A truncated in x and B more dense, and then
-#        cross attend to the dense B to extrapolate A's function beyond its sparse context points
-#  - [ ] Then add complexity by adding scale to it as another distortion
-#  - [ ] Then add complexity by adding a linear trend to it as another distortion
-"""
-from pathlib import Path
-
-from torch import nn
-
-import numpy as np
 import torch
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+import torch.nn as nn
+
 
 
 class MLP(nn.Module):
@@ -59,7 +18,7 @@ class MLP(nn.Module):
         return self.net(x)
 
 
-class NewLayer(nn.Module):
+class GatedLatentTransferLayer(nn.Module):
     """
 
     source for the a separated infomration flow, where we have k and v different from q in order to compute what to extract:
@@ -133,7 +92,7 @@ class NewLayer(nn.Module):
         else:
             self_attn_mask = None
 
-        # 2.2  A,B,c Shared self attention to extract relational features within A, B, C respectively.
+        # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
         ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
 
         # Extract the feature descriptors for each task after self-attention
@@ -143,14 +102,12 @@ class NewLayer(nn.Module):
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ---------------------------------------
         C_test_feat, _ = self.C_test_attention(hp_C_test, hp_C_train, C_feat, key_padding_mask=mask_C_train)
 
-        # 4. Cross Attention from C to A's and B's features
-        # FIXME: THIS IS THE MOST CRITICAL ASPECT OF IT ALL!
+        # 4. Cross Attention from C to A's and B's features ---------------------------------------
         # throw in A_feat and B_feat into one context for C to cross attend to.
-        # TODO Here we don't want the softmax constraint, because it will have a sum-to-one constraint across A and B,
-        #  but we want the model to be able to choose to attend to B
-
         batch_size = A.shape[1]
 
+        # Here we don't want the softmax constraint, because it will have a sum-to-one constraint across A and B,
+        # but we want the model to be able to choose to attend to B
         # Expand dummy tokens to match batch size: [1, Batch, D]
         d_key = self.dummy_key.expand(1, batch_size, -1)
         d_val = self.dummy_value.expand(1, batch_size, -1)
@@ -192,8 +149,11 @@ class NewLayer(nn.Module):
         # 4. Residual update to C --------------------------------------------
         # C is originally (T, B, D). We project C_cross down to match.
         # Evaluate the query AGAINST the retrieved context
-        # This is heavily inspired by Highway Networks and GRUs. It is local, point-by-point, and fully aware of the relationship between $C$ and $B$.
-        # This allows the network to say: "I asked for a local maximum (Query), but the feature vector I got back from B looks like a steep drop (C_cross). This is useless to me. Close the gate."
+        # This is heavily inspired by Highway Networks and GRUs.
+        # It is local, point-by-point, and fully aware of the relationship between $C$ and $B$.
+        # This allows the network to say: "I asked for a local maximum (Query),
+        # but the feature vector I got back from B looks like a steep drop (C_cross).
+        # This is useless to me. Close the gate."
         if self.use_gate:
             gate_input = torch.cat([query, C_cross], dim=-1)
             gate = self.gate_proj(gate_input)
@@ -202,7 +162,5 @@ class NewLayer(nn.Module):
 
         # Gated Residual update
         C = C + gate * self.out_proj(C_cross)
-
-        # C = C + self.out_proj(C_cross)
 
         return A, B, C
