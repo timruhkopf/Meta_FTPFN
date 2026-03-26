@@ -5,6 +5,7 @@ import torch.optim as optim
 from pathlib import Path
 from tqdm import tqdm
 
+from pfns4hpo.bar_distribution import BarDistribution, FullSupportBarDistribution
 from ppfn.model.mymodel.layers.glt_adapter import MLP, GatedLatentTransferLayer
 from ppfn.model.mymodel.layers.validation_manifold_adapter.plotting import plot_training_step
 from ppfn.model.mymodel.layers.validation_manifold_adapter.prior import create_padded_batch, \
@@ -12,20 +13,16 @@ from ppfn.model.mymodel.layers.validation_manifold_adapter.prior import create_p
 
 
 class MetaTransferModel(nn.Module):
-    """
-    A wrapper class to fit the size of a 1d dataset and match the three stream layer requirement.
-    """
-
-    def __init__(self, input_dim=1, dmodel=128):
+    def __init__(self, input_dim=1, dmodel=128, num_bins=100):  # <-- Added num_bins
         super().__init__()
-        # Use MLPs for better representation as discussed
         self.y_proj = MLP(input_dim, dmodel, dmodel)
         self.x_proj = MLP(input_dim, dmodel, dmodel)
         self.transfer_layer = GatedLatentTransferLayer(dmodel=dmodel)
-        self.out_proj = MLP(dmodel, input_dim, dmodel)
+
+        # CHANGED: Project out to the number of bins, not a single continuous value
+        self.out_proj = MLP(dmodel, dmodel, num_bins)
 
     def forward(self, batch):
-        # Data is already padded and concatenated in create_padded_batch
         A = self.y_proj(batch["y_cA"])
         B = self.y_proj(batch["y_cB"])
         C = self.y_proj(batch["y_cC"])
@@ -34,18 +31,15 @@ class MetaTransferModel(nn.Module):
         hp_B = self.x_proj(batch["x_cB"])
         hp_C = self.x_proj(batch["x_cC"])
 
-        # Call GatedLatentTransferLayer
         _, _, C_out = self.transfer_layer(
             A, B, C, sep=batch["sep"], hp=(hp_A, hp_B, hp_C),
             mask_A=batch["mask_A"], mask_B=batch["mask_B"]
         )
 
-        # We only care about predicting the query portion of C_out
         sep = batch["sep"]
         query_out = C_out[sep:, :, :]
 
-        return self.out_proj(query_out)
-
+        return self.out_proj(query_out)  # Shape will now be [T_query, Batch, num_bins]
 
 def train_meta_model(
         steps=2000,
@@ -60,19 +54,30 @@ def train_meta_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
+    num_bins = 128  # e.g., 100 bins means 101 borders
+    borders = torch.linspace(-10.0, 10.0, num_bins + 1, device=device)
+    criterion = FullSupportBarDistribution(borders=borders)  # Using your custom class
+
     generator = VectorizedComplexTaskGenerator()
-    model = MetaTransferModel(input_dim=1, dmodel=128).to(device)
+    model = MetaTransferModel(input_dim=1, dmodel=128, num_bins=num_bins).to(device)
 
     # Add PyTorch compilation for massive speedups on Ampere GPUs
     if compile_model and torch.__version__.startswith('2.') and device.type == 'cuda':
         print("Compiling model for faster execution...")
         model = torch.compile(model)
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps, eta_min=1e-5)
+    max_lr = 3e-4
+    optimizer = optim.Adam(model.parameters(), lr=max_lr)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=max_lr,
+        total_steps=steps + 1,
+        pct_start=0.10,  # Spends the first 10% of steps warming up
+        anneal_strategy='cos'
+    )
 
     # CHANGED: reduction='none' so we can split the loss before averaging
-    criterion = nn.MSELoss(reduction='none')
+    # criterion = nn.MSELoss(reduction='none')
 
     # Initialize GradScaler for Automatic Mixed Precision (AMP)
     scaler = torch.amp.GradScaler('cuda', enabled=True)
@@ -89,22 +94,22 @@ def train_meta_model(
         model.train()
         optimizer.zero_grad()
 
-        # CHANGED: Inject 20% unrelated tasks to force the model to learn gating/escape token
         batch = create_padded_batch(generator, batch_size, n_A, n_B, n_query, device, share_unrelated=0.2)
 
-        # Wrap the forward pass and loss calculation in autocast (bfloat16)
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            y_pred = model(batch)
+            # It is critical, that the BarDistribution criterion is outside the autocast!
+            y_pred = model(batch)  # Shape: [T_query, Batch, num_bins]
 
-            # Calculate unreduced loss: Shape [T_query, Batch, 1]
-            loss_tensor = criterion(y_pred, batch["y_qA_true"])
+        # Calculate unreduced loss using BarDistribution
+        # BarDistribution returns shape [T_query, Batch]
+        loss_tensor = criterion(logits=y_pred, y=batch["y_qA_true"])
 
-            # Average over sequence dimension (dim=0) and feature dimension (dim=2)
-            # to get loss per batch item: Shape [Batch]
-            loss_per_item = loss_tensor.mean(dim=(0, 2))
+        # Average over sequence dimension (dim=0)
+        # Note: Removed dim=2 because BarDistribution drops the trailing '1' dimension
+        loss_per_item = loss_tensor.mean(dim=0)
 
-            # The total loss to actually backpropagate
-            total_loss = loss_per_item.mean()
+        # The total loss to actually backpropagate
+        total_loss = loss_per_item.mean()
 
         # Use the scaler to backward (prevents underflow in FP16/BF16)
         scaler.scale(total_loss).backward()
@@ -163,17 +168,20 @@ def train_meta_model(
                 # 3. Explicitly label Batch Item 1 as the unrelated trap
                 eval_batch["is_unrelated"] = torch.tensor([False, True], device=device)
 
-                # Ensure eval also runs in autocast
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    eval_pred = model(eval_batch)
+                    eval_pred_logits = model(eval_batch)
+
+                    # Convert logits to probabilities for the heatmap
+                    eval_probs = torch.softmax(eval_pred_logits, dim=-1)
 
                 plot_training_step(
                     step,
                     eval_batch,
-                    eval_pred,
+                    eval_probs,  # Passed probabilities instead of logits/means
                     loss_history_rel,
                     loss_history_unrel,
                     n_A, n_B,
+                    borders,  # Passed borders down to the plotting func
                     save_path
                 )
 
@@ -185,6 +193,8 @@ if __name__ == "__main__":
         n_A=5,  # sparse target
         n_B=30,  # dense related
         plot_every=500,
-        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/active_gate_new_plotting2/"))
+        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/active_gate_new_plotting2/"),
+        compile_model=False
+    )
 
     print("Training complete! Check the 'training_plots' folder.")
