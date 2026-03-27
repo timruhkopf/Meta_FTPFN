@@ -6,10 +6,10 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from ppfn.model.mymodel.layers.adapter_wrapper import Unified1dValidationWrapper
-from ppfn.model.mymodel.layers.delta_surrogate_adapter import DeltaSurrogateAdapter
+from ppfn.model.experimental.layers.delta_surrogate_adapter import DeltaSurrogateAdapter
 # from validated_layers_1d import generate_shared_complex_batch
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
-from ppfn.model.mymodel.layers.nw_adapter import NadarayaWatsonAdapter
+from ppfn.model.experimental.layers.nw_adapter import NadarayaWatsonAdapter
 
 
 def plot_learning_curve(ax, loss_history, model_name):

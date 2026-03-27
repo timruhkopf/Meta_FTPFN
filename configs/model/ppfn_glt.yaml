@@ -2,7 +2,7 @@
 # Multi-layer model with cross-attention at layers 0 and 2
 # 1. Define the base configuration once using an anchor (&)
 layer_base: # &layer_logic
-  _target_: ppfn.model.mymodel.layers.glt_adapter.GatedLatentTransferLayer
+  _target_: ppfn.model.experimental.layers.glt_adapter.GatedLatentTransferLayer
   dmodel: 512
   use_gate: True
 #  n_heads: 4

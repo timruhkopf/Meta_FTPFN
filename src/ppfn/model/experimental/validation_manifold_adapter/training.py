@@ -6,9 +6,9 @@ from pathlib import Path
 from tqdm import tqdm
 
 from pfns4hpo.bar_distribution import BarDistribution, FullSupportBarDistribution
-from ppfn.model.mymodel.layers.glt_adapter import MLP, GatedLatentTransferLayer
-from ppfn.model.mymodel.layers.validation_manifold_adapter.plotting import plot_training_step
-from ppfn.model.mymodel.layers.validation_manifold_adapter.prior import create_padded_batch, \
+from ppfn.model.experimental.layers.glt_adapter import MLP, GatedLatentTransferLayer
+from ppfn.model.experimental.validation_manifold_adapter.plotting import plot_training_step
+from ppfn.model.experimental.validation_manifold_adapter.prior import create_padded_batch, \
     VectorizedComplexTaskGenerator
 
 

@@ -1,7 +1,7 @@
 # @package _global_
 
 layer_base: # &layer_logic
-  _target_: ppfn.model.mymodel.layers.nw_adapter.NadarayaWatsonAdapter
+  _target_: ppfn.model.experimental.layers.nw_adapter.NadarayaWatsonAdapter
   d_model: 512
   n_heads: 4
   dropout: 0.1
