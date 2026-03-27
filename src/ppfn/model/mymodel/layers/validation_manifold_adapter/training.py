@@ -193,7 +193,7 @@ if __name__ == "__main__":
         n_A=5,  # sparse target
         n_B=30,  # dense related
         plot_every=500,
-        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/active_gate_new_plotting2/"),
+        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/asdf/"),
         compile_model=False
     )
 

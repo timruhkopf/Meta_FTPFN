@@ -43,7 +43,7 @@ class GatedLatentTransferLayer(nn.Module):
 
     Inspired by: Perceiver IO (Jaegle et al., 2021) and Neural Processes.
     """
-    def __init__(self, dmodel=128, use_gate=True):
+    def __init__(self, dmodel=128, use_gate=False, use_valve=False):
         super().__init__()
         self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel * 2)
         self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, )
@@ -59,11 +59,12 @@ class GatedLatentTransferLayer(nn.Module):
                 nn.Linear(4 * dmodel, dmodel),
                 nn.Sigmoid()
             )
-
-        # Learnable dummy key and value (Shape: [1, 1, feature_dim])
-        self.dummy_key = nn.Parameter(torch.randn(1, 1, 2 * dmodel))
-        # Note: Adjust dummy_value dimension based on whether you concatenated hp into value earlier
-        self.dummy_value = nn.Parameter(torch.randn(1, 1, dmodel))
+        self.use_valve = use_valve
+        if use_valve:
+            # Learnable dummy key and value (Shape: [1, 1, feature_dim])
+            self.dummy_key = nn.Parameter(torch.randn(1, 1, 2 * dmodel))
+            # Note: Adjust dummy_value dimension based on whether you concatenated hp into value earlier
+            self.dummy_value = nn.Parameter(torch.randn(1, 1, dmodel))
 
         self.init_weights()
 
@@ -134,8 +135,12 @@ class GatedLatentTransferLayer(nn.Module):
         # Here we don't want the softmax constraint, because it will have a sum-to-one constraint across A and B,
         # but we want the model to be able to choose to attend to B
         # Expand dummy tokens to match batch size: [1, Batch, D]
-        d_key = self.dummy_key.expand(1, batch_size, -1)
-        d_val = self.dummy_value.expand(1, batch_size, -1)
+        if self.use_valve:
+            d_key = self.dummy_key.expand(1, batch_size, -1)
+            d_val = self.dummy_value.expand(1, batch_size, -1)
+        else:
+            d_key = torch.tensor([], device=device)
+            d_val = torch.tensor([], device=device)
 
         query = torch.cat([
             torch.cat([hp_C_train, C_feat], dim=-1),
@@ -165,8 +170,10 @@ class GatedLatentTransferLayer(nn.Module):
 
         # We must also append a 'False' to the cross_attn_mask so the dummy token is never masked out
         if cross_attn_mask is not None:
-            dummy_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
-            cross_attn_mask = torch.cat([cross_attn_mask, dummy_mask], dim=1)
+            if self.use_valve:
+                dummy_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
+
+                cross_attn_mask = torch.cat([cross_attn_mask, dummy_mask], dim=1)
 
         # Pass the mask to cross-attention
         C_cross, _ = self.cross_attention(query, key, value, key_padding_mask=cross_attn_mask)
