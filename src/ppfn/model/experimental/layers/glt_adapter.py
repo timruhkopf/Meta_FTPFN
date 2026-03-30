@@ -107,14 +107,21 @@ class GatedLatentTransferLayer(nn.Module):
         device = A.device
         hp_A, hp_B, hp_C = hp
 
-        # 1. Parse Context Components ----------------------------------------
+        # 1. Parse Context Components ----------------------------------------------------------------------------------
         A_train, B_train = A[:sep], B[:sep]
         C_train, C_test = C[:sep], C[sep:]
         hp_A_train, hp_B_train = hp_A[:sep], hp_B[:sep]
         hp_C_train, hp_C_test = hp_C[:sep], hp_C[sep:]
 
-        # 2.0 self attend for A and B to extract relative features ------------------------------
-        #  e.g. "i am a point in a local maximum", "we all are trending linearly"
+        # 2.0 self attend for A and B to extract relative features -----------------------------------------------------
+        # To transform independent ($x, y$) coordinate points into context-aware shape descriptors. Instead of a point
+        # just knowing "I am at $x=2.5, y=1.0$", self-attention allows it to realize "I am a local maximum in a
+        # linearly increasing trend."
+        # Matching functions/series, cross-task transfer cannot happen on raw coordinates alone.
+        # Using shared weights for A, B, and C forces the network to develop a universal "shape vocabulary"
+        # across all streams, which is a prerequisite for the later structural gating.
+        # Consider: ideally, this should be already done by the pre-trained backbone, with the exception of
+        #  the hp embeddings not being part of the attn.
 
         ABC = torch.cat([
             self._merge_hp(hp_A_train, A_train),
@@ -150,7 +157,7 @@ class GatedLatentTransferLayer(nn.Module):
         a_dim, b_dim = A_train.shape[1], B_train.shape[1]
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim + b_dim], ABC[:, a_dim + b_dim:]
 
-        if self.use_struct_gate:
+        if self.use_struct_gate: # -------------------------------------------------------------------------------------
             # 3a. A interrogates B based on SHAPE, not location.
             # Query: A_feat, Keys: B_feat, Values: B_feat
             # (Notice: No hp_A or hp_B included here!)
@@ -174,19 +181,23 @@ class GatedLatentTransferLayer(nn.Module):
 
             # 3c. Gate Task B globally
             # If the structures don't align, task_trust_score drops to ~0.
+            # Consider, multiplying the pointwise trust score on B_feat, AND the overall task trust score
             B_feat = B_feat * task_trust_score
 
-        # 3. Expand C_feat to C_test_feat by hp attention across coordinates. --------------------------------
+        # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ------------------------------------------
         # spatial interpolation to get C_test_feat for the query points
+        # Consider: that this could also be already be done in the backbone representation, so we might be able to just
+        #  take C_test directly from the input without the need to attend
         C_test_feat, _ = self.C_test_attention(hp_C_test, hp_C_train, C_feat, key_padding_mask=mask_C_train)
 
-        # 4. Cross Attention from C to A's and B's features ---------------------------------------
+        # 4. Cross Attention from C to A's and B's features ------------------------------------------------------------
         # throw in A_feat and B_feat into one context for C to cross attend to.
         batch_size = A.shape[1]
 
         # Here we don't want the softmax constraint, because it will have a sum-to-one constraint across A and B,
         # but we want the model to be able to choose to attend to B
         # Expand dummy tokens to match batch size: [1, Batch, D]
+        # Consider: In prior experiments, this section did not seem to contribute, because it more or less gave a fixed value
         if self.use_valve:
             d_key = self.dummy_key.expand(1, batch_size, -1)
             d_val = self.dummy_value.expand(1, batch_size, -1)
@@ -228,9 +239,10 @@ class GatedLatentTransferLayer(nn.Module):
                 cross_attn_mask = torch.cat([cross_attn_mask, dummy_mask], dim=1)
 
         # Pass the mask to cross-attention
+        # Consider: this is the key operation here!
         C_cross, _ = self.cross_attention(query, key, value, key_padding_mask=cross_attn_mask)
 
-        # 5. Residual update to C with gating--------------------------------------------
+        # 5. Residual update to C with gating---------------------------------------------------------------------------
         # C is originally (T, B, D). We project C_cross down to match.
         # Evaluate the query AGAINST the retrieved context
         # This is heavily inspired by Highway Networks and GRUs.
@@ -238,6 +250,7 @@ class GatedLatentTransferLayer(nn.Module):
         # This allows the network to say: "I asked for a local maximum (Query),
         # but the feature vector I got back from B looks like a steep drop (C_cross).
         # This is useless to me. Close the gate."
+        # Consider: this gating seemed to be uneffective.
         if self.use_gate:
             gate_input = torch.cat([query, C_cross], dim=-1)
             gate = self.gate_proj(gate_input)
