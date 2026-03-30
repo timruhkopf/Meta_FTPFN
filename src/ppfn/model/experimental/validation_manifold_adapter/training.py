@@ -13,14 +13,16 @@ from ppfn.model.experimental.validation_manifold_adapter.prior import create_pad
 
 
 class MetaTransferModel(nn.Module):
-    def __init__(self, input_dim=1, dmodel=128, num_bins=100):  # <-- Added num_bins
+    def __init__(self, transfer_layer, input_dim=1, num_bins=100):  # <-- Added num_bins
         super().__init__()
-        self.y_proj = MLP(input_dim, dmodel, dmodel)
-        self.x_proj = MLP(input_dim, dmodel, dmodel)
-        self.transfer_layer = GatedLatentTransferLayer(dmodel=dmodel)
+
+        self.transfer_layer = transfer_layer
+        self.dmodel = self.transfer_layer.dmodel
+        self.y_proj = MLP(input_dim, self.dmodel, self.dmodel)
+        self.x_proj = MLP(input_dim, self.dmodel, self.dmodel)
 
         # CHANGED: Project out to the number of bins, not a single continuous value
-        self.out_proj = MLP(dmodel, dmodel, num_bins)
+        self.out_proj = MLP(self.dmodel, self.dmodel, num_bins)
 
     def forward(self, batch):
         A = self.y_proj(batch["y_cA"])
@@ -30,6 +32,10 @@ class MetaTransferModel(nn.Module):
         hp_A = self.x_proj(batch["x_cA"])
         hp_B = self.x_proj(batch["x_cB"])
         hp_C = self.x_proj(batch["x_cC"])
+
+        A += hp_A
+        B += hp_B
+        C += hp_C
 
         _, _, C_out = self.transfer_layer(
             A, B, C, sep=batch["sep"], hp=(hp_A, hp_B, hp_C),
@@ -42,6 +48,12 @@ class MetaTransferModel(nn.Module):
         return self.out_proj(query_out)  # Shape will now be [T_query, Batch, num_bins]
 
 def train_meta_model(
+        device,
+        model,
+        criterion,
+        generator,
+        optimizer,
+        scheduler,
         steps=2000,
         batch_size=32,
         n_A=5,
@@ -51,38 +63,15 @@ def train_meta_model(
         plot_every=200,
         compile_model=True
 ):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on: {device}")
-
-    num_bins = 128  # e.g., 100 bins means 101 borders
-    borders = torch.linspace(-10.0, 10.0, num_bins + 1, device=device)
-    criterion = FullSupportBarDistribution(borders=borders)  # Using your custom class
-
-    generator = VectorizedComplexTaskGenerator()
-    model = MetaTransferModel(input_dim=1, dmodel=128, num_bins=num_bins).to(device)
+    model = model.to(device)
 
     # Add PyTorch compilation for massive speedups on Ampere GPUs
     if compile_model and torch.__version__.startswith('2.') and device.type == 'cuda':
         print("Compiling model for faster execution...")
         model = torch.compile(model)
 
-    max_lr = 3e-4
-    optimizer = optim.Adam(model.parameters(), lr=max_lr)
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=max_lr,
-        total_steps=steps + 1,
-        pct_start=0.10,  # Spends the first 10% of steps warming up
-        anneal_strategy='cos'
-    )
-
-    # CHANGED: reduction='none' so we can split the loss before averaging
-    # criterion = nn.MSELoss(reduction='none')
-
     # Initialize GradScaler for Automatic Mixed Precision (AMP)
     scaler = torch.amp.GradScaler('cuda', enabled=True)
-
-    os.makedirs("training_plots", exist_ok=True)
 
     # CHANGED: Track related and unrelated losses separately
     loss_history_rel = []
@@ -187,13 +176,45 @@ def train_meta_model(
 
 
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+    num_bins = 128  # e.g., 100 bins means 101 borders
+    borders = torch.linspace(-8.0, 8.0, num_bins + 1, device=device)
+    criterion = FullSupportBarDistribution(borders=borders, smoothing=0.05)  # Using your custom class
+
+    generator = VectorizedComplexTaskGenerator()
+
+    model = MetaTransferModel(
+        transfer_layer=GatedLatentTransferLayer(dmodel=128),
+        input_dim=1,
+        num_bins=num_bins
+    )
+
+    STEPS = 100000
+    max_lr = 3e-4
+    optimizer = optim.Adam(model.parameters(), lr=max_lr)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=max_lr,
+        total_steps=STEPS + 1,
+        pct_start=0.10,  # Spends the first 10% of steps warming up
+        anneal_strategy='cos'
+    )
+
     train_meta_model(
-        steps=25000,
+        device=device,
+        model=model,
+        criterion=criterion,
+        generator=generator,
+        optimizer=optimizer,
+        scheduler=scheduler,
+
+        steps=STEPS,
         batch_size=8192,  # make use of VRAM
         n_A=5,  # sparse target
         n_B=30,  # dense related
         plot_every=500,
-        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/asdf/"),
+        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/struct_gate_long/"),
         compile_model=False
     )
 

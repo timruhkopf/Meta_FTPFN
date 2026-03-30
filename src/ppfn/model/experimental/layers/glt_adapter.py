@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 
@@ -43,15 +44,29 @@ class GatedLatentTransferLayer(nn.Module):
 
     Inspired by: Perceiver IO (Jaegle et al., 2021) and Neural Processes.
     """
-    def __init__(self, dmodel=128, use_gate=False, use_valve=False):
+    def __init__(self, dmodel=128, use_gate=False, use_valve=False, hp_mode="concat", compute_own_self_ABC_attn=True, use_struct_gate=True):
         super().__init__()
-        self.linear_AB1 = MLP(dmodel * 2, dmodel, dmodel * 2)
-        self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, )
-        self.cross_attention = nn.MultiheadAttention(embed_dim=2 * dmodel, vdim=dmodel, num_heads=4, )
+        self.hp_mode = hp_mode
+
+        in_dim = dmodel * 2 if hp_mode == "concat" else dmodel
+
+        self.linear_AB1 = MLP(in_dim, dmodel, in_dim)
+        self.compute_own_self_ABC_attn = compute_own_self_ABC_attn
+        if self.compute_own_self_ABC_attn:
+            self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4)
+
+        self.use_struct_gate = use_struct_gate
+        if self.use_struct_gate:
+            self.alignment_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4)
+            self.trust_proj = nn.Sequential(
+                nn.Linear(2 * dmodel, dmodel),
+                nn.Sigmoid()
+            )
+        self.cross_attention = nn.MultiheadAttention(embed_dim=in_dim, vdim=dmodel, num_heads=4)
 
         self.C_test_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, vdim=dmodel)
 
-        self.out_proj = MLP(dmodel * 2, dmodel, dmodel * 2)
+        self.out_proj = MLP(in_dim, dmodel, in_dim)
 
         self.use_gate = use_gate
         if use_gate:
@@ -62,7 +77,7 @@ class GatedLatentTransferLayer(nn.Module):
         self.use_valve = use_valve
         if use_valve:
             # Learnable dummy key and value (Shape: [1, 1, feature_dim])
-            self.dummy_key = nn.Parameter(torch.randn(1, 1, 2 * dmodel))
+            self.dummy_key = nn.Parameter(torch.randn(1, 1, in_dim))
             # Note: Adjust dummy_value dimension based on whether you concatenated hp into value earlier
             self.dummy_value = nn.Parameter(torch.randn(1, 1, dmodel))
 
@@ -70,6 +85,16 @@ class GatedLatentTransferLayer(nn.Module):
 
     def init_weights(self):
         """Neutral Initialization to fade-in the adapters layers """
+
+    def _merge_hp(self, hp_tensor, data_tensor):
+        """Helper to cleanly fuse coordinate embeddings and data."""
+        if self.hp_mode == "concat":
+            return torch.cat([hp_tensor, data_tensor], dim=-1)
+
+        elif self.hp_mode == "ignore_hp":
+            return data_tensor
+
+        return hp_tensor + data_tensor  # "add" mode
 
     def forward(self, A, B, C, sep, hp, mask_A=None, mask_B=None, *args, **kwargs):
         """
@@ -90,39 +115,66 @@ class GatedLatentTransferLayer(nn.Module):
 
         # 2.0 self attend for A and B to extract relative features ------------------------------
         #  e.g. "i am a point in a local maximum", "we all are trending linearly"
+
         ABC = torch.cat([
-            torch.cat([hp_A_train, A_train], dim=-1),
-            torch.cat([hp_B_train, B_train], dim=-1),
-            torch.cat([hp_C_train, C_train], dim=-1)
-            # if we do this prior to any cross attention this is redundant (C=A)
+            self._merge_hp(hp_A_train, A_train),
+            self._merge_hp(hp_B_train, B_train),
+            self._merge_hp(hp_C_train, C_train),
+            # if we do this prior to any cross attention C is redundant (C=A)
 
         ], dim=1)
 
         # down project to dmodel
         ABC = self.linear_AB1(ABC)
+        if self.compute_own_self_ABC_attn:
+            # 2.1. Deal with padding in self attention
+            # since A and B have different sequence lengths, we need to build an attention mask
+            # to prevent attending to the padded points.
+            mask_A_train = mask_A[:, :sep] if mask_A is not None else None
+            mask_B_train = mask_B[:, :sep] if mask_B is not None else None
 
-        # 2.1. Deal with padding in self attention
-        # since A and B have different sequence lengths, we need to build an attention mask
-        # to prevent attending to the padded points.
-        mask_A_train = mask_A[:, :sep] if mask_A is not None else None
-        mask_B_train = mask_B[:, :sep] if mask_B is not None else None
+            if mask_A_train is not None and mask_B_train is not None:
+                # C doesn't have a mask (it uses all its points), so it's all False
+                mask_C_train = mask_A_train.clone()
 
-        if mask_A_train is not None and mask_B_train is not None:
-            # C doesn't have a mask (it uses all its points), so it's all False
-            mask_C_train = mask_A_train.clone()
+                # Concat along batch dimension (dim=0) because ABC has 3*Batch size
+                self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
+            else:
+                mask_C_train = None
+                self_attn_mask = None
 
-            # Concat along batch dimension (dim=0) because ABC has 3*Batch size
-            self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
-        else:
-            mask_C_train = None
-            self_attn_mask = None
-
-        # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
-        ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
+            # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
+            ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
 
         # Extract the feature descriptors for each task after self-attention
         a_dim, b_dim = A_train.shape[1], B_train.shape[1]
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim + b_dim], ABC[:, a_dim + b_dim:]
+
+        if self.use_struct_gate:
+            # 3a. A interrogates B based on SHAPE, not location.
+            # Query: A_feat, Keys: B_feat, Values: B_feat
+            # (Notice: No hp_A or hp_B included here!)
+            A_retrieved_from_B, _ = self.alignment_attention(
+                query=A_feat,
+                key=B_feat,
+                value=B_feat,
+                key_padding_mask=mask_B_train
+            )
+
+            # 3b. Evaluate the structural mismatch
+            # If B is just a shifted A, A_retrieved_from_B will closely match A_feat
+            # because A successfully found its structural twins in B.
+            # If B is noise, this difference will be massive.
+            structural_diff = torch.cat([A_feat, A_retrieved_from_B], dim=-1)
+
+            # Project to a single score per point, then average across the A sequence
+            # Shape goes from [T_A, Batch, D] -> [T_A, Batch, 1] -> [1, Batch, 1]
+            pointwise_trust = self.trust_proj(structural_diff)  # e.g., Linear(D*2, 1) + Sigmoid
+            task_trust_score = pointwise_trust.mean(dim=0, keepdim=True)
+
+            # 3c. Gate Task B globally
+            # If the structures don't align, task_trust_score drops to ~0.
+            B_feat = B_feat * task_trust_score
 
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates. --------------------------------
         # spatial interpolation to get C_test_feat for the query points
@@ -143,12 +195,12 @@ class GatedLatentTransferLayer(nn.Module):
             d_val = torch.tensor([], device=device)
 
         query = torch.cat([
-            torch.cat([hp_C_train, C_feat], dim=-1),
-            torch.cat([hp_C_test, C_test_feat], dim=-1)
+            self._merge_hp(hp_C_train, C_train),
+            self._merge_hp(hp_C_test, C_test_feat),
         ], dim=0)
         key = torch.cat([
-            torch.cat([hp_A_train, A_feat], dim=-1),
-            torch.cat([hp_B_train, B_feat], dim=-1),
+            self._merge_hp(hp_A_train, A_train),
+            self._merge_hp(hp_B_train, B_train),
             d_key  # <--- The Escape Valve
         ], dim=0)
         value = torch.cat([  # Value payload is without the hp, because only then it is in the
