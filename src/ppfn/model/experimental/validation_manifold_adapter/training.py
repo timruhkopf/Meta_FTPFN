@@ -222,8 +222,20 @@ if __name__ == "__main__":
         pct_start=args.pct_start,  # Spends the first 10% of steps warming up
         anneal_strategy='cos'
     )
+
+    import os
+    from datetime import datetime
+
+    # Generate timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     mlflow.set_tracking_uri(args.mlflow_tracking_uri)
     mlflow.set_experiment(args.mlflow_experiment)
+    run_dir = f"{args.mlflow_run_name}_{timestamp}"
+    args.save_path = os.path.join("outputs", args.mlflow_experiment, run_dir)
+
+    # Ensure the directory exists
+    os.makedirs(args.save_path, exist_ok=True)
 
     with mlflow.start_run(run_name=args.mlflow_run_name ):
         mlflow.log_params(vars(args))
