@@ -52,7 +52,7 @@ def train_meta_model(
     loss_history_rel = []
     loss_history_unrel = []
 
-    iterator = tqdm(range(steps + 1))
+    iterator = tqdm(range(steps + 1), disable=None, mininterval=10.0)
 
     for step in iterator:
         ForwardMetaContext.clear()
