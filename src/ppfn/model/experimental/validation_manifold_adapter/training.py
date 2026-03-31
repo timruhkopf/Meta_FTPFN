@@ -177,8 +177,8 @@ if __name__ == "__main__":
     parser.add_argument('--hp_mode', type=str, default="concat",
                         choices=["concat", "add", "ignore_hp"],
                         help='How to incorporate hyperparameters into the transfer layer')
-    parser.add_argument('pointwise', action='store_true', help='Whether to use pointwise gating')
-    parser.add_argument('global_gate', action='store_true', help='Whether to use a global gate in addition to the pointwise gate')
+    parser.add_argument('--pointwise', action='store_true', help='Whether to use pointwise gating')
+    parser.add_argument('--global_gate', action='store_true', help='Whether to use a global gate in addition to the pointwise gate')
 
 
     parser.add_argument('--steps', type=int, default=100000, help='Number of training steps')
