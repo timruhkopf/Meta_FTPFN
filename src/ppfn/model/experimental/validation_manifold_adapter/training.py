@@ -15,6 +15,11 @@ from ppfn.model.experimental.validation_manifold_adapter.prior import create_pad
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 def train_meta_model(
         device,
         model,
@@ -32,6 +37,7 @@ def train_meta_model(
         compile_model=True,
         clip_norm=1.0
 ):
+    logger.info('Starting training loop...')
     model = model.to(device)
 
     # Add PyTorch compilation for massive speedups on Ampere GPUs
@@ -82,7 +88,7 @@ def train_meta_model(
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
         # scaler.step(optimizer)
 
-        mlflow.log_metric(lr=optimizer.param_groups[0]['lr'], step=step)
+        mlflow.log_metric(mlflow.log_metric("learning_rate", optimizer.param_groups[0]['lr'], step=step), step=step)
         optimizer.step()
         scheduler.step()
         # scaler.update()
@@ -188,6 +194,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    logger.info('Parsed command-line arguments:')
+    for arg, value in vars(args).items():
+        logger.info(f"  {arg}: {value}")
+
+    logger.info('Setting up training environment...')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
     num_bins = 128  # e.g., 100 bins means 101 borders
@@ -226,6 +237,7 @@ if __name__ == "__main__":
     import os
     from datetime import datetime
 
+    logger.info('Initializing MLflow tracking...')
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -261,4 +273,4 @@ if __name__ == "__main__":
             compile_model=False
         )
 
-    print("done")
+    logger.info("done")
