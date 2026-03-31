@@ -44,9 +44,10 @@ class GatedLatentTransferLayer(nn.Module):
 
     Inspired by: Perceiver IO (Jaegle et al., 2021) and Neural Processes.
     """
-    def __init__(self, dmodel=128, use_gate=False, use_valve=False, hp_mode="concat", compute_own_self_ABC_attn=True, use_struct_gate=True):
+    def __init__(self, dmodel=128, use_gate=False, use_valve=False, hp_mode="concat", compute_own_self_ABC_attn=True, use_struct_gate=True, use_spatial_interpolation=False):
         super().__init__()
         self.hp_mode = hp_mode
+        self.dmodel = dmodel
 
         in_dim = dmodel * 2 if hp_mode == "concat" else dmodel
 
@@ -64,7 +65,9 @@ class GatedLatentTransferLayer(nn.Module):
             )
         self.cross_attention = nn.MultiheadAttention(embed_dim=in_dim, vdim=dmodel, num_heads=4)
 
-        self.C_test_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, vdim=dmodel)
+        self.use_spatial_interpolation = use_spatial_interpolation
+        if use_spatial_interpolation:
+            self.C_test_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, vdim=dmodel)
 
         self.out_proj = MLP(in_dim, dmodel, in_dim)
 
@@ -133,31 +136,32 @@ class GatedLatentTransferLayer(nn.Module):
 
         # down project to dmodel
         ABC = self.linear_AB1(ABC)
-        if self.compute_own_self_ABC_attn:
-            # 2.1. Deal with padding in self attention
-            # since A and B have different sequence lengths, we need to build an attention mask
-            # to prevent attending to the padded points.
-            mask_A_train = mask_A[:, :sep] if mask_A is not None else None
-            mask_B_train = mask_B[:, :sep] if mask_B is not None else None
-
-            if mask_A_train is not None and mask_B_train is not None:
-                # C doesn't have a mask (it uses all its points), so it's all False
-                mask_C_train = mask_A_train.clone()
-
-                # Concat along batch dimension (dim=0) because ABC has 3*Batch size
-                self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
-            else:
-                mask_C_train = None
-                self_attn_mask = None
-
-            # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
-            ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
+        # if self.compute_own_self_ABC_attn:
+        #     # 2.1. Deal with padding in self attention
+        #     # since A and B have different sequence lengths, we need to build an attention mask
+        #     # to prevent attending to the padded points.
+        #     mask_A_train = mask_A[:, :sep] if mask_A is not None else None
+        #     mask_B_train = mask_B[:, :sep] if mask_B is not None else None
+        #
+        #     if mask_A_train is not None and mask_B_train is not None:
+        #         # C doesn't have a mask (it uses all its points), so it's all False
+        #         mask_C_train = mask_A_train.clone()
+        #
+        #         # Concat along batch dimension (dim=0) because ABC has 3*Batch size
+        #         self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
+        #     else:
+        #         mask_C_train = None
+        #         self_attn_mask = None
+        #
+        #     # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
+        #     ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
 
         # Extract the feature descriptors for each task after self-attention
         a_dim, b_dim = A_train.shape[1], B_train.shape[1]
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim + b_dim], ABC[:, a_dim + b_dim:]
 
         if self.use_struct_gate: # -------------------------------------------------------------------------------------
+            mask_B_train = mask_B[:, :sep] if mask_B is not None else None
             # 3a. A interrogates B based on SHAPE, not location.
             # Query: A_feat, Keys: B_feat, Values: B_feat
             # (Notice: No hp_A or hp_B included here!)
@@ -183,12 +187,16 @@ class GatedLatentTransferLayer(nn.Module):
             # If the structures don't align, task_trust_score drops to ~0.
             # Consider, multiplying the pointwise trust score on B_feat, AND the overall task trust score
             B_feat = B_feat * task_trust_score
+            # B_feat *= pointwise_trust.expand_as(B_feat)
 
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ------------------------------------------
         # spatial interpolation to get C_test_feat for the query points
         # Consider: that this could also be already be done in the backbone representation, so we might be able to just
         #  take C_test directly from the input without the need to attend
-        C_test_feat, _ = self.C_test_attention(hp_C_test, hp_C_train, C_feat, key_padding_mask=mask_C_train)
+        # if self.use_spatial_interpolation:
+        #     C_test_feat, _ = self.C_test_attention(hp_C_test, hp_C_train, C_feat, key_padding_mask=mask_C_train)
+        # else:
+        #     C_test_feat = self.linear_AB1(self._merge_hp(hp_C_test, C_test))
 
         # 4. Cross Attention from C to A's and B's features ------------------------------------------------------------
         # throw in A_feat and B_feat into one context for C to cross attend to.
@@ -207,7 +215,7 @@ class GatedLatentTransferLayer(nn.Module):
 
         query = torch.cat([
             self._merge_hp(hp_C_train, C_train),
-            self._merge_hp(hp_C_test, C_test_feat),
+            self._merge_hp(hp_C_test, C_test),
         ], dim=0)
         key = torch.cat([
             self._merge_hp(hp_A_train, A_train),
@@ -225,6 +233,7 @@ class GatedLatentTransferLayer(nn.Module):
         # C is looking at A and B, so the keys sequence length is 2*T_max.
         # Mask shape needs to be [Batch, 2*T_max]
         # Build the cross-attention mask (Shape: [Batch, 2*sep])
+        mask_A_train = mask_A[:, :sep] if mask_A is not None else None
         if mask_A_train is not None and mask_B_train is not None:
             # Concat along the sequence dimension (dim=1) for the mask
             cross_attn_mask = torch.cat([mask_A_train, mask_B_train], dim=1)
