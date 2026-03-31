@@ -88,7 +88,7 @@ def train_meta_model(
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
         # scaler.step(optimizer)
 
-        mlflow.log_metric(mlflow.log_metric("learning_rate", optimizer.param_groups[0]['lr'], step=step), step=step)
+        mlflow.log_metric("learning_rate", optimizer.param_groups[0]['lr'], step=step)
         optimizer.step()
         scheduler.step()
         # scaler.update()
