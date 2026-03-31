@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
 class MLP(nn.Module):
@@ -17,6 +18,175 @@ class MLP(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
+
+
+class DistributionalGlobalGate(nn.Module):
+    """Core idea: Instead of mean pooling or softmin/softmax pooling, which are just single summary statistics,
+    we can learn a more expressive pooling function that looks at the entire distribution of trust scores."""
+    def __init__(self, dmodel, num_quantiles=5):
+        super().__init__()
+
+        # We will extract 'num_quantiles' + 2 moments (mean, variance)
+        self.dist_features_dim = num_quantiles + 4  # + mean, var, skewness, kurtosis
+
+        # The Quantiles we want to sample (e.g., [0.1, 0.25, 0.5, 0.75, 0.9]) # limited by n(task_B)
+        self.register_buffer(
+            "quantiles",
+            torch.linspace(0.1, 0.9, num_quantiles)
+        )
+
+        # The MLP that looks at the distribution and outputs the global gate
+        self.distribution_analyzer = nn.Sequential(
+            nn.Linear(self.dist_features_dim, dmodel // 2),
+            nn.GELU(),
+            nn.Linear(dmodel // 2, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, raw_trust_A):
+        """
+        raw_trust_A: [T_A, Batch, 1] - Pointwise trust scores
+        """
+        # 1. Cast and prepare
+        raw_trust_A = raw_trust_A.float()
+        eps = 1e-6
+
+        # 2. Calculate Raw Moments (Efficiently reduces dim=0 immediately)
+        # These are E[X], E[X^2], E[X^3], E[X^4]
+        # Memory footprint remains O(Batch) rather than O(T_A * Batch)
+        mean_trust = raw_trust_A.mean(dim=0)  # E[X]
+        raw_2 = torch.pow(raw_trust_A, 2).mean(dim=0)  # E[X^2]
+        raw_3 = torch.pow(raw_trust_A, 3).mean(dim=0)  # E[X^3]
+        raw_4 = torch.pow(raw_trust_A, 4).mean(dim=0)  # E[X^4]
+
+        # 3. Calculate Variance and Central Moments
+        # Var = E[X^2] - E[X]^2
+        var_trust = raw_2 - (mean_trust ** 2)
+        std_trust = torch.sqrt(var_trust + eps)
+
+        # Central 3rd Moment: E[(X-mu)^3] = E[X^3] - 3*E[X^2]*mu + 2*mu^3
+        central_3 = raw_3 - 3 * raw_2 * mean_trust + 2 * (mean_trust ** 3)
+        skew_trust = central_3 / (std_trust ** 3 + eps)
+
+        # Central 4th Moment: E[(X-mu)^4] = E[X^4] - 4*E[X^3]*mu + 6*E[X^2]*mu^2 - 3*mu^4
+        central_4 = raw_4 - 4 * raw_3 * mean_trust + 6 * raw_2 * (mean_trust ** 2) - 3 * (mean_trust ** 4)
+        kurt_trust = central_4 / (std_trust ** 4 + eps)
+
+        # 4. Calculate Quantiles (Already relatively memory efficient)
+        # Shape: [num_quantiles, Batch, 1]
+        q_vals = torch.quantile(raw_trust_A, self.quantiles, dim=0)
+
+        # 5. Assemble the Distribution Vector
+        # Squeeze all to [Batch, N]
+        q_vals = q_vals.transpose(0, 1).squeeze(-1)  # [Batch, num_quantiles]
+
+        # Concatenate: All inputs should be [Batch, 1] before cat
+        dist_vector = torch.cat([
+            q_vals,
+            mean_trust,
+            var_trust,
+            skew_trust,
+            kurt_trust
+        ], dim=-1)
+
+        # 6. Global Decision
+        global_gate_logits = self.distribution_analyzer(dist_vector)
+
+        return global_gate_logits.unsqueeze(0).to(raw_trust_A.dtype)
+
+
+class StructuralGatingModule(nn.Module):
+    """
+    Evaluates the relationship between a Source (B) and Target (A).
+
+    Supports different pooling strategies to aggregate structural alignment:
+    - "mean": Average alignment across the sequence (baseline).
+    - "softmin": Focuses on maximum discrepancy (the weakest link).
+    - "softmax": Focuses on maximum alignment (the strongest link).
+    """
+
+    def __init__(self, dmodel, pool_mode="distributional", temp=0.1, use_pointwise=True, use_global=True):
+        super().__init__()
+
+        valid_modes = ["mean", "softmin", "softmax", "distributional"]
+        if pool_mode not in valid_modes:
+            raise ValueError(f"pool_mode must be one of {valid_modes}")
+
+        self.pool_mode = pool_mode
+        self.temp = temp
+        self.use_pointwise = use_pointwise
+        self.use_global = use_global
+
+        # Shared alignment tool: A and B use this to "look" at each other
+        self.alignment_attn = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4, batch_first=False)
+
+        # Shared "Trust" evaluator: Projects [Feat, Retrieved_Feat] -> Score [0, 1]
+        self.trust_proj = nn.Sequential(
+            nn.Linear(2 * dmodel, dmodel),
+            nn.GELU(),
+            nn.Linear(dmodel, 1),
+            nn.Sigmoid()
+        )
+
+        if pool_mode == "distributional":
+            self.distributional_gate = DistributionalGlobalGate(dmodel)
+
+    def forward(self, A_feat, B_feat, mask_A=None, mask_B=None):
+        """
+        Returns a scaling tensor of shape [T_B, Batch, 1]
+        to be multiplied with B_feat.
+        """
+        batch_size = B_feat.shape[1]
+        device = B_feat.device
+
+        # Identity defaults (no filtering)
+        pointwise_gate = torch.ones(B_feat.shape[0], batch_size, 1, device=device)
+        global_gate = torch.ones(1, batch_size, 1, device=device)
+
+        # 1. Pointwise: B finds its 'twins' in A to see which specific B-points are valid
+        if self.use_pointwise:
+            # TODO: use padding and batch stacking to make this a single fwd call with the global gate.
+            #  drawback if n_A << n_B, then we are doing a lot of redundant attention calculations on the padded A tokens.
+            #  Ablate what the time savings are vs the !
+            A_ret_for_B, _ = self.alignment_attn(
+                query=B_feat, key=A_feat, value=A_feat, key_padding_mask=mask_A
+            )
+            # Note: concatenating here enables the network to learn the distance between them directly!
+            # https://arxiv.org/pdf/1711.06025
+            pointwise_gate = self.trust_proj(torch.cat([B_feat, A_ret_for_B], dim=-1))
+
+        # 2. Global: A checks if B as a whole matches its expected structure
+        if self.use_global:
+            B_ret_for_A, _ = self.alignment_attn(
+                query=A_feat, key=B_feat, value=B_feat, key_padding_mask=mask_B
+            )
+            # Raw point-by-point trust from A's perspective: Shape [T_A, Batch, 1]
+            raw_trust_A = self.trust_proj(torch.cat([A_feat, B_ret_for_A], dim=-1))
+
+            # --- Pooling Strategies ---
+            if self.pool_mode == "distributional":
+                # Distributional Global Gate (learned, differentiable)
+                global_gate = self.distributional_gate(raw_trust_A)
+
+            elif self.pool_mode == "mean":
+                # Baseline: Simple unweighted average
+                global_gate = raw_trust_A.mean(dim=0, keepdim=True)
+
+            elif self.pool_mode == "softmin":
+                # Differentiable Minimum (Focus on worst discrepancy)
+                weights = F.softmin(raw_trust_A / self.temp, dim=0)
+                global_gate = (weights * raw_trust_A).sum(dim=0, keepdim=True)
+
+            elif self.pool_mode == "softmax":
+                # Differentiable Maximum (Focus on best alignment)
+                weights = F.softmax(raw_trust_A / self.temp, dim=0)
+                global_gate = (weights * raw_trust_A).sum(dim=0, keepdim=True)
+
+        ForwardMetaContext.set(global_gate=global_gate.detach().cpu().mean())
+        ForwardMetaContext.set(pointwise_gate=pointwise_gate.detach().cpu().mean())
+
+        return pointwise_gate * global_gate
 
 
 class GatedLatentTransferLayer(nn.Module):
@@ -44,7 +214,9 @@ class GatedLatentTransferLayer(nn.Module):
 
     Inspired by: Perceiver IO (Jaegle et al., 2021) and Neural Processes.
     """
-    def __init__(self, dmodel=128, use_gate=False, use_valve=False, hp_mode="concat", compute_own_self_ABC_attn=True, use_struct_gate=True, use_spatial_interpolation=False):
+
+    def __init__(self, dmodel=128, use_gate=False, use_valve=False, hp_mode="concat", compute_own_self_ABC_attn=True,
+                 use_struct_gate=True, use_spatial_interpolation=False, gate_params={"use_pointwise": True, "use_global": True}):
         super().__init__()
         self.hp_mode = hp_mode
         self.dmodel = dmodel
@@ -57,12 +229,9 @@ class GatedLatentTransferLayer(nn.Module):
             self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4)
 
         self.use_struct_gate = use_struct_gate
-        if self.use_struct_gate:
-            self.alignment_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4)
-            self.trust_proj = nn.Sequential(
-                nn.Linear(2 * dmodel, dmodel),
-                nn.Sigmoid()
-            )
+        if use_struct_gate:
+            # Pass your ablation flags here (e.g., use_pointwise=False)
+            self.struct_gate_module = StructuralGatingModule(dmodel, **gate_params)
         self.cross_attention = nn.MultiheadAttention(embed_dim=in_dim, vdim=dmodel, num_heads=4)
 
         self.use_spatial_interpolation = use_spatial_interpolation
@@ -160,34 +329,15 @@ class GatedLatentTransferLayer(nn.Module):
         a_dim, b_dim = A_train.shape[1], B_train.shape[1]
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim + b_dim], ABC[:, a_dim + b_dim:]
 
-        if self.use_struct_gate: # -------------------------------------------------------------------------------------
-            mask_B_train = mask_B[:, :sep] if mask_B is not None else None
-            # 3a. A interrogates B based on SHAPE, not location.
-            # Query: A_feat, Keys: B_feat, Values: B_feat
-            # (Notice: No hp_A or hp_B included here!)
-            A_retrieved_from_B, _ = self.alignment_attention(
-                query=A_feat,
-                key=B_feat,
-                value=B_feat,
-                key_padding_mask=mask_B_train
-            )
+        if self.use_struct_gate:
+            m_A = mask_A[:, :sep] if mask_A is not None else None
+            m_B = mask_B[:, :sep] if mask_B is not None else None
 
-            # 3b. Evaluate the structural mismatch
-            # If B is just a shifted A, A_retrieved_from_B will closely match A_feat
-            # because A successfully found its structural twins in B.
-            # If B is noise, this difference will be massive.
-            structural_diff = torch.cat([A_feat, A_retrieved_from_B], dim=-1)
+            # Get the unified gate
+            gate = self.struct_gate_module(A_feat, B_feat, mask_A=m_A, mask_B=m_B)
 
-            # Project to a single score per point, then average across the A sequence
-            # Shape goes from [T_A, Batch, D] -> [T_A, Batch, 1] -> [1, Batch, 1]
-            pointwise_trust = self.trust_proj(structural_diff)  # e.g., Linear(D*2, 1) + Sigmoid
-            task_trust_score = pointwise_trust.mean(dim=0, keepdim=True)
-
-            # 3c. Gate Task B globally
-            # If the structures don't align, task_trust_score drops to ~0.
-            # Consider, multiplying the pointwise trust score on B_feat, AND the overall task trust score
-            B_feat = B_feat * task_trust_score
-            # B_feat *= pointwise_trust.expand_as(B_feat)
+            # Apply to Source
+            B_feat = B_feat * gate
 
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ------------------------------------------
         # spatial interpolation to get C_test_feat for the query points
@@ -234,6 +384,7 @@ class GatedLatentTransferLayer(nn.Module):
         # Mask shape needs to be [Batch, 2*T_max]
         # Build the cross-attention mask (Shape: [Batch, 2*sep])
         mask_A_train = mask_A[:, :sep] if mask_A is not None else None
+        mask_B_train = mask_B[:, :sep] if mask_B is not None else None
         if mask_A_train is not None and mask_B_train is not None:
             # Concat along the sequence dimension (dim=1) for the mask
             cross_attn_mask = torch.cat([mask_A_train, mask_B_train], dim=1)

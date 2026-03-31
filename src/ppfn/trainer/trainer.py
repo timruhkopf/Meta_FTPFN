@@ -326,7 +326,7 @@ class PPFNTrainer:
         # if isinstance(batch, (tuple, list)):
         # batch = tuple(b.to(self.device) if torch.is_tensor(b) else b for b in batch)
 
-        with amp.autocast(device_type="cuda", enabled=self.use_amp):
+        with amp.autocast(device_type="cuda", enabled=self.use_amp): # Consider: dtype=torch.bfloat16): and not use the gard scaler at all?
             output = self.model(batch, single_eval_pos=single_eval_pos, **kwargs)
 
 

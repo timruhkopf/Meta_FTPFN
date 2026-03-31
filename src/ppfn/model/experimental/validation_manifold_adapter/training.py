@@ -3,13 +3,16 @@ import torch.optim as optim
 from pathlib import Path
 from tqdm import tqdm
 
-from pfns4hpo.bar_distribution import  FullSupportBarDistribution
-from ppfn.model.experimental.layers.glt_adapter import  GatedLatentTransferLayer
+import mlflow
+
+from pfns4hpo.bar_distribution import FullSupportBarDistribution
+from ppfn.model.experimental.layers.glt_adapter import GatedLatentTransferLayer
 from ppfn.model.experimental.validation_manifold_adapter.meta_transfer_backbone import MetaTransferModel
 from ppfn.model.experimental.validation_manifold_adapter.plotting import plot_training_step
 from ppfn.model.experimental.validation_manifold_adapter.prior import create_padded_batch, \
     VectorizedComplexTaskGenerator
 
+from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
 def train_meta_model(
@@ -26,7 +29,8 @@ def train_meta_model(
         n_query=50,
         save_path=Path('.'),
         plot_every=200,
-        compile_model=True
+        compile_model=True,
+        clip_norm=1.0
 ):
     model = model.to(device)
 
@@ -36,7 +40,7 @@ def train_meta_model(
         model = torch.compile(model)
 
     # Initialize GradScaler for Automatic Mixed Precision (AMP)
-    scaler = torch.amp.GradScaler('cuda', enabled=True)
+    # scaler = torch.amp.GradScaler('cuda', enabled=True)
 
     # CHANGED: Track related and unrelated losses separately
     loss_history_rel = []
@@ -45,6 +49,7 @@ def train_meta_model(
     iterator = tqdm(range(steps + 1))
 
     for step in iterator:
+        ForwardMetaContext.clear()
         model.train()
         optimizer.zero_grad()
 
@@ -66,16 +71,21 @@ def train_meta_model(
         total_loss = loss_per_item.mean()
 
         # Use the scaler to backward (prevents underflow in FP16/BF16)
-        scaler.scale(total_loss).backward()
+        # scaler.scale(total_loss).backward()
+        total_loss.backward()
 
         # --- GRADIENT CLIPPING BLOCK ---
         # 1. Unscale the gradients so the norm is calculated correctly
-        scaler.unscale_(optimizer)
+        # scaler.unscale_(optimizer)
 
         # 2. Clip the gradients (max_norm=1.0 is standard for Transformers/MLPs)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+        # scaler.step(optimizer)
+
+        mlflow.log_metric(lr=optimizer.param_groups[0]['lr'], step=step)
+        optimizer.step()
+        scheduler.step()
+        # scaler.update()
 
         # --- LOSS SPLITTING & LOGGING ---
         # Split the loss based on the boolean mask (we cast to float32 before calling item
@@ -85,14 +95,18 @@ def train_meta_model(
         if (~is_unrel).any():
             l_rel = loss_per_item[~is_unrel].mean().float().item()
             loss_history_rel.append(l_rel)
+            mlflow.log_metric("nll/loss_rel", loss_history_rel[-1], step=step)
         else:
             loss_history_rel.append(loss_history_rel[-1] if loss_history_rel else 0.0)
+            mlflow.log_metric("nll/loss_rel", loss_history_rel[-1], step=step)
 
         if is_unrel.any():
             l_unrel = loss_per_item[is_unrel].mean().float().item()
             loss_history_unrel.append(l_unrel)
+            mlflow.log_metric("nll/loss_unrel", loss_history_unrel[-1], step=step)
         else:
             loss_history_unrel.append(loss_history_unrel[-1] if loss_history_unrel else 0.0)
+            mlflow.log_metric("nll/loss_unrel", loss_history_unrel[-1], step=step)
 
         if step == 0:
             mem_allocated = torch.cuda.max_memory_allocated(device) / 1024 ** 3
@@ -100,7 +114,11 @@ def train_meta_model(
             print(f"\n[GPU Monitor] Step 0: Max Allocated: {mem_allocated:.2f}GB | Max Reserved: {mem_reserved:.2f}GB")
             torch.cuda.reset_peak_memory_stats(device)
 
-        scheduler.step()
+        metrics = ForwardMetaContext._state.__dict__
+        metrics = {k: float(v.cpu().item()) for k, v in metrics.items() if isinstance(v, torch.Tensor) and v.numel() == 1}
+        mlflow.log_metrics(metrics, step=step)
+
+        # TODO track nll/C-A
 
         if step % 10 == 0:
             iterator.set_description(
@@ -141,6 +159,35 @@ def train_meta_model(
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train the Meta-Transfer Model with Gated Latent Transfer Layer")
+    parser.add_argument('--mlflow_experiment', type=str, default="MetaTransfer_Validation",
+                        help='MLflow experiment name')
+    parser.add_argument('--mlflow_run_name', type=str, default="GatedLatentTransfer_Run", help='MLflow run name')
+    parser.add_argument('--mlflow_tracking_uri', type=str, default="sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db", help='MLflow tracking URI')
+    parser.add_argument('--pool_mode', type=str, default="mean",
+                        choices=["mean", "softmax", "softmin", "distributional"], help='Pooling mode for the gate')
+    parser.add_argument('--hp_mode', type=str, default="concat",
+                        choices=["concat", "add", "ignore_hp"],
+                        help='How to incorporate hyperparameters into the transfer layer')
+    parser.add_argument('pointwise', action='store_true', help='Whether to use pointwise gating')
+    parser.add_argument('global_gate', action='store_true', help='Whether to use a global gate in addition to the pointwise gate')
+
+
+    parser.add_argument('--steps', type=int, default=100000, help='Number of training steps')
+    parser.add_argument('--batch_size', type=int, default=8192, help='Batch size for training')
+    parser.add_argument('--n_A', type=int, default=5, help='Number of context points for target task A')
+    parser.add_argument('--n_B', type=int, default=30, help='Number of context points for source task B')
+    parser.add_argument('--n_query', type=int, default=50, help='Number of query points')
+    parser.add_argument('--plot_every', type=int, default=1000, help='Plot every N steps')
+    parser.add_argument('--save_path', type=str, default="./outputs/debug/", help='Path to save training plots')
+    parser.add_argument('--max_lr', type=float, default=2e-4, help='Maximum learning rate for OneCycleLR')
+    parser.add_argument('--pct_start', type=float, default=0.10,
+                        help='Percentage of steps to spend on the warmup phase of OneCycleLR')
+
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
     num_bins = 128  # e.g., 100 bins means 101 borders
@@ -150,38 +197,56 @@ if __name__ == "__main__":
     generator = VectorizedComplexTaskGenerator()
 
     model = MetaTransferModel(
-        transfer_layer=GatedLatentTransferLayer(dmodel=128),
+        transfer_layer=GatedLatentTransferLayer(
+            dmodel=128, use_struct_gate=True,
+            gate_params={
+                "use_pointwise": args.pointwise,
+                "use_global": args.global_gate,
+                "pool_mode": args.pool_mode
+            },
+            hp_mode=args.hp_mode
+        ),
         input_dim=1,
-        num_bins=num_bins
+        num_bins=num_bins,
+        pre_train=False
     )
     model = model.to(device)
 
-    STEPS = 100000
-    max_lr = 3e-4
+    STEPS = args.steps
+    max_lr = args.max_lr
     optimizer = optim.Adam(model.parameters(), lr=max_lr)
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=max_lr,
         total_steps=STEPS + 1,
-        pct_start=0.10,  # Spends the first 10% of steps warming up
+        pct_start=args.pct_start,  # Spends the first 10% of steps warming up
         anneal_strategy='cos'
     )
+    mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+    mlflow.set_experiment(args.mlflow_experiment)
 
-    train_meta_model(
-        device=device,
-        model=model,
-        criterion=criterion,
-        generator=generator,
-        optimizer=optimizer,
-        scheduler=scheduler,
+    with mlflow.start_run(run_name=args.mlflow_run_name ):
+        mlflow.log_params(vars(args))
 
-        steps=STEPS,
-        batch_size=8192,  # make use of VRAM
-        n_A=5,  # sparse target
-        n_B=30,  # dense related
-        plot_every=500,
-        save_path=Path("/home/ruhkopf/PycharmProjects/Meta_FTPFN/outputs/pfn_backbone_attn/"),
-        compile_model=False
-    )
+        n_params = sum(p.numel() for p in model.parameters())
+        mlflow.log_metric("model/num_params", n_params)
 
-    print("Training complete! Check the 'training_plots' folder.")
+
+        train_meta_model(
+            device=device,
+            model=model,
+            criterion=criterion,
+            generator=generator,
+            optimizer=optimizer,
+            scheduler=scheduler,
+
+            steps=STEPS,
+            batch_size=args.batch_size,
+            n_A=args.n_A,  # sparse target
+            n_B=args.n_B,  # dense related
+            plot_every=args.plot_every,
+            save_path=Path(args.save_path),
+            compile_model=False
+        )
+
+    print("done")
