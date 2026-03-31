@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=gating_ablation
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32GB
 #SBATCH --time=12:00:00
@@ -23,7 +23,7 @@ esac
 
 echo "Starting Run: $RUN_NAME with mode $MODE"
 
-python $BIGWORK/Meta_FTPFN/src/ppfn/model/experimental/validation_manifold_adapter/training.py.py \
+python $BIGWORK/Meta_FTPFN/src/ppfn/model/experimental/validation_manifold_adapter/training.py \
     --mlflow_tracking_uri "$TRACKING_URI" \
     --mlflow_experiment "$EXPERIMENT" \
     --mlflow_run_name "$RUN_NAME" \
