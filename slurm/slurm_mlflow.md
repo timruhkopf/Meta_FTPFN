@@ -21,7 +21,7 @@ USERNAME=nhwpruht
 echo "----------------------------------------------------------------"
 echo "MLflow UI is starting on $NODE_HOSTNAME:$PORT"
 echo "PASTE THIS ON YOUR LOCAL MACHINE:"
-echo "ssh -L $LOCAL_PORT:localhost:$PORT $USERNAME@$NODE_HOSTNAME.cluster.uni-hannover.de"
+echo "ssh -o IdentitiesOnly=yes -L $LOCAL_PORT:localhost:$PORT $USERNAME@$NODE_HOSTNAME.cluster.uni-hannover.de"
 echo "----------------------------------------------------------------"
 
 # 4. Run the UI
@@ -30,7 +30,7 @@ uv run mlflow ui --backend-store-uri file:///bigwork/$USERNAME/Meta_FTPFN/mlruns
 
 ## on local 
 ```bash 
-ssh -L <unused-local-port>:localhost:<remote-port> nhwpruht@login.cluster.uni-hannover.de
+ssh -o IdentitiesOnly=yes -L <unused-local-port>:localhost:<remote-port> nhwpruht@login.cluster.uni-hannover.de
 ```
 Then open your browser and navigate to `http://localhost:<local-port>` to access the MLflow dashboard.
 It may need a refresh to show the data.

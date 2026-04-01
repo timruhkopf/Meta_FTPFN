@@ -260,11 +260,10 @@ if __name__ == "__main__":
     os.makedirs(args.save_path, exist_ok=True)
 
     with mlflow.start_run(run_name=args.mlflow_run_name ):
-        mlflow.log_params(vars(args))
-
+        params = vars(args)
         n_params = sum(p.numel() for p in model.parameters())
-        mlflow.log_metric("model/num_params", n_params)
-
+        params.update({"total_params": n_params})
+        mlflow.log_params(params)
 
         train_meta_model(
             device=device,
