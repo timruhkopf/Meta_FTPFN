@@ -14,25 +14,24 @@ set -e
 set -u
 
 TRACKING_URI="file:////bigwork/nhwpruht/Meta_FTPFN/mlruns"
-EXPERIMENT="gating_ablation"
+EXPERIMENT="gating_ablation1"
 # Define our logic branches based on the Array ID
 case $SLURM_ARRAY_TASK_ID in
-    0) MODE="softmin";      EXTRA_FLAGS="--global_gate --batch_size 6144 --steps 150000";     RUN_NAME="softmin" ;;
-    1) MODE="distributional"; EXTRA_FLAGS="--global_gate --batch_size 6144 --steps 150000";   RUN_NAME="dist" ;;
-    2) MODE="mean";         EXTRA_FLAGS="--global_gate --batch_size 6144 --steps 150000";      RUN_NAME="mean" ;;
+    0) MODE="softmin";      EXTRA_FLAGS="--global_gate --batch_size 6144 --steps 150000";     RUN_NAME="softmin1" ;;
+    1) MODE="distributional"; EXTRA_FLAGS="--global_gate --batch_size 6144 --steps 150000";   RUN_NAME="dist1" ;;
+    2) MODE="mean";         EXTRA_FLAGS="--global_gate --batch_size 6144 --steps 150000" ;      RUN_NAME="mean1" ;;
 esac
 
 echo "Starting Run: $RUN_NAME with mode $MODE"
 echo "Experiment: $EXPERIMENT"
 echo "Tracking URI: $TRACKING_URI"
-
+sleep $((RANDOM % 10))
 cd $BIGWORK/Meta_FTPFN
 uv run $BIGWORK/Meta_FTPFN/src/ppfn/model/experimental/validation_manifold_adapter/training.py \
     --mlflow_tracking_uri "$TRACKING_URI" \
     --mlflow_experiment "$EXPERIMENT" \
     --mlflow_run_name "$RUN_NAME" \
     --pool_mode "$MODE" \
-    $EXTRA_FLAGS \
-    --batch_size 8192
+    $EXTRA_FLAGS
 
 echo "Completed Run: $RUN_NAME"

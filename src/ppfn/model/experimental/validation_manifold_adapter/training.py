@@ -211,6 +211,7 @@ if __name__ == "__main__":
 
     mlflow.set_tracking_uri(args.mlflow_tracking_uri)
     mlflow.set_experiment(args.mlflow_experiment)
+
     run_dir = f"{args.mlflow_run_name}_{timestamp}"
     # FIXME: for local debugging, this will end up in the validation_manifold_adapter
     # fixme: log save_path as a param & logger.info
@@ -222,20 +223,6 @@ if __name__ == "__main__":
 
     logger.info('Setting up training environment...')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if device.type == 'cuda':
-        gpu_properties = torch.cuda.get_device_properties(device)
-        gpu_name = gpu_properties.name
-        total_memory_gb = gpu_properties.total_memory / (1024 ** 3)
-
-        # Log to MLflow as tags
-        mlflow.set_tag("device.name", gpu_name)
-        mlflow.set_tag("device.limit_gb", f"{total_memory_gb:.2f}GB")
-
-        # Print for your console log
-        print(f"\n[Hardware] Running on {gpu_name} with {total_memory_gb:.2f}GB VRAM")
-    else:
-        mlflow.set_tag("device.name", "cpu")
 
     print(f"Training on: {device}")
     num_bins = 128  # e.g., 100 bins means 101 borders
@@ -277,6 +264,21 @@ if __name__ == "__main__":
     os.makedirs(args.save_path, exist_ok=True)
 
     with mlflow.start_run(run_name=args.mlflow_run_name ):
+
+        if device.type == 'cuda':
+            gpu_properties = torch.cuda.get_device_properties(device)
+            gpu_name = gpu_properties.name
+            total_memory_gb = gpu_properties.total_memory / (1024 ** 3)
+
+            # Log to MLflow as tags
+            mlflow.set_tag("device.name", gpu_name)
+            mlflow.set_tag("device.limit_gb", f"{total_memory_gb:.2f}GB")
+
+            # Print for your console log
+            print(f"\n[Hardware] Running on {gpu_name} with {total_memory_gb:.2f}GB VRAM")
+        else:
+            mlflow.set_tag("device.name", "cpu")
+
         params = vars(args)
         n_params = sum(p.numel() for p in model.parameters())
         params.update({"total_params": n_params})
