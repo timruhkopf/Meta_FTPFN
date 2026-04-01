@@ -67,7 +67,12 @@ def train_meta_model(
 
         # Calculate unreduced loss using BarDistribution
         # BarDistribution returns shape [T_query, Batch]
-        loss_tensor = criterion(logits=y_pred, y=batch["y_qA_true"])
+        # loss_tensor = criterion(logits=y_pred, y=batch["y_qA_true"]) # notice, that here the loss was based on bfp16
+        logits_fp32 = y_pred.float()
+        y_true_fp32 = batch["y_qA_true"].float()
+
+        # Now compute the loss with full precision
+        loss_tensor = criterion(logits=logits_fp32, y=y_true_fp32)
 
         # Average over sequence dimension (dim=0)
         # Note: Removed dim=2 because BarDistribution drops the trailing '1' dimension
@@ -86,6 +91,9 @@ def train_meta_model(
 
         # 2. Clip the gradients (max_norm=1.0 is standard for Transformers/MLPs)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+
+        unclipped_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+        mlflow.log_metric("grad_norm/unclipped", unclipped_norm, step=step)
         # scaler.step(optimizer)
 
         mlflow.log_metric("learning_rate", optimizer.param_groups[0]['lr'], step=step)
@@ -188,8 +196,8 @@ if __name__ == "__main__":
     parser.add_argument('--n_query', type=int, default=50, help='Number of query points')
     parser.add_argument('--plot_every', type=int, default=1000, help='Plot every N steps')
     parser.add_argument('--save_path', type=str, default="./outputs/debug/", help='Path to save training plots')
-    parser.add_argument('--max_lr', type=float, default=2e-4, help='Maximum learning rate for OneCycleLR')
-    parser.add_argument('--pct_start', type=float, default=0.10,
+    parser.add_argument('--max_lr', type=float, default=4e-4, help='Maximum learning rate for OneCycleLR')
+    parser.add_argument('--pct_start', type=float, default=0.20,
                         help='Percentage of steps to spend on the warmup phase of OneCycleLR')
 
     args = parser.parse_args()
@@ -225,7 +233,7 @@ if __name__ == "__main__":
 
     STEPS = args.steps
     max_lr = args.max_lr
-    optimizer = optim.Adam(model.parameters(), lr=max_lr)
+    optimizer = optim.AdamW(model.parameters(), lr=max_lr)
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=max_lr,
@@ -244,6 +252,8 @@ if __name__ == "__main__":
     mlflow.set_tracking_uri(args.mlflow_tracking_uri)
     mlflow.set_experiment(args.mlflow_experiment)
     run_dir = f"{args.mlflow_run_name}_{timestamp}"
+    # FIXME: for local debugging, this will end up in the validation_manifold_adapter
+    # fixme: log save_path as a param & logger.info
     args.save_path = os.path.join("outputs", args.mlflow_experiment, run_dir)
 
     # Ensure the directory exists
