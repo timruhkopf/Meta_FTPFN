@@ -104,7 +104,10 @@ class MetaTransferModel(nn.Module):
 
         # FIXME: will fail if A is variable length during inference
         # C_out = ABC.chunk(3, dim=1)[3]
+        AB = torch.cat([A, B], dim=1)  # Shape: [T_total*2, Batch, dmodel]
+        A, B = self.pfn_fwd(AB).chunk(2, dim=1)  # Apply the PFN block to A and B, then split them back
+
         C_out = self.pfn_fwd(C_out)  # Apply the PFN block to C_out
         query_out = C_out[sep:, :, :]
 
-        return self.out_proj(query_out)  # Shape will now be [T_query, Batch, num_bins]
+        return self.out_proj(A[sep:, :, :]), self.out_proj(B[sep:,:, :]), self.out_proj(query_out)  # Shape will now be [T_query, Batch, num_bins]

@@ -35,7 +35,8 @@ def train_meta_model(
         save_path=Path('.'),
         plot_every=200,
         compile_model=True,
-        clip_norm=1.0
+        clip_norm=1.0,
+        use_AB_losses=False
 ):
     logger.info('Starting training loop...')
     model = model.to(device)
@@ -63,16 +64,44 @@ def train_meta_model(
 
         with torch.amp.autocast('cuda', dtype=torch.float16):
             # It is critical, that the BarDistribution criterion is outside the autocast!
-            y_pred = model(batch)  # Shape: [T_query, Batch, num_bins]
+            A, B, C = model(batch)  # Shape: [T_query, Batch, num_bins]
 
         # Calculate unreduced loss using BarDistribution
         # BarDistribution returns shape [T_query, Batch]
         # loss_tensor = criterion(logits=y_pred, y=batch["y_qA_true"]) # notice, that here the loss was based on bfp16
-        logits_fp32 = y_pred.float()
-        y_true_fp32 = batch["y_qA_true"].float()
+        logits_fp32C = C.float()
+        y_true_fp32C = batch["y_qA_true"].float()
 
         # Now compute the loss with full precision
-        loss_tensor = criterion(logits=logits_fp32, y=y_true_fp32)
+        loss_tensor_C = criterion(logits=logits_fp32C, y=y_true_fp32C)
+        if use_AB_losses:
+
+            logits_fp32A = A.float()
+            y_true_fp32A = batch["y_qA_true"].float()
+            loss_tensor_A = criterion(logits=logits_fp32A, y=y_true_fp32A)
+
+            logits_fp32B = B.float()
+            y_true_fp32B = batch["y_qB_true"].float()
+            loss_tensor_B = criterion(logits=logits_fp32B, y=y_true_fp32B)
+
+
+            mlflow.log_metric("nll/loss_A", loss_tensor_A.mean().item(), step=step)
+            mlflow.log_metric("nll/loss_B", loss_tensor_B.mean().item(), step=step)
+
+            mlflow.log_metric("nll/loss_C-A", (loss_tensor_C - loss_tensor_A).mean().item(), step=step)
+            # Note, that this subsumes both related and unrelated losses, because C is A with context of B
+            mlflow.log_metric("nll/loss_C-A_related", (loss_tensor_C[:, ~batch["is_unrelated"]] - loss_tensor_A[:, ~batch["is_unrelated"]]).mean().item(), step=step)
+            mlflow.log_metric("nll/loss_C-A_unrelated", (loss_tensor_C[:, batch["is_unrelated"]] - loss_tensor_A[:, batch["is_unrelated"]]).mean().item(), step=step)
+
+            # avg over A & B, because they are indep. batch elements. Notice, that B has more context --> lower NLL
+            loss_tensor = loss_tensor_C + 0.5 * (loss_tensor_A + loss_tensor_B)
+
+        else:
+            loss_tensor = loss_tensor_C
+        mlflow.log_metric("nll/loss_C", loss_tensor_C.mean().item(), step=step)
+
+
+
 
         # Average over sequence dimension (dim=0)
         # Note: Removed dim=2 because BarDistribution drops the trailing '1' dimension
@@ -154,10 +183,10 @@ def train_meta_model(
                 eval_batch["is_unrelated"] = torch.tensor([False, True], device=device)
 
                 with torch.amp.autocast('cuda', dtype=torch.float16):
-                    eval_pred_logits = model(eval_batch)
+                    eval_A, eval_B, eval_pred_logits_C = model(eval_batch)
 
                     # Convert logits to probabilities for the heatmap
-                    eval_probs = torch.softmax(eval_pred_logits, dim=-1)
+                    eval_probs = torch.softmax(eval_pred_logits_C, dim=-1)
 
                 plot_training_step(
                     step,
@@ -199,7 +228,7 @@ if __name__ == "__main__":
     parser.add_argument('--pct_start', type=float, default=0.20,
                         help='Percentage of steps to spend on the warmup phase of OneCycleLR')
     parser.add_argument('--compile', action='store_true', help='Whether to use torch.compile for faster training (requires PyTorch 2.x and compatible hardware)')
-
+    parser.add_argument('--use_AB_losses', action='store_true', help='Whether to compute and log losses for A and B separately in addition to C')
     args = parser.parse_args()
 
     import os
@@ -298,7 +327,8 @@ if __name__ == "__main__":
             n_B=args.n_B,  # dense related
             plot_every=args.plot_every,
             save_path=Path(args.save_path),
-            compile_model=args.compile
+            compile_model=args.compile,
+            use_AB_losses=args.use_AB_losses
         )
 
     logger.info("done")
