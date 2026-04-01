@@ -46,7 +46,7 @@ def train_meta_model(
         model = torch.compile(model)
 
     # Initialize GradScaler for Automatic Mixed Precision (AMP)
-    # scaler = torch.amp.GradScaler('cuda', enabled=True)
+    scaler = torch.amp.GradScaler('cuda', enabled=True)
 
     # CHANGED: Track related and unrelated losses separately
     loss_history_rel = []
@@ -61,7 +61,7 @@ def train_meta_model(
 
         batch = create_padded_batch(generator, batch_size, n_A, n_B, n_query, device, share_unrelated=0.2)
 
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        with torch.amp.autocast('cuda', dtype=torch.float16):
             # It is critical, that the BarDistribution criterion is outside the autocast!
             y_pred = model(batch)  # Shape: [T_query, Batch, num_bins]
 
@@ -82,23 +82,23 @@ def train_meta_model(
         total_loss = loss_per_item.mean()
 
         # Use the scaler to backward (prevents underflow in FP16/BF16)
-        # scaler.scale(total_loss).backward()
-        total_loss.backward()
+        scaler.scale(total_loss).backward()
+        # total_loss.backward()
 
         # --- GRADIENT CLIPPING BLOCK ---
         # 1. Unscale the gradients so the norm is calculated correctly
-        # scaler.unscale_(optimizer)
+        scaler.unscale_(optimizer)
 
         # 2. Clip the gradients (max_norm=1.0 is standard for Transformers/MLPs)
         unclipped_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
 
         mlflow.log_metric("grad_norm/unclipped", unclipped_norm.item(), step=step)
-        # scaler.step(optimizer)
+        scaler.step(optimizer)
 
         mlflow.log_metric("learning_rate", optimizer.param_groups[0]['lr'], step=step)
         optimizer.step()
         scheduler.step()
-        # scaler.update()
+        scaler.update()
 
         # --- LOSS SPLITTING & LOGGING ---
         # Split the loss based on the boolean mask (we cast to float32 before calling item
@@ -153,7 +153,7 @@ def train_meta_model(
                 # 3. Explicitly label Batch Item 1 as the unrelated trap
                 eval_batch["is_unrelated"] = torch.tensor([False, True], device=device)
 
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                with torch.amp.autocast('cuda', dtype=torch.float16):
                     eval_pred_logits = model(eval_batch)
 
                     # Convert logits to probabilities for the heatmap
@@ -202,12 +202,41 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    import os
+    from datetime import datetime
+
+    logger.info('Initializing MLflow tracking...')
+    # Generate timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+    mlflow.set_experiment(args.mlflow_experiment)
+    run_dir = f"{args.mlflow_run_name}_{timestamp}"
+    # FIXME: for local debugging, this will end up in the validation_manifold_adapter
+    # fixme: log save_path as a param & logger.info
+    args.save_path = os.path.join("outputs", args.mlflow_experiment, run_dir)
+
     logger.info('Parsed command-line arguments:')
     for arg, value in vars(args).items():
         logger.info(f"  {arg}: {value}")
 
     logger.info('Setting up training environment...')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if device.type == 'cuda':
+        gpu_properties = torch.cuda.get_device_properties(device)
+        gpu_name = gpu_properties.name
+        total_memory_gb = gpu_properties.total_memory / (1024 ** 3)
+
+        # Log to MLflow as tags
+        mlflow.set_tag("device.name", gpu_name)
+        mlflow.set_tag("device.limit_gb", f"{total_memory_gb:.2f}GB")
+
+        # Print for your console log
+        print(f"\n[Hardware] Running on {gpu_name} with {total_memory_gb:.2f}GB VRAM")
+    else:
+        mlflow.set_tag("device.name", "cpu")
+
     print(f"Training on: {device}")
     num_bins = 128  # e.g., 100 bins means 101 borders
     borders = torch.linspace(-8.0, 8.0, num_bins + 1, device=device)
@@ -242,19 +271,7 @@ if __name__ == "__main__":
         anneal_strategy='cos'
     )
 
-    import os
-    from datetime import datetime
 
-    logger.info('Initializing MLflow tracking...')
-    # Generate timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    mlflow.set_tracking_uri(args.mlflow_tracking_uri)
-    mlflow.set_experiment(args.mlflow_experiment)
-    run_dir = f"{args.mlflow_run_name}_{timestamp}"
-    # FIXME: for local debugging, this will end up in the validation_manifold_adapter
-    # fixme: log save_path as a param & logger.info
-    args.save_path = os.path.join("outputs", args.mlflow_experiment, run_dir)
 
     # Ensure the directory exists
     os.makedirs(args.save_path, exist_ok=True)
