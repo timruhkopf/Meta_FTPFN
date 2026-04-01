@@ -17,9 +17,9 @@ TRACKING_URI="file:////bigwork/nhwpruht/Meta_FTPFN/mlruns"
 EXPERIMENT="gating_ablation"
 # Define our logic branches based on the Array ID
 case $SLURM_ARRAY_TASK_ID in
-    0) MODE="softmin";      EXTRA_FLAGS="--global_gate";     RUN_NAME="softmin" ;;
-    1) MODE="distributional"; EXTRA_FLAGS="--global_gate";   RUN_NAME="dist" ;;
-    2) MODE="mean";         EXTRA_FLAGS="--global_gate";      RUN_NAME="mean" ;;
+    0) MODE="softmin";      EXTRA_FLAGS="--global_gate --compile";     RUN_NAME="softmin" ;;
+    1) MODE="distributional"; EXTRA_FLAGS="--global_gate --compile";   RUN_NAME="dist" ;;
+    2) MODE="mean";         EXTRA_FLAGS="--global_gate --compile";      RUN_NAME="mean" ;;
 esac
 
 echo "Starting Run: $RUN_NAME with mode $MODE"

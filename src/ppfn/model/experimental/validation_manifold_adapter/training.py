@@ -90,10 +90,9 @@ def train_meta_model(
         # scaler.unscale_(optimizer)
 
         # 2. Clip the gradients (max_norm=1.0 is standard for Transformers/MLPs)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+        unclipped_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
 
-        unclipped_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
-        mlflow.log_metric("grad_norm/unclipped", unclipped_norm, step=step)
+        mlflow.log_metric("grad_norm/unclipped", unclipped_norm.item(), step=step)
         # scaler.step(optimizer)
 
         mlflow.log_metric("learning_rate", optimizer.param_groups[0]['lr'], step=step)
@@ -199,6 +198,7 @@ if __name__ == "__main__":
     parser.add_argument('--max_lr', type=float, default=4e-4, help='Maximum learning rate for OneCycleLR')
     parser.add_argument('--pct_start', type=float, default=0.20,
                         help='Percentage of steps to spend on the warmup phase of OneCycleLR')
+    parser.add_argument('--compile', action='store_true', help='Whether to use torch.compile for faster training (requires PyTorch 2.x and compatible hardware)')
 
     args = parser.parse_args()
 
@@ -279,7 +279,7 @@ if __name__ == "__main__":
             n_B=args.n_B,  # dense related
             plot_every=args.plot_every,
             save_path=Path(args.save_path),
-            compile_model=False
+            compile_model=args.compile
         )
 
     logger.info("done")
