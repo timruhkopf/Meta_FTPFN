@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=gating_ablation
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32GB
 #SBATCH --time=18:00:00

@@ -21,80 +21,98 @@ class MLP(nn.Module):
 
 
 
+
 class DistributionalGlobalGate(nn.Module):
     """Core idea: Instead of mean pooling or softmin/softmax pooling, which are just single summary statistics,
     we can learn a more expressive pooling function that looks at the entire distribution of trust scores."""
-    def __init__(self, dmodel, num_quantiles=5):
+
+    def __init__(self, dmodel, num_quantiles=5, temp=1.0):
         super().__init__()
+        self.temp = temp
 
-        # We will extract 'num_quantiles' + 2 moments (mean, variance)
-        self.dist_features_dim = num_quantiles + 4  # + mean, var, skewness, kurtosis
+        # FIXED: We extract 'num_quantiles' + 5 moments (mean, var, skewness, kurtosis, n_A)
+        self.dist_features_dim = num_quantiles + 5
 
-        # The Quantiles we want to sample (e.g., [0.1, 0.25, 0.5, 0.75, 0.9]) # limited by n(task_B)
+        # The Quantiles we want to sample (e.g., [0.1, 0.25, 0.5, 0.75, 0.9])
         self.register_buffer(
             "quantiles",
             torch.linspace(0.1, 0.9, num_quantiles)
         )
 
-        # The MLP that looks at the distribution and outputs the global gate
+        # CHANGED: Output 2 logits (Index 0: Discard, Index 1: Keep)
         self.distribution_analyzer = nn.Sequential(
             nn.Linear(self.dist_features_dim, dmodel // 2),
             nn.GELU(),
-            nn.Linear(dmodel // 2, 1),
-            nn.Sigmoid()
+            nn.LayerNorm(dmodel // 2),  # Added to prevent logit explosion
+            nn.Linear(dmodel // 2, 2)  # Output 2 classes, removed Sigmoid
         )
 
-    def forward(self, raw_trust_A):
+        # Initialize biases to favor "Discard" (Index 0) early in training
+        nn.init.constant_(self.distribution_analyzer[-1].bias[0], 2.0)
+        nn.init.constant_(self.distribution_analyzer[-1].bias[1], -2.0)
+
+    def forward(self, raw_trust_A, current_temp=None):
         """
         raw_trust_A: [T_A, Batch, 1] - Pointwise trust scores
         """
+        tau = current_temp if current_temp is not None else self.temp
+
         # 1. Cast and prepare
         raw_trust_A = raw_trust_A.float()
+        n_A = raw_trust_A.shape[0]
         eps = 1e-6
 
-        # 2. Calculate Raw Moments (Efficiently reduces dim=0 immediately)
-        # These are E[X], E[X^2], E[X^3], E[X^4]
-        # Memory footprint remains O(Batch) rather than O(T_A * Batch)
+        # 2. Calculate Raw Moments
         mean_trust = raw_trust_A.mean(dim=0)  # E[X]
         raw_2 = torch.pow(raw_trust_A, 2).mean(dim=0)  # E[X^2]
         raw_3 = torch.pow(raw_trust_A, 3).mean(dim=0)  # E[X^3]
         raw_4 = torch.pow(raw_trust_A, 4).mean(dim=0)  # E[X^4]
 
         # 3. Calculate Variance and Central Moments
-        # Var = E[X^2] - E[X]^2
-        var_trust = raw_2 - (mean_trust ** 2)
+        var_trust = (raw_2 - (mean_trust ** 2)).clamp(min=0.0)  # Clamp to avoid sqrt of negatives
         std_trust = torch.sqrt(var_trust + eps)
 
-        # Central 3rd Moment: E[(X-mu)^3] = E[X^3] - 3*E[X^2]*mu + 2*mu^3
         central_3 = raw_3 - 3 * raw_2 * mean_trust + 2 * (mean_trust ** 3)
         skew_trust = central_3 / (std_trust ** 3 + eps)
 
-        # Central 4th Moment: E[(X-mu)^4] = E[X^4] - 4*E[X^3]*mu + 6*E[X^2]*mu^2 - 3*mu^4
         central_4 = raw_4 - 4 * raw_3 * mean_trust + 6 * raw_2 * (mean_trust ** 2) - 3 * (mean_trust ** 4)
         kurt_trust = central_4 / (std_trust ** 4 + eps)
 
-        # 4. Calculate Quantiles (Already relatively memory efficient)
-        # Shape: [num_quantiles, Batch, 1]
+        # 4. Calculate Quantiles
         q_vals = torch.quantile(raw_trust_A, self.quantiles, dim=0)
 
         # 5. Assemble the Distribution Vector
-        # Squeeze all to [Batch, N]
         q_vals = q_vals.transpose(0, 1).squeeze(-1)  # [Batch, num_quantiles]
 
-        # Concatenate: All inputs should be [Batch, 1] before cat
         dist_vector = torch.cat([
             q_vals,
             mean_trust,
             var_trust,
             skew_trust,
-            kurt_trust
+            kurt_trust,
+            torch.tensor([n_A], device=raw_trust_A.device).expand_as(mean_trust)
         ], dim=-1)
 
-        # 6. Global Decision
-        global_gate_logits = self.distribution_analyzer(dist_vector)
+        # 6. Global Decision Logits -> Shape: [Batch, 2]
+        logits = self.distribution_analyzer(dist_vector)
 
-        return global_gate_logits.unsqueeze(0).to(raw_trust_A.dtype)
+        # 7. Gumbel-Softmax Straight-Through Estimator
+        if self.training:
+            # Clamp logits to prevent them from overpowering the Gumbel noise
+            safe_logits = torch.clamp(logits, min=-3.0, max=3.0)
+            # hard=True outputs strictly 0 or 1, but keeps backward pass differentiable
+            gate_onehot = F.gumbel_softmax(safe_logits, tau=tau, hard=True, dim=-1)
+        else:
+            # Inference: Greedy argmax
+            gate_onehot = F.one_hot(logits.argmax(dim=-1), num_classes=2).float()
 
+        # Extract the "Keep" channel (Index 1) -> Shape: [Batch]
+        keep_mask = gate_onehot[..., 1]
+
+        # Reshape to [1, Batch, 1] to broadcast safely over [T_query, Batch, dmodel]
+        global_gate = keep_mask.view(1, -1, 1)
+
+        return global_gate.to(raw_trust_A.dtype)
 
 class StructuralGatingModule(nn.Module):
     """
@@ -106,10 +124,10 @@ class StructuralGatingModule(nn.Module):
     - "softmax": Focuses on maximum alignment (the strongest link).
     """
 
-    def __init__(self, dmodel, pool_mode="distributional", temp=0.1, use_pointwise=True, use_global=True):
+    def __init__(self, dmodel, pool_mode="distributional", temp=0.1, use_pointwise=True, use_global=True, zero_init=True):
         super().__init__()
 
-        valid_modes = ["mean", "softmin", "softmax", "distributional"]
+        valid_modes = ["mean", "softmin", "softmax", "distributional", "gumbel"]
         if pool_mode not in valid_modes:
             raise ValueError(f"pool_mode must be one of {valid_modes}")
 
@@ -125,12 +143,37 @@ class StructuralGatingModule(nn.Module):
         self.trust_proj = nn.Sequential(
             nn.Linear(2 * dmodel, dmodel),
             nn.GELU(),
-            nn.Linear(dmodel, 1),
-            nn.Sigmoid()
         )
+
+        if self.pool_mode == "mean":
+            self.trust_proj.add_module("final_linear", nn.Linear(dmodel, 1))
+            self.trust_proj.add_module("final_activation", nn.Sigmoid())
+        elif self.pool_mode == "gumbel":
+            # 1. ADD LAYERNORM: Prevents the features from exploding into massive logits
+            self.trust_proj.add_module("norm", nn.LayerNorm(dmodel))
+
+            # 2. CREATE FINAL LINEAR LAYER
+            final_linear = nn.Linear(dmodel, 2)
+
+            # 3. FIX BIASES: Force the gate to start "Closed" at step 0
+            # Index 0 is "Drop" (We want this high)
+            # Index 1 is "Keep" (We want this low)
+            nn.init.constant_(final_linear.bias[0], 4.0)
+            nn.init.constant_(final_linear.bias[1], -4.0)
+
+            self.trust_proj.add_module("final_linear", final_linear)
+
+        elif self.pool_mode == "distributional":
+            self.trust_proj.add_module("final_linear", nn.Linear(dmodel, 1))
+            self.trust_proj.add_module("final_activation", nn.Sigmoid())
+
+        if zero_init:
+            nn.init.constant_(self.trust_proj[2].bias, -4.0)
 
         if pool_mode == "distributional":
             self.distributional_gate = DistributionalGlobalGate(dmodel)
+
+
 
     def forward(self, A_feat, B_feat, mask_A=None, mask_B=None):
         """
@@ -146,14 +189,9 @@ class StructuralGatingModule(nn.Module):
 
         # 1. Pointwise: B finds its 'twins' in A to see which specific B-points are valid
         if self.use_pointwise:
-            # TODO: use padding and batch stacking to make this a single fwd call with the global gate.
-            #  drawback if n_A << n_B, then we are doing a lot of redundant attention calculations on the padded A tokens.
-            #  Ablate what the time savings are vs the !
             A_ret_for_B, _ = self.alignment_attn(
                 query=B_feat, key=A_feat, value=A_feat, key_padding_mask=mask_A
             )
-            # Note: concatenating here enables the network to learn the distance between them directly!
-            # https://arxiv.org/pdf/1711.06025
             pointwise_gate = self.trust_proj(torch.cat([B_feat, A_ret_for_B], dim=-1))
 
         # 2. Global: A checks if B as a whole matches its expected structure
@@ -166,25 +204,67 @@ class StructuralGatingModule(nn.Module):
 
             # --- Pooling Strategies ---
             if self.pool_mode == "distributional":
-                # Distributional Global Gate (learned, differentiable)
+                # FIXME: padding???
                 global_gate = self.distributional_gate(raw_trust_A)
 
             elif self.pool_mode == "mean":
-                # Baseline: Simple unweighted average
-                global_gate = raw_trust_A.mean(dim=0, keepdim=True)
+                # --- FIX: MASKED MEAN ---
+                if mask_A is not None:
+                    # mask_A is [Batch, T_A], True means padding. We want active tokens (False).
+                    # Convert to [T_A, Batch, 1] to match raw_trust_A
+                    active_A = (~mask_A).transpose(0, 1).unsqueeze(-1).float()
 
-            elif self.pool_mode == "softmin":
-                # Differentiable Minimum (Focus on worst discrepancy)
-                weights = F.softmin(raw_trust_A / self.temp, dim=0)
-                global_gate = (weights * raw_trust_A).sum(dim=0, keepdim=True)
+                    # Sum only the active tokens
+                    sum_trust = (raw_trust_A * active_A).sum(dim=0, keepdim=True)
+                    # Count only the active tokens (clamp to avoid division by zero)
+                    count_active = active_A.sum(dim=0, keepdim=True).clamp(min=1.0)
 
-            elif self.pool_mode == "softmax":
-                # Differentiable Maximum (Focus on best alignment)
-                weights = F.softmax(raw_trust_A / self.temp, dim=0)
-                global_gate = (weights * raw_trust_A).sum(dim=0, keepdim=True)
+                    global_gate = sum_trust / count_active
+                else:
+                    global_gate = raw_trust_A.mean(dim=0, keepdim=True)
 
-        ForwardMetaContext.set(global_gate=global_gate.detach().cpu().mean())
-        ForwardMetaContext.set(pointwise_gate=pointwise_gate.detach().cpu().mean())
+            elif self.pool_mode == "gumbel":
+
+                if mask_A is not None:
+                    active_A = (~mask_A).transpose(0, 1).unsqueeze(-1).float()
+                    sum_trust = (raw_trust_A * active_A).sum(dim=0, keepdim=True)
+                    count_active = active_A.sum(dim=0, keepdim=True).clamp(min=1.0)
+                    # pooled_logits shape: [1, Batch, 2]
+                    pooled_logits = sum_trust / count_active
+                else:
+                    pooled_logits = raw_trust_A.mean(dim=0, keepdim=True)
+
+                # --- THE GUMBEL MAGIC ---
+                # hard=True forces the output to be strictly one-hot (e.g., [0, 1] or [1, 0])
+                # during the forward pass, but uses soft gradients backward.
+                if self.training:
+                    safe_logits = torch.clamp(pooled_logits, min=-3.0, max=3.0)
+                    gate_onehot = F.gumbel_softmax(safe_logits, tau=self.temp, hard=True, dim=-1)
+                else:
+                    # During inference, just take the greedy argmax for pure binary routing
+                    gate_onehot = F.one_hot(pooled_logits.argmax(dim=-1), num_classes=2).float()
+
+                # Extract the "Keep" channel (Index 1) and restore the shape to [1, Batch, 1]
+                global_gate = gate_onehot[..., 1].unsqueeze(-1)
+
+        detached_global = global_gate.detach()
+
+        # 2. global_gate is already shape [1, Batch, 1] (sequence dim is pooled),
+        # so we can just take the simple mean across the batch.
+        ForwardMetaContext.set(global_gate=detached_global.mean())
+
+        if self.use_pointwise:
+            detached_pointwise = pointwise_gate.detach()
+
+            if mask_B is not None:
+                # Mask out the padded tokens in B before averaging
+                active_B = (~mask_B).transpose(0, 1).unsqueeze(-1).float()
+                true_pw_mean = (detached_pointwise * active_B).sum() / active_B.sum().clamp(min=1.0)
+
+                # Do NOT use .item() so it passes the isinstance(v, torch.Tensor) filter in your training loop!
+                ForwardMetaContext.set(pointwise_gate=true_pw_mean)
+            else:
+                ForwardMetaContext.set(pointwise_gate=detached_pointwise.mean())
 
         return pointwise_gate * global_gate
 
@@ -227,6 +307,10 @@ class GatedLatentTransferLayer(nn.Module):
         self.compute_own_self_ABC_attn = compute_own_self_ABC_attn
         if self.compute_own_self_ABC_attn:
             self.self_attention = nn.MultiheadAttention(embed_dim=dmodel, num_heads=4)
+            self.internal_norm_mha = nn.LayerNorm(dmodel)
+            self.internal_norm_mlp = nn.LayerNorm(dmodel)
+            self.internal_mlp = MLP(dmodel, dmodel, dmodel)
+
 
         self.use_struct_gate = use_struct_gate
         if use_struct_gate:
@@ -252,6 +336,10 @@ class GatedLatentTransferLayer(nn.Module):
             self.dummy_key = nn.Parameter(torch.randn(1, 1, in_dim))
             # Note: Adjust dummy_value dimension based on whether you concatenated hp into value earlier
             self.dummy_value = nn.Parameter(torch.randn(1, 1, dmodel))
+
+        self.norm_q = nn.LayerNorm(in_dim)
+        self.norm_k = nn.LayerNorm(in_dim)
+        self.norm_v = nn.LayerNorm(dmodel)  # Value is dmodel in your setup
 
         self.init_weights()
 
@@ -305,29 +393,42 @@ class GatedLatentTransferLayer(nn.Module):
 
         # down project to dmodel
         ABC = self.linear_AB1(ABC)
-        # if self.compute_own_self_ABC_attn:
-        #     # 2.1. Deal with padding in self attention
-        #     # since A and B have different sequence lengths, we need to build an attention mask
-        #     # to prevent attending to the padded points.
-        #     mask_A_train = mask_A[:, :sep] if mask_A is not None else None
-        #     mask_B_train = mask_B[:, :sep] if mask_B is not None else None
-        #
-        #     if mask_A_train is not None and mask_B_train is not None:
-        #         # C doesn't have a mask (it uses all its points), so it's all False
-        #         mask_C_train = mask_A_train.clone()
-        #
-        #         # Concat along batch dimension (dim=0) because ABC has 3*Batch size
-        #         self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
-        #     else:
-        #         mask_C_train = None
-        #         self_attn_mask = None
-        #
-        #     # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
-        #     ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
+        if self.compute_own_self_ABC_attn:
+            # 2.1. Deal with padding in self attention
+            # since A and B have different sequence lengths, we need to build an attention mask
+            # to prevent attending to the padded points.
+            mask_A_train = mask_A[:, :sep] if mask_A is not None else None
+            mask_B_train = mask_B[:, :sep] if mask_B is not None else None
+
+            if mask_A_train is not None and mask_B_train is not None:
+                # C doesn't have a mask (it uses all its points), so it's all False
+                mask_C_train = mask_A_train.clone()
+
+                # Concat along batch dimension (dim=0) because ABC has 3*Batch size
+                self_attn_mask = torch.cat([mask_A_train, mask_B_train, mask_C_train], dim=0)
+            else:
+                mask_C_train = None
+                self_attn_mask = None
+
+            # 2.2  A,B,C Shared self attention to extract relational features within A, B, C respectively.
+            # ABC, _ = self.self_attention(ABC, ABC, ABC, key_padding_mask=self_attn_mask)
+            ABC_norm = self.internal_norm_mha(ABC)
+            ABC_attn, _ = self.self_attention(ABC_norm, ABC_norm, ABC_norm, key_padding_mask=self_attn_mask)
+            ABC = ABC + ABC_attn  # Residual!
+
+            # 2. Translator MLP (with Pre-Norm)
+            ABC_norm2 = self.internal_norm_mlp(ABC)
+            ABC_mlp = self.internal_mlp(ABC_norm2)
+            ABC = ABC + ABC_mlp  # Residual!
+
+
 
         # Extract the feature descriptors for each task after self-attention
         a_dim, b_dim = A_train.shape[1], B_train.shape[1]
         A_feat, B_feat, C_feat = ABC[:, :a_dim], ABC[:, a_dim:a_dim + b_dim], ABC[:, a_dim + b_dim:]
+
+        A_feat = self.norm_v(A_feat)
+        B_feat = self.norm_v(B_feat)
 
         if self.use_struct_gate:
             m_A = mask_A[:, :sep] if mask_A is not None else None
@@ -337,7 +438,7 @@ class GatedLatentTransferLayer(nn.Module):
             gate = self.struct_gate_module(A_feat, B_feat, mask_A=m_A, mask_B=m_B)
 
             # Apply to Source
-            B_feat = B_feat * gate
+            # B_feat = B_feat * gate
 
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ------------------------------------------
         # spatial interpolation to get C_test_feat for the query points
@@ -379,6 +480,10 @@ class GatedLatentTransferLayer(nn.Module):
         # we cannot attend to the B features, because they are not grounded in the same domain as C
         # TODO ideally, we'd know how B looks like in C's domain (B_train'), then we could make the value the raw B_train' payload (without hp).
 
+        query = self.norm_q(query)
+        key = self.norm_k(key)
+        # value = self.norm_v(value)
+
         # Build the cross-attention mask
         # C is looking at A and B, so the keys sequence length is 2*T_max.
         # Mask shape needs to be [Batch, 2*T_max]
@@ -387,7 +492,10 @@ class GatedLatentTransferLayer(nn.Module):
         mask_B_train = mask_B[:, :sep] if mask_B is not None else None
         if mask_A_train is not None and mask_B_train is not None:
             # Concat along the sequence dimension (dim=1) for the mask
-            cross_attn_mask = torch.cat([mask_A_train, mask_B_train], dim=1)
+            cross_attn_mask = torch.cat([
+                # mask_A_train,
+               mask_B_train], dim=1
+            )
         else:
             cross_attn_mask = None
 
@@ -411,13 +519,13 @@ class GatedLatentTransferLayer(nn.Module):
         # but the feature vector I got back from B looks like a steep drop (C_cross).
         # This is useless to me. Close the gate."
         # Consider: this gating seemed to be uneffective.
-        if self.use_gate:
-            gate_input = torch.cat([query, C_cross], dim=-1)
-            gate = self.gate_proj(gate_input)
-        else:
-            gate = 1.0
+        # if self.use_gate:
+        #     gate_input = torch.cat([query, C_cross], dim=-1)
+        #     gate = self.gate_proj(gate_input)
+        # else:
+        #     gate = 1.0
 
         # Gated Residual update
-        C = C + gate * self.out_proj(C_cross)
+        C = C + gate.mean(0) * self.out_proj(C_cross)
 
         return A, B, C

@@ -4,10 +4,11 @@ from torch import nn
 from ppfn.model.experimental.layers.glt_adapter import MLP
 
 class MetaTransferModel(nn.Module):
-    def __init__(self, transfer_layer, input_dim=1,  num_bins=100, pre_train=False, pre_norm=False, dropout=0.1):  # <-- Added num_bins
+    def __init__(self, transfer_layer, input_dim=1,  num_bins=100, pre_train=False, pre_norm=True, dropout=0.1, detach_to_transfer=True):  # <-- Added num_bins
         super().__init__()
         self.pre_train = pre_train
         self.pre_norm = pre_norm
+        self.detach_to_transfer = detach_to_transfer
 
         self.transfer_layer = transfer_layer
         self.dmodel = self.transfer_layer.dmodel
@@ -22,45 +23,47 @@ class MetaTransferModel(nn.Module):
         self.linear1 = nn.Linear(self.dmodel, self.dmodel * 4)
         self.linear2 = nn.Linear(self.dmodel * 4, self.dmodel)
 
+        self.final_norm = nn.LayerNorm(self.dmodel)
+
         self.activation = nn.GELU()
 
         # CHANGED: Project out to the number of bins, not a single continuous value
         self.out_proj = MLP(self.dmodel, self.dmodel, num_bins)
 
-    def pfn_fwd(self, ABC):
+    def pfn_fwd(self, x):
+        """Standard Transformer Feed-Forward Network (FFN) block."""
+        identity = x
 
-        # flow taken from ifbo.layer.TransformerEncoderLayer
-        ABC = ABC + self.dropout1(ABC)
-
-        if not self.pre_norm:
-            ABC = self.norm1(ABC)
-
+        # 1. Pre-Norm
         if self.pre_norm:
-            ABC_ = self.norm2(ABC)
-        else:
-            ABC_ = ABC
-        ABC2 = self.linear2(
+            x = self.norm2(x)
+
+        # 2. MLP Expansion
+        x2 = self.linear2(
             self.dropout1(
                 self.activation(
-                    self.linear1(ABC_)
+                    self.linear1(x)
                 )
             )
         )
-        ABC = ABC + self.dropout2(ABC2)
 
+        # 3. Residual
+        x = identity + self.dropout2(x2)
+
+        # 4. Post-Norm
         if not self.pre_norm:
-            ABC = self.norm2(ABC)
+            x = self.norm2(x)
 
-        return ABC
+        return x
 
     def forward(self, batch):
         sep = batch["sep"]
+        device = batch["y_cA"].device
 
+        # --- 1. Projections & Embeddings ---
         A = self.y_proj(batch["y_cA"])
         B = self.y_proj(batch["y_cB"])
         C = self.y_proj(batch["y_cA"])
-
-        device = A.device
 
         hp_A = self.x_proj(batch["x_cA"])
         hp_B = self.x_proj(batch["x_cB"])
@@ -70,44 +73,84 @@ class MetaTransferModel(nn.Module):
         B += hp_B
         C += hp_C
 
-        # self attention on the concat of A, B, C with the appropriate masks and separation index
-        # This is basically taken from the ifbo.layer.TransformerEncoderLayer forward function
-        ABC = torch.cat([A, B, C], dim=1).to(device)  # Shape: [T_total*3, Batch, dmodel]
-        padding = torch.cat([batch["mask_A"], batch["mask_B"], batch["mask_A"]], dim=0).to(device)
-        ABC_train, _ = self.backbone_attention(
-            ABC[:sep], ABC[:sep], ABC[:sep],
-            key_padding_mask=padding[:, : sep]
+        # --- 2. Shared Backbone Attention ---
+        # Concat along BATCH dimension (dim=1).
+        # Shape goes from [T_total, Batch, dmodel] -> [T_total, 3 * Batch, dmodel]
+        ABC = torch.cat([A, B, C], dim=1)
+        # Concat padding masks along sequence dimension (dim=0) to match 3 * Batch
+        padding = torch.cat([batch["mask_A"], batch["mask_B"], batch["mask_A"]], dim=0)
+
+        # Train/Test Split
+        identity_train = ABC[:sep]
+        identity_test = ABC[sep:]
+
+        # Pre-Norm Logic
+        if self.pre_norm:
+            normed_train = self.norm1(identity_train)
+            normed_test = self.norm1(identity_test)
+            kv_train = normed_train  # Keys/Values are always context (train)
+        else:
+            normed_train = identity_train
+            normed_test = identity_test
+            kv_train = identity_train
+
+        # Attention Operations
+        attn_out_train, _ = self.backbone_attention(
+            normed_train, kv_train, kv_train,
+            key_padding_mask=padding[:, :sep]
+        )
+        attn_out_test, _ = self.backbone_attention(
+            normed_test, kv_train, kv_train,
+            key_padding_mask=padding[:, :sep]
         )
 
-        ABC_test, _ = self.backbone_attention(
-            ABC[sep:], ABC[:sep], ABC[:sep],
-            key_padding_mask=padding[:, :sep]  # Test tokens can attend to all context tokens, but not to other test tokens
-        )
+        # Residual Addition
+        ABC_train = identity_train + self.dropout1(attn_out_train)
+        ABC_test = identity_test + self.dropout1(attn_out_test)
 
+        # Post-Norm Logic
+        if not self.pre_norm:
+            ABC_train = self.norm1(ABC_train)
+            ABC_test = self.norm1(ABC_test)
+
+        # Recombine Sequence
         ABC = torch.cat([ABC_train, ABC_test], dim=0)
 
         if self.pre_train:
-            ABC = self.pfn_fwd(ABC)
-            return ABC
+            return self.pfn_fwd(ABC)
 
-        # fixme: A may be of variable size during inference, then chunking fails
-        A, B, C = ABC.chunk(3, dim=1)  # Split back into A, B, C based on the original concatenation
+        # --- 3. Transfer Layer ---
+        # Chunking is 100% safe here because dim=1 is the batch dimension (3 * Batch)
+        A, B, C = ABC.chunk(3, dim=1)
 
-        A, B, C_out = self.transfer_layer(
-            A, B, C, sep=sep, hp=(hp_A, hp_B, hp_C),
+        if self.detach_to_transfer:
+            A_ = A.detach()
+            B_ = B.detach()
+            C_ = C.detach()
+        else:
+            A_ = A
+            B_ = B
+            C_ = C
+
+        _A, _B, C_out = self.transfer_layer(
+            A_, B_, C_, sep=sep, hp=(hp_A, hp_B, hp_C),
             mask_A=batch["mask_A"], mask_B=batch["mask_B"]
         )
 
+        # --- 4. Shared FFN (pfn_fwd) ---
+        # Batch them together for a single efficient pass through the FFN
+        ABC_out = torch.cat([A, B, C_out], dim=1)
+        ABC_out = self.pfn_fwd(ABC_out)
 
-        # ABC = torch.cat([A, B, C_out], dim=1)  # Shape: [T_total*3, Batch, dmodel]
-        # ABC = self.pfn_fwd(ABC)
+        if self.pre_norm:
+            ABC_out = self.final_norm(ABC_out)
 
-        # FIXME: will fail if A is variable length during inference
-        # C_out = ABC.chunk(3, dim=1)[3]
-        AB = torch.cat([A, B], dim=1)  # Shape: [T_total*2, Batch, dmodel]
-        A, B = self.pfn_fwd(AB).chunk(2, dim=1)  # Apply the PFN block to A and B, then split them back
+        # Split back
+        A_final, B_final, C_final = ABC_out.chunk(3, dim=1)
 
-        C_out = self.pfn_fwd(C_out)  # Apply the PFN block to C_out
-        query_out = C_out[sep:, :, :]
-
-        return self.out_proj(A[sep:, :, :]), self.out_proj(B[sep:,:, :]), self.out_proj(query_out)  # Shape will now be [T_query, Batch, num_bins]
+        # --- 5. Output Projection ---
+        return (
+            self.out_proj(A_final[sep:, :, :]),
+            self.out_proj(B_final[sep:, :, :]),
+            self.out_proj(C_final[sep:, :, :])
+        )
