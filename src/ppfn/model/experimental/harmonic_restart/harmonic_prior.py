@@ -3,83 +3,112 @@ from torch.utils.data import IterableDataset
 import numpy as np
 import matplotlib.pyplot as plt
 
-# FIXME: make X (T, B, D)
+
 class InfiniteHarmonicsStream(IterableDataset):
-    def __init__(self, batch_size=32, n_A=20, n_B=100, n_test=50, max_x=10.0, num_components=3):
+    """
+    The "Hidden Harmonic Mixture" Prior with Negative Transfer Injection.
+    Refactored to match the Tri-Stream Pipeline expectations.
+    """
+
+    def __init__(self, batch_size=32, n_A=10, n_B=50, n_test=200, x_range=(-5, 5),
+                 num_components=4, noise_std=0.05, share_unrelated=0.2):
         super().__init__()
         self.batch_size = batch_size
         self.n_A = n_A
         self.n_B = n_B
         self.n_test = n_test
-        self.max_x = max_x
+        self.min_x ,  self.max_x = x_range
         self.num_components = num_components
+        self.noise_std = noise_std
+        self.share_unrelated = share_unrelated
 
     def _sample_batch(self):
-        B, K = self.batch_size, self.num_components
-        freq_B = np.random.uniform(0.2, 2.0, (B, K))
-        phase_B = np.random.uniform(0, 2 * np.pi, (B, K))
-        amp_B = np.random.uniform(0.5, 1.5, (B, K))
+        B = self.batch_size
+        K = self.num_components
 
-        d_freq = np.random.uniform(-0.1, 0.1, (B, K))
-        d_phase = np.random.uniform(-0.5, 0.5, (B, K))
-        d_amp = np.random.uniform(-0.2, 0.2, (B, K))
-        offset_A = np.random.uniform(-1.0, 1.0, (B, 1))
+        # 1. Randomize "Hidden Blueprint" with LOWER frequencies
+        # Old: uniform_(0.2, 2.0) -> New: uniform_(0.1, 0.5)
+        # This ensures about 1-2 full cycles across the x_range of 10 units.
+        amps_A = torch.empty(K, B).uniform_(0.5, 2.0)
+        freqs_A = torch.empty(K, B).uniform_(0.1, 0.5)
+        phases_A = torch.empty(K, B).uniform_(0, 2 * torch.pi)
 
-        freq_A = freq_B + d_freq
-        phase_A = phase_B + d_phase
-        amp_A = amp_B + d_amp
+        # 2. Prepare Blueprint for B
+        amps_B = amps_A.clone()
+        freqs_B = freqs_A.clone()
+        phases_B = phases_A.clone()
 
-        def eval_harmonic(X, f, p, a, offset=0):
-            X_exp = np.expand_dims(X, axis=1)
-            f_exp = np.expand_dims(f, axis=2)
-            p_exp = np.expand_dims(p, axis=2)
-            a_exp = np.expand_dims(a, axis=2)
-            return np.sum(a_exp * np.sin(2 * np.pi * f_exp * X_exp + p_exp), axis=1) + offset
+        # Unrelated Traps: also use lower frequencies for consistency
+        num_unrelated = int(B * self.share_unrelated)
+        if num_unrelated > 0:
+            amps_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0.5, 2.0)
+            freqs_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0.1, 0.5)
+            phases_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0, 2 * torch.pi)
 
-        X_train_B = np.sort(np.random.uniform(0, self.max_x, (B, self.n_B)), axis=1)
-        X_train_A = np.sort(np.random.uniform(0, self.max_x, (B, self.n_A)), axis=1)
-        X_test_B = np.sort(np.random.uniform(0, self.max_x, (B, self.n_test)), axis=1)
-        X_test_A = np.sort(np.random.uniform(0, self.max_x, (B, self.n_test)), axis=1)
+        # 3. Constrain the Transformations
+        # Reducing h_shift makes the relatedness more obvious for the cross-attn
+        scale_A = torch.empty(B).uniform_(0.3, 1.3)
+        v_shift_A = torch.empty(B).uniform_(-2.0, 2.0)
+        h_shift_A = torch.empty(B).uniform_(-1.5, 1.5)
 
-        Y_train_B = eval_harmonic(X_train_B, freq_B, phase_B, amp_B)
-        Y_train_A = eval_harmonic(X_train_A, freq_A, phase_A, amp_A, offset_A)
-        Y_test_B = eval_harmonic(X_test_B, freq_B, phase_B, amp_B)
-        Y_test_A = eval_harmonic(X_test_A, freq_A, phase_A, amp_A, offset_A)
+        # 4. Sample X coordinates (Seq, Batch)
+        # Train points are sorted uniformly random, Test points are linspace for smooth heatmaps
+        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
+        X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, self.max_x), dim=0)
 
+        X_test_B = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
+        X_test_A = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
+
+        # Helper to evaluate based on explicit parameters
+        def eval_function(X, amps, freqs, phases):
+            # X: (Seq, B), amps/freqs/phases: (K, B)
+            X_ext = X.unsqueeze(0)  # (1, Seq, B)
+            a_ext = amps.unsqueeze(1)  # (K, 1, B)
+            f_ext = freqs.unsqueeze(1)  # (K, 1, B)
+            p_ext = phases.unsqueeze(1)  # (K, 1, B)
+            # Standard harmonic formula with 2*pi
+            terms = a_ext * torch.sin(2 * torch.pi * f_ext * X_ext + p_ext)
+            return terms.sum(dim=0)  # (Seq, B)
+
+        # 5. Evaluate Y coordinates
+        # Task B evaluates its own blueprint (which might be unrelated)
+        Y_train_B = eval_function(X_train_B, amps_B, freqs_B, phases_B) + torch.randn_like(X_train_B) * self.noise_std
+        Y_test_B = eval_function(X_test_B, amps_B, freqs_B, phases_B)
+
+        # Task A evaluates Blueprint A with spatial and amplitude transformations
+        Y_train_A_clean = scale_A * eval_function(X_train_A - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
+        Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
+        Y_test_A = scale_A * eval_function(X_test_A - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
+
+        # 6. Pad A to match B's sequence length (Pipeline Requirement)
         pad_size = self.n_B - self.n_A
         if pad_size > 0:
-            nan_pad = np.full((B, pad_size), np.nan)
-            X_train_A_padded = np.concatenate([X_train_A, nan_pad], axis=1)
-            Y_train_A_padded = np.concatenate([Y_train_A, nan_pad], axis=1)
+            nan_pad = torch.full((pad_size, B), float('nan'))
+            X_train_A_padded = torch.cat([X_train_A, nan_pad], dim=0)
+            Y_train_A_padded = torch.cat([Y_train_A, nan_pad], dim=0)
         else:
             X_train_A_padded = X_train_A
             Y_train_A_padded = Y_train_A
 
-        # batch_first = False (T, B, D)
+        # 7. Add boolean mask for tracking which tasks are unrelated traps
+        is_unrelated = torch.zeros(B, dtype=torch.bool)
+        if num_unrelated > 0:
+            is_unrelated[-num_unrelated:] = True
 
-        X_train_B = X_train_B.T  # (n_B, B)
-        Y_train_B = Y_train_B.T  # (n_B, B)
-        X_test_B = X_test_B.T  # (n_test, B)
-        Y_test_B = Y_test_B.T  # (n_test, B)
-
-        # Ensure A's padded train and test are also (Seq, Batch)
-        X_train_A_padded = X_train_A_padded.T
-        Y_train_A_padded = Y_train_A_padded.T
-        X_test_A = X_test_A.T
-        Y_test_A = Y_test_A.T
-
-
-        # Convert everything to float32 for PyTorch out of the gate
         return {
-            'params': {k: v.astype(np.float32) for k, v in locals().items() if
-                       k in ['freq_B', 'phase_B', 'amp_B', 'freq_A', 'phase_A', 'amp_A', 'offset_A']},
+            'params': {
+                'amps_A': amps_A, 'freqs_A': freqs_A, 'phases_A': phases_A,
+                'amps_B': amps_B, 'freqs_B': freqs_B, 'phases_B': phases_B,
+                'scale_A': scale_A, 'v_shift_A': v_shift_A, 'h_shift_A': h_shift_A,
+                'is_unrelated': is_unrelated
+            },
             'train': {
-                'X_B': X_train_B.astype(np.float32), 'Y_B': Y_train_B.astype(np.float32),
-                'X_A': X_train_A_padded.astype(np.float32), 'Y_A': Y_train_A_padded.astype(np.float32),
+                'X_B': X_train_B, 'Y_B': Y_train_B,
+                'X_A': X_train_A_padded, 'Y_A': Y_train_A_padded,
             },
             'test': {
-                'X_B': X_test_B.astype(np.float32), 'Y_B': Y_test_B.astype(np.float32),
-                'X_A': X_test_A.astype(np.float32), 'Y_A': Y_test_A.astype(np.float32),
+                'X_B': X_test_B, 'Y_B': Y_test_B,
+                'X_A': X_test_A, 'Y_A': Y_test_A,
             }
         }
 
@@ -87,117 +116,225 @@ class InfiniteHarmonicsStream(IterableDataset):
         while True:
             yield self._sample_batch()
 
+    # FIXME: have two plots: both have the exact same target task, but they have different related.
+    #  one is with a related, one is an unrelated
+
     @staticmethod
-    def save_heatmaps(fig, batch_data, borders, save_path, logits_A=None, logits_B=None, logits_C=None, batch_idx=0,
-                      max_x=10.0):
-        axs = fig.subplots(3, 1, sharex=True, gridspec_kw={'hspace': 0.15})
-        ax_A, ax_B, ax_C = axs[0], axs[1], axs[2]
+    def save_heatmaps(fig, batch_data, borders, save_path, model=None, logits_A=None, logits_B=None, logits_C=None,
+                      x_range=(-5, 5), plot=False):
+
+        # 1. Dynamic Logit Computation (if model is passed)
+        if model is not None:
+            was_training = model.training
+            model.eval()
+            with torch.no_grad():
+                logits_A, logits_B, logits_C = model(batch_data)
+            if was_training:
+                model.train()
+
+        min_x, max_x = x_range
+        p = batch_data['params']
 
         def to_np(val):
             return val.detach().cpu().numpy() if torch.is_tensor(val) else val
 
+        # --- Helper for Smooth Percentiles ---
+        def get_binned_percentiles(probs_np, borders_np, percentiles=[0.025, 0.5, 0.975]):
+            """Calculates continuous percentiles via CDF interpolation between bin edges."""
+            cdf = np.cumsum(probs_np, axis=-1)
+            # Pad with 0.0 to align exactly with the N+1 borders array
+            cdf = np.concatenate([np.zeros((cdf.shape[0], 1)), cdf], axis=-1)
+            results = {pct: np.zeros(probs_np.shape[0]) for pct in percentiles}
+
+            for i in range(probs_np.shape[0]):
+                for pct in percentiles:
+                    idx = np.searchsorted(cdf[i], pct)
+                    if idx == 0:
+                        results[pct][i] = borders_np[0]
+                    elif idx >= len(borders_np):
+                        results[pct][i] = borders_np[-1]
+                    else:
+                        p_low, p_high = cdf[i, idx - 1], cdf[i, idx]
+                        b_low, b_high = borders_np[idx - 1], borders_np[idx]
+                        if p_high > p_low:
+                            fraction = (pct - p_low) / (p_high - p_low)
+                            results[pct][i] = b_low + fraction * (b_high - b_low)
+                        else:
+                            results[pct][i] = b_low
+            return results
+
+        # 2. Safely flatten to numpy boolean array
+        is_unrelated_flat = to_np(p['is_unrelated']).astype(bool).flatten()
+        related_indices = np.where(~is_unrelated_flat)[0]
+        unrelated_indices = np.where(is_unrelated_flat)[0]
+
+        # 3. Enforce Column 0 = Related, Column 1 = Unrelated
+        idx_list = [0, 0]
+        if len(related_indices) > 0:
+            idx_list[0] = related_indices[0]
+        if len(unrelated_indices) > 0:
+            idx_list[1] = unrelated_indices[0]
+        else:
+            if len(related_indices) > 1:
+                idx_list[1] = related_indices[1]  # Fallback
+
+        axes = fig.subplots(3, 2, sharex=True, sharey=True, gridspec_kw={'hspace': 0.25, 'wspace': 0.1})
         borders_np = to_np(borders)
         centers = (borders_np[:-1] + borders_np[1:]) / 2.0
-        p = batch_data['params']
+        x_dense = np.linspace(min_x, max_x, 1000)
 
-        # Helper to plot a single stream (A, B, or C) with the 'Turbo' colormap
-        def plot_stream_data(ax, name, logits, X_test, true_y_dense):
-            X_test_np = to_np(X_test)
+        for col_idx, batch_idx in enumerate(idx_list):
+            is_trap = is_unrelated_flat[batch_idx]
+            col_title = "RELATED CONTEXT" if not is_trap else "UNRELATED TRAP"
 
-            # --- Heatmap & Distribution Logic ---
-            if logits is not None:
-                logits_np = to_np(logits)
-                probs = np.exp(logits_np) / np.sum(np.exp(logits_np), axis=-1, keepdims=True)
+            # Reconstruct true lines
+            def build_func(X, amps, freqs, phases, scale=1.0, h_shift=0.0, v_shift=0.0):
+                X_shifted = X - h_shift
+                terms = amps[:, None] * np.sin(2 * np.pi * freqs[:, None] * X_shifted[None, :] + phases[:, None])
+                return scale * np.sum(terms, axis=0) + v_shift
 
-                mean_pred = np.sum(probs * centers, axis=-1)
-                cumsum = np.cumsum(probs, axis=-1)
-                lower_bound = centers[np.argmax(cumsum >= 0.025, axis=-1)]
-                upper_bound = centers[np.argmax(cumsum >= 0.975, axis=-1)]
+            y_dense_A = build_func(
+                x_dense, to_np(p['amps_A'][:, batch_idx]), to_np(p['freqs_A'][:, batch_idx]),
+                to_np(p['phases_A'][:, batch_idx]),
+                scale=to_np(p['scale_A'][batch_idx]), h_shift=to_np(p['h_shift_A'][batch_idx]),
+                v_shift=to_np(p['v_shift_A'][batch_idx])
+            )
+            y_dense_B = build_func(
+                x_dense, to_np(p['amps_B'][:, batch_idx]), to_np(p['freqs_B'][:, batch_idx]),
+                to_np(p['phases_B'][:, batch_idx])
+            )
 
-                dx = np.diff(X_test_np)
-                if len(dx) > 0:
-                    midpoints = X_test_np[:-1] + dx / 2
-                    edges_x = np.concatenate([[X_test_np[0] - dx[0] / 2], midpoints, [X_test_np[-1] + dx[-1] / 2]])
+            # 4. Iterate through Rows (Streams)
+            for row_idx, stream_name in enumerate(['A', 'B', 'C']):
+                ax = axes[row_idx, col_idx]
+
+                # EXACT MATCH GUARANTEE: Stream A and C both pull from dataset 'A'
+                data_key = 'A' if stream_name in ['A', 'C'] else 'B'
+
+                if is_trap:
+                    ax.set_facecolor('#fffafa')
+
+                curr_logits = {'A': logits_A, 'B': logits_B, 'C': logits_C}[stream_name]
+                X_test_np = to_np(batch_data['test'][f'X_{data_key}'][:, batch_idx])
+
+                if curr_logits is not None:
+                    probs = torch.softmax(curr_logits[:, batch_idx, :], dim=-1).detach().cpu().numpy()
+
+                    # Get smooth interpolated percentiles
+                    percentiles = get_binned_percentiles(probs, borders_np, percentiles=[0.025, 0.5, 0.975])
+
+                    # Plot Smooth Heatmap
+                    ax.pcolormesh(X_test_np, centers, probs.T, cmap='viridis', shading='nearest', alpha=0.9,
+                                  rasterized=True)
+
+                    # Plot Median and Smooth Confidence Intervals
+                    ax.plot(X_test_np, percentiles[0.5], color='orange', linestyle='-', linewidth=1., zorder=10)
+                    ax.plot(X_test_np, percentiles[0.025], color='orange', linestyle=':', linewidth=1, zorder=10)
+                    ax.plot(X_test_np, percentiles[0.975], color='orange', linestyle=':', linewidth=1, zorder=10)
+
+                # Plot Ground Truth Lines (A & C share the same true function)
+                true_y = y_dense_A if stream_name in ['A', 'C'] else y_dense_B
+                line_color = 'white' if stream_name in ['A', 'C'] else 'red'
+                line_style = '-' if stream_name in ['A', 'C'] else '--'
+                line_alpha = 0.9 if stream_name in ['A', 'C'] else 0.5
+                ax.plot(x_dense, true_y, color=line_color, linestyle=line_style, linewidth=1.0, alpha=line_alpha,
+                        zorder=5)
+
+                # Scatter Training Points
+                X_train = to_np(batch_data['train'][f'X_{data_key}'][:, batch_idx])
+                Y_train = to_np(batch_data['train'][f'Y_{data_key}'][:, batch_idx])
+                valid = ~np.isnan(X_train)
+
+                if stream_name in ['A', 'C']:
+                    ax.scatter(X_train[valid], Y_train[valid], c='white', s=50, edgecolors='black', linewidth=.5,
+                               zorder=20)
                 else:
-                    edges_x = np.array([X_test_np[0] - 0.1, X_test_np[0] + 0.1])
+                    ax.scatter(X_train[valid], Y_train[valid], c='red', s=40, marker='x', alpha=0.8, zorder=20)
 
-                # --- NEW COLOURMAP (High probability = Bright Yellow, Low = Dark Blue) ---
-                pcm = ax.pcolormesh(edges_x, borders_np, probs.T, cmap='turbo', alpha=0.9, shading='flat',
-                                    rasterized=True)
+                # Labels and Aesthetics
+                if row_idx == 0:
+                    ax.set_title(col_title, fontweight='bold', fontsize=11, pad=10)
+                if col_idx == 0:
+                    ax.set_ylabel(f"Stream {stream_name}", fontsize=10, fontweight='bold')
 
-                # Plot statistics with new colors for visibility on dark turbo background
-                # We use cyan/white for the lines so they are legible against the dark blue and bright yellow
-                ax.plot(X_test_np, mean_pred, color='white', linewidth=1.8, label='Mean Prediction', zorder=10)
-                ax.plot(X_test_np, lower_bound, color='cyan', linestyle='--', linewidth=1.2, label='95% CI', zorder=10)
-                ax.plot(X_test_np, upper_bound, color='cyan', linestyle='--', linewidth=1.2, zorder=10)
+                ax.set_ylim(borders_np[0] - 1.5, borders_np[-1] + 1.5)
+                ax.grid(False)
 
-            # --- Ground Truth & Samples Logic ---
-            data_key = 'A' if name.startswith('C') else name[:1]
+        axes[2, 0].set_xlabel("x-coordinate")
+        axes[2, 1].set_xlabel("x-coordinate")
 
-            if name.startswith('C'):
-                main_marker_color, marker = 'lime', 's'  # bright green for C contrast
-            elif name.startswith('A'):
-                main_marker_color, marker = 'tomato', 's'  # bright red for A contrast
-            else:
-                main_marker_color, marker = 'dodgerblue', 'o'  # bright blue for B contrast
-
-            X_train = to_np(batch_data['train'][f'X_{data_key}'][batch_idx])
-            Y_train = to_np(batch_data['train'][f'Y_{data_key}'][batch_idx])
-            X_test_targets = to_np(batch_data['test'][f'X_{data_key}'][batch_idx])
-            Y_test_targets = to_np(batch_data['test'][f'Y_{data_key}'][batch_idx])
-
-            ax.plot(np.linspace(0, max_x, 1000), true_y_dense, color='grey', alpha=0.5, label=f'True {data_key}',
-                    zorder=1)
-
-            # Plot Training Samples (Sparse)
-            valid_idx = ~np.isnan(X_train)
-            ax.scatter(X_train[valid_idx], Y_train[valid_idx], c=main_marker_color, s=35, marker=marker,
-                       edgecolors='black', linewidth=0.5, zorder=20, label=f'Train {data_key}')
-
-            # Subsample Test Targets (e.g., every 10th point) so we don't hide the heatmap
-            ax.scatter(X_test_targets[::10], Y_test_targets[::10], facecolors='none', edgecolors=main_marker_color,
-                       s=30, marker=marker, alpha=0.8, linewidth=0.5, zorder=20, label=f'Test {data_key} (subsampled)')
-
-            # Formatting with darker grid for contrast
-            ax.set_title(f"Stream {name}", fontsize=10, pad=5)
-            ax.set_ylabel("y")
-            ax.set_ylim(borders_np[0], borders_np[-1])
-            ax.legend(loc='upper right', bbox_to_anchor=(1.25, 1), fontsize='small')
-            ax.grid(True, color='grey', alpha=0.3, zorder=0)
-
-        # Reconstruct true lines
-        def build_func(X, f, p_phase, a, offset=0):
-            return np.sum(a[:, None] * np.sin(2 * np.pi * f[:, None] * X[None, :] + p_phase[:, None]), axis=0) + offset
-
-        x_dense = np.linspace(0, max_x, 1000)
-        y_dense_A = build_func(x_dense, to_np(p['freq_A'][batch_idx]), to_np(p['phase_A'][batch_idx]),
-                               to_np(p['amp_A'][batch_idx]), to_np(p['offset_A'][batch_idx]))
-        y_dense_B = build_func(x_dense, to_np(p['freq_B'][batch_idx]), to_np(p['phase_B'][batch_idx]),
-                               to_np(p['amp_B'][batch_idx]))
-
-        plot_stream_data(
-            ax_A, 'A',
-            logits_A[:, batch_idx, :] if logits_A is not None else None,
-            batch_data['test']['X_A'][:, batch_idx],
-            y_dense_A
-        )
-
-        plot_stream_data(
-            ax_B, 'B',
-            logits_B[:, batch_idx, :] if logits_B is not None else None,
-            batch_data['test']['X_B'][:, batch_idx],
-            y_dense_B
-        )
-
-        plot_stream_data(
-            ax_C, 'C (A|B)',
-            logits_C[:, batch_idx, :] if logits_C is not None else None,
-            batch_data['test']['X_A'][:, batch_idx],
-            y_dense_A
-        )
-
-        ax_C.set_xlabel("x coordinate")
         plt.tight_layout()
-        plt.savefig(save_path, bbox_inches='tight', dpi=200)
-        plt.close(fig)
-        print(f"Saved heatmaps to: {save_path}")
+        if plot:
+            plt.show()
+        else:
+            plt.savefig(save_path, bbox_inches='tight', dpi=200)
+            plt.close(fig)
+
+
+# if __name__ == '__main__':
+    # Quick test to visualize a batch
+    # dataset = InfiniteHarmonicsStream(batch_size=10, n_A=10, n_B=50, n_test=200,
+    #                                  num_components=4, noise_std=0.05, share_unrelated=0.2)
+    # batch_data = next(iter(dataset))
+    #
+    # borders = np.linspace(-5, 5, 50)
+    # fig = plt.figure(figsize=(8, 12))
+    # InfiniteHarmonicsStream.save_heatmaps(fig, batch_data, borders, "test_heatmap.png",  plot=True)
+
+if __name__ == '__main__':
+    # 1. Setup Dataset with enough batch size to guarantee a Trap (10 * 0.2 = 2 traps)
+    dataset = InfiniteHarmonicsStream(batch_size=10, n_A=10, n_B=50, n_test=200,
+                                      num_components=4, noise_std=0.05, share_unrelated=0.2)
+    batch_data = next(iter(dataset))
+
+    # 2. Setup Bins
+    num_bars = 50
+    borders = torch.linspace(-5, 5, num_bars + 1)
+    bin_centers = (borders[:-1] + borders[1:]) / 2.0
+
+
+    def generate_smooth_logits(Y_true, centers, confidence=1.0):
+        """
+        Generates Gaussian-shaped logits centered on the true Y values.
+        Y_true: (Seq, Batch)
+        centers: (Num_Bars)
+        """
+        # Expand for broadcasting: (Seq, Batch, Num_Bars)
+        y_target = Y_true.unsqueeze(-1)
+        c = centers.view(1, 1, -1)
+
+        # Calculate squared distance from bin centers (Gaussian Kernel)
+        # Higher confidence = narrower peaks
+        logits = -((y_target - c) ** 2) / (2 * (0.5 / confidence) ** 2)
+        return logits
+
+
+    # 3. Create synthetic predictions for each stream
+    # Stream A: Very low confidence (wide blur)
+    logits_A = generate_smooth_logits(batch_data['test']['Y_A'], bin_centers, confidence=0.8)
+
+    # Stream B: High confidence (sharp line)
+    logits_B = generate_smooth_logits(batch_data['test']['Y_B'], bin_centers, confidence=5.0)
+
+    # Stream C: High confidence on related, but falls back to blur on traps
+    # We simulate this by checking the is_unrelated mask
+    logits_C = logits_A.clone()
+    is_unrelated = batch_data['params']['is_unrelated']
+    for b in range(logits_C.shape[1]):
+        if not is_unrelated[b]:
+            # If related, make it sharp like B
+            logits_C[:, b, :] = generate_smooth_logits(batch_data['test']['Y_A'], bin_centers, confidence=4.0)[
+                :, b, :]
+
+    # 4. Plot
+    fig = plt.figure(figsize=(12, 14))
+    InfiniteHarmonicsStream.save_heatmaps(
+        fig=fig,
+        batch_data=batch_data,
+        borders=borders,
+        save_path="test_heatmap.png",
+        logits_A=logits_A,
+        logits_B=logits_B,
+        logits_C=logits_C,
+        plot=True
+    )

@@ -21,98 +21,83 @@ class MLP(nn.Module):
 
 
 
-
 class DistributionalGlobalGate(nn.Module):
     """Core idea: Instead of mean pooling or softmin/softmax pooling, which are just single summary statistics,
     we can learn a more expressive pooling function that looks at the entire distribution of trust scores."""
-
-    def __init__(self, dmodel, num_quantiles=5, temp=1.0):
+    def __init__(self, dmodel, num_quantiles=5):
         super().__init__()
-        self.temp = temp
 
-        # FIXED: We extract 'num_quantiles' + 5 moments (mean, var, skewness, kurtosis, n_A)
-        self.dist_features_dim = num_quantiles + 5
+        # We will extract 'num_quantiles' + 2 moments (mean, variance)
+        self.dist_features_dim = num_quantiles + 4  # + mean, var, skewness, kurtosis
 
-        # The Quantiles we want to sample (e.g., [0.1, 0.25, 0.5, 0.75, 0.9])
+        # The Quantiles we want to sample (e.g., [0.1, 0.25, 0.5, 0.75, 0.9]) # limited by n(task_B)
         self.register_buffer(
             "quantiles",
             torch.linspace(0.1, 0.9, num_quantiles)
         )
 
-        # CHANGED: Output 2 logits (Index 0: Discard, Index 1: Keep)
+        # The MLP that looks at the distribution and outputs the global gate
         self.distribution_analyzer = nn.Sequential(
             nn.Linear(self.dist_features_dim, dmodel // 2),
             nn.GELU(),
-            nn.LayerNorm(dmodel // 2),  # Added to prevent logit explosion
-            nn.Linear(dmodel // 2, 2)  # Output 2 classes, removed Sigmoid
+            nn.Linear(dmodel // 2, 1),
+            nn.Sigmoid()
         )
 
-        # Initialize biases to favor "Discard" (Index 0) early in training
-        nn.init.constant_(self.distribution_analyzer[-1].bias[0], 2.0)
-        nn.init.constant_(self.distribution_analyzer[-1].bias[1], -2.0)
-
-    def forward(self, raw_trust_A, current_temp=None):
+    def forward(self, raw_trust_A):
         """
         raw_trust_A: [T_A, Batch, 1] - Pointwise trust scores
         """
-        tau = current_temp if current_temp is not None else self.temp
-
         # 1. Cast and prepare
         raw_trust_A = raw_trust_A.float()
         n_A = raw_trust_A.shape[0]
         eps = 1e-6
 
-        # 2. Calculate Raw Moments
+        # 2. Calculate Raw Moments (Efficiently reduces dim=0 immediately)
+        # These are E[X], E[X^2], E[X^3], E[X^4]
+        # Memory footprint remains O(Batch) rather than O(T_A * Batch)
         mean_trust = raw_trust_A.mean(dim=0)  # E[X]
         raw_2 = torch.pow(raw_trust_A, 2).mean(dim=0)  # E[X^2]
         raw_3 = torch.pow(raw_trust_A, 3).mean(dim=0)  # E[X^3]
         raw_4 = torch.pow(raw_trust_A, 4).mean(dim=0)  # E[X^4]
 
         # 3. Calculate Variance and Central Moments
-        var_trust = (raw_2 - (mean_trust ** 2)).clamp(min=0.0)  # Clamp to avoid sqrt of negatives
+        # Var = E[X^2] - E[X]^2
+        var_trust = raw_2 - (mean_trust ** 2)
         std_trust = torch.sqrt(var_trust + eps)
 
+        # Central 3rd Moment: E[(X-mu)^3] = E[X^3] - 3*E[X^2]*mu + 2*mu^3
         central_3 = raw_3 - 3 * raw_2 * mean_trust + 2 * (mean_trust ** 3)
         skew_trust = central_3 / (std_trust ** 3 + eps)
 
+        # Central 4th Moment: E[(X-mu)^4] = E[X^4] - 4*E[X^3]*mu + 6*E[X^2]*mu^2 - 3*mu^4
         central_4 = raw_4 - 4 * raw_3 * mean_trust + 6 * raw_2 * (mean_trust ** 2) - 3 * (mean_trust ** 4)
         kurt_trust = central_4 / (std_trust ** 4 + eps)
 
-        # 4. Calculate Quantiles
+        # 4. Calculate Quantiles (Already relatively memory efficient)
+        # Shape: [num_quantiles, Batch, 1]
         q_vals = torch.quantile(raw_trust_A, self.quantiles, dim=0)
 
         # 5. Assemble the Distribution Vector
+        # Squeeze all to [Batch, N]
         q_vals = q_vals.transpose(0, 1).squeeze(-1)  # [Batch, num_quantiles]
 
+        # Concatenate: All inputs should be [Batch, 1] before cat
         dist_vector = torch.cat([
             q_vals,
             mean_trust,
             var_trust,
             skew_trust,
             kurt_trust,
-            torch.tensor([n_A], device=raw_trust_A.device).expand_as(mean_trust)
+            # add in n_A, because it'll tell us how much we might already trust A on its own.
+                torch.tensor([n_A], device=raw_trust_A.device).expand_as(mean_trust)
         ], dim=-1)
 
-        # 6. Global Decision Logits -> Shape: [Batch, 2]
-        logits = self.distribution_analyzer(dist_vector)
+        # 6. Global Decision
+        global_gate_logits = self.distribution_analyzer(dist_vector)
 
-        # 7. Gumbel-Softmax Straight-Through Estimator
-        if self.training:
-            # Clamp logits to prevent them from overpowering the Gumbel noise
-            safe_logits = torch.clamp(logits, min=-3.0, max=3.0)
-            # hard=True outputs strictly 0 or 1, but keeps backward pass differentiable
-            gate_onehot = F.gumbel_softmax(safe_logits, tau=tau, hard=True, dim=-1)
-        else:
-            # Inference: Greedy argmax
-            gate_onehot = F.one_hot(logits.argmax(dim=-1), num_classes=2).float()
+        return global_gate_logits.unsqueeze(0).to(raw_trust_A.dtype)
 
-        # Extract the "Keep" channel (Index 1) -> Shape: [Batch]
-        keep_mask = gate_onehot[..., 1]
-
-        # Reshape to [1, Batch, 1] to broadcast safely over [T_query, Batch, dmodel]
-        global_gate = keep_mask.view(1, -1, 1)
-
-        return global_gate.to(raw_trust_A.dtype)
 
 class StructuralGatingModule(nn.Module):
     """
@@ -124,7 +109,7 @@ class StructuralGatingModule(nn.Module):
     - "softmax": Focuses on maximum alignment (the strongest link).
     """
 
-    def __init__(self, dmodel, pool_mode="distributional", temp=0.1, use_pointwise=True, use_global=True, zero_init=True):
+    def __init__(self, dmodel, pool_mode="mean", temp=0.1, use_pointwise=True, use_global=True, zero_init=True):
         super().__init__()
 
         valid_modes = ["mean", "softmin", "softmax", "distributional", "gumbel"]
@@ -163,17 +148,11 @@ class StructuralGatingModule(nn.Module):
 
             self.trust_proj.add_module("final_linear", final_linear)
 
-        elif self.pool_mode == "distributional":
-            self.trust_proj.add_module("final_linear", nn.Linear(dmodel, 1))
-            self.trust_proj.add_module("final_activation", nn.Sigmoid())
-
-        if zero_init:
-            nn.init.constant_(self.trust_proj[2].bias, -4.0)
+        # if zero_init:
+        #     nn.init.constant_(self.trust_proj[2].bias, -4.0)
 
         if pool_mode == "distributional":
             self.distributional_gate = DistributionalGlobalGate(dmodel)
-
-
 
     def forward(self, A_feat, B_feat, mask_A=None, mask_B=None):
         """
@@ -438,7 +417,7 @@ class GatedLatentTransferLayer(nn.Module):
             gate = self.struct_gate_module(A_feat, B_feat, mask_A=m_A, mask_B=m_B)
 
             # Apply to Source
-            # B_feat = B_feat * gate
+            B_feat = B_feat * gate
 
         # 3. Expand C_feat to C_test_feat by hp attention across coordinates. ------------------------------------------
         # spatial interpolation to get C_test_feat for the query points
@@ -492,10 +471,7 @@ class GatedLatentTransferLayer(nn.Module):
         mask_B_train = mask_B[:, :sep] if mask_B is not None else None
         if mask_A_train is not None and mask_B_train is not None:
             # Concat along the sequence dimension (dim=1) for the mask
-            cross_attn_mask = torch.cat([
-                # mask_A_train,
-               mask_B_train], dim=1
-            )
+            cross_attn_mask = torch.cat([mask_A_train, mask_B_train], dim=1)
         else:
             cross_attn_mask = None
 
@@ -519,13 +495,13 @@ class GatedLatentTransferLayer(nn.Module):
         # but the feature vector I got back from B looks like a steep drop (C_cross).
         # This is useless to me. Close the gate."
         # Consider: this gating seemed to be uneffective.
-        # if self.use_gate:
-        #     gate_input = torch.cat([query, C_cross], dim=-1)
-        #     gate = self.gate_proj(gate_input)
-        # else:
-        #     gate = 1.0
+        if self.use_gate:
+            gate_input = torch.cat([query, C_cross], dim=-1)
+            gate = self.gate_proj(gate_input)
+        else:
+            gate = 1.0
 
         # Gated Residual update
-        C = C + gate.mean(0) * self.out_proj(C_cross)
+        C = C + gate * self.out_proj(C_cross)
 
         return A, B, C
