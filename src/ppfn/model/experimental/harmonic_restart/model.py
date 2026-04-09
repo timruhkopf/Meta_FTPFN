@@ -4,13 +4,12 @@ import torch.nn.functional as F
 from torch.nn import MultiheadAttention, Linear, Dropout, LayerNorm
 from typing import Optional
 from torch import Tensor
-from torch.nn.functional import dropout
 
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
 class PFNLayer(nn.Module):
-    def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1,):
+    def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, ):
         super(PFNLayer, self).__init__()
         batch_first = False
         self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
@@ -64,14 +63,15 @@ class PFNLayer(nn.Module):
         if pad_mask_A is not None or pad_mask_B is not None:
             device = combined.device
             # If one mask is provided but the other isn't, default the missing one to False
-            pad_mask_A = torch.zeros((B_size, T), dtype=torch.bool, device=device) if pad_mask_A is None else pad_mask_A
-            pad_mask_B = torch.zeros((B_size, T), dtype=torch.bool, device=device) if pad_mask_B is None else pad_mask_B
+            if pad_mask_A is None:
+                pad_mask_A = torch.zeros((B_size, T), dtype=torch.bool, device=device)
+            if pad_mask_B is None:
+                pad_mask_B = torch.zeros((B_size, T), dtype=torch.bool, device=device)
 
             # C uses the exact same padding mask as A
             combined_mask = torch.cat([pad_mask_A, pad_mask_B, pad_mask_A], dim=0)
         else:
             combined_mask = None
-
         # ==========================================
         # 2. SHARED SELF-ATTENTION (Pre-Norm)
         # ==========================================
@@ -102,18 +102,83 @@ class PFNLayer(nn.Module):
         # Split the combined tensor back into 3 distinct tensors along the batch dimension
         A_out, B_out, C_out = torch.split(combined, split_size_or_sections=B_size, dim=1)
 
-        return A_out, B_out, C_out
+        return A_out.contiguous(), B_out.contiguous(), C_out.contiguous()
+
+
+class GumbelGate(nn.Module):
+    def __init__(self, input_dim, hard=True):
+        super().__init__()
+        self.gate_linear = nn.Linear(input_dim, 1)
+        self.hard = hard
+        # Initialize bias so it starts "undecided" or slightly open
+        nn.init.constant_(self.gate_linear.bias, 0.5)
+
+    def forward(self, x, tau=1.0, training=True):
+        logits = self.gate_linear(x)  # (Batch, 1)
+
+        if training:
+            # 1. Sample Gumbel noise
+            unif = torch.rand_like(logits)
+            gumbel_noise = -torch.log(-torch.log(unif + 1e-20) + 1e-20)
+
+            # 2. Apply Gumbel-Sigmoid trick
+            # We treat the single logit as the difference between two gumbel samples
+            y_soft = torch.sigmoid((logits + gumbel_noise) / tau)
+
+            if self.hard:
+                # 3. Straight-Through Estimator
+                # Forward pass: 0 or 1. Backward pass: gradient of y_soft
+                y_hard = (y_soft > 0.5).float()
+                gate = y_hard - y_soft.detach() + y_soft
+            else:
+                gate = y_soft
+        else:
+            # Inference: Just a deterministic threshold or sigmoid
+            gate = (torch.sigmoid(logits) > 0.5).float() if self.hard else torch.sigmoid(logits)
+
+        return gate, logits
+
+
+class HardSigmoidGate(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+        self.gate_linear = nn.Linear(2 * d_model, 1)
+        # Initialize bias to 0.5 to 1.0.
+        # This ensures gate output starts around 0.6 - 0.7 (inside the linear gradient zone)
+        nn.init.constant_(self.gate_linear.bias, 0.8)
+
+    def forward(self, x):
+        # F.hardsigmoid is built into modern PyTorch (1.7+)
+        logits = self.gate_linear(x)
+        ForwardMetaContext.set('gate_logits', logits)
+        return F.hardsigmoid(logits)
 
 
 # TODO what about gating against negative transfer?
 class PreNormTriStreamTransformerLayer(nn.Module):
-    def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False ) -> None:
+    def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=True,
+                 gate_type=None, use_gate=False) -> None:
         super().__init__()
         batch_first = False
+        self.use_hp = use_hp
 
         # Shared self-attention and conditional cross-attention
         self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
         self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+
+        self.use_gate = use_gate
+        self.gate_type = gate_type
+        if self.gate_type == 'hard_sigmoid':
+            self.gate_module = HardSigmoidGate(d_model)
+
+        elif self.gate_type == 'gumbel':
+            # 2 * d_model because input is concatenated
+            self.gate_module = GumbelGate(2 * d_model, hard=False)  # Start soft, maybe flip to hard later
+            self.tau = 1.0
+        elif self.gate_type == "sigmoid":
+            # Standard Sigmoid fallback
+            self.gate_linear = Linear(2 * d_model, 1)
+            nn.init.constant_(self.gate_linear.bias, 1.0)
 
         # Shared Feedforward
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -130,13 +195,15 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         self.dropout2 = Dropout(dropout)
 
         self.gate_linear = Linear(2 * d_model, 1)  # For the coherence check gating mechanism
-        nn.init.constant_(self.gate_linear.bias, 1.0)  # Initialize bias to 1.0 to encourage initially trusting the cross-attention
+        nn.init.constant_(self.gate_linear.bias,
+                          1.0)  # Initialize bias to 1.0 to encourage initially trusting the cross-attention
 
         self.activation = F.relu
 
         self.use_B_attn_sink = use_B_attn_sink
         if use_B_attn_sink:
-            self.B_attn_sink = nn.Parameter(torch.randn(1, 1, d_model))  # Learned token for C to attend to if it wants to ignore B
+            self.B_attn_sink = nn.Parameter(
+                torch.randn(1, 1, d_model))  # Learned token for C to attend to if it wants to ignore B
 
     def _apply_self_attention(self, src: Tensor, eval_pos: int, pad_mask: Optional[Tensor]) -> Tensor:
         train_part = src[:eval_pos, :, :]
@@ -153,27 +220,33 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             A: Tensor,
             B: Tensor,
             C: Tensor,
-            single_eval_pos: int,
+            hp_A: Tensor,
+            hp_B: Tensor,
+            hp_C: Tensor,
+            sep: int,
             pad_mask_A: Optional[Tensor] = None,
             pad_mask_B: Optional[Tensor] = None
     ):
 
-
+        if self.use_hp:
+            A += hp_A
+            B += hp_B
+            C += hp_C
 
         # ==========================================
         # 1. SHARED SELF-ATTENTION (Pre-Norm)
         # ==========================================
-        normed_A = self.norm1(A)
+        # normed_A = self.norm1(A)
         normed_B = self.norm1(B)
         normed_C = self.norm1(C)
 
         # C has the exact same structure/padding as A
         # FIXME: we could also just stack them and do one big attention call!
-        src2_A = self._apply_self_attention(normed_A, single_eval_pos, pad_mask_A)
-        src2_B = self._apply_self_attention(normed_B, single_eval_pos, pad_mask_B)
-        src2_C = self._apply_self_attention(normed_C, single_eval_pos, pad_mask_A)
+        # src2_A = self._apply_self_attention(normed_A, single_eval_pos, pad_mask_A)
+        src2_B = self._apply_self_attention(normed_B, sep, pad_mask_B)
+        src2_C = self._apply_self_attention(normed_C, sep, pad_mask_A)
 
-        A = A + self.dropout1(src2_A)
+        # A = A + self.dropout1(src2_A)
         B = B + self.dropout1(src2_B)
         C = C + self.dropout1(src2_C)
 
@@ -185,8 +258,8 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         normed_cross_B = self.norm_cross(B)
 
         # B's train part serves as the memory
-        B_train = normed_cross_B[:single_eval_pos, :, :]
-        pad_mask_B_train = pad_mask_B[:, :single_eval_pos] if pad_mask_B is not None else None
+        B_train = normed_cross_B[:sep, :, :]
+        pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
 
         if self.use_B_attn_sink:
             batch_size = B_train.shape[1]
@@ -194,8 +267,10 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             B_train = torch.cat([B_train, self.B_attn_sink.expand(1, batch_size, -1)], dim=0)
 
             if pad_mask_B is not None:
-                pad_mask_B_train = torch.cat([pad_mask_B_train, torch.zeros(B_train.size(0), 1, dtype=torch.bool, device=B_train.device)], dim=1)
+                pad_mask_B_train = torch.cat(
+                    [pad_mask_B_train, torch.zeros(B_train.size(0), 1, dtype=torch.bool, device=B_train.device)], dim=1)
 
+        # TODO can we take the pre-sigmoid weights and use them as signal for the gating? wouldn't that measure the data support?
         cross_C, cross_attn_weights = self.cross_attn(
             query=normed_cross_C,
             key=B_train,
@@ -207,24 +282,46 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         if self.use_B_attn_sink:
             ForwardMetaContext.set('cross_attn_weights', cross_attn_weights)  # Store for later analysis
 
+        # --- THE TASK-LEVEL COHERENCE CHECK ---
 
-        # --- THE COHERENCE CHECK ---
-        # We concatenate the original state and the proposed update
-        # gate_input = torch.cat([normed_cross_C, cross_C], dim=-1)
-        # gate = torch.sigmoid(self.gate_linear(gate_input))  # (Seq, Batch, 1)
+        # ==========================================
+        # 3. THE TASK-LEVEL COHERENCE CHECK
+        # ==========================================
+        if self.use_gate:
+            global_target = normed_cross_C.mean(dim=0)
+            global_proposal = cross_C.mean(dim=0)
+            gate_input = torch.cat([global_target, global_proposal], dim=-1)  # (Batch, 2D)
 
+            # Evaluate the chosen gate type
+            if self.gate_type == 'hard_sigmoid':
+                # HardSigmoidGate handles setting the 'gate_logits' internally
+                gate_scalar = self.gate_module(gate_input)
 
-        # ForwardMetaContext.set('gate', gate)  # Store for later analysis
+            elif self.gate_type == 'gumbel':
+                gate_scalar, gate_logits = self.gate_module(gate_input, tau=self.tau, training=self.training)
+                ForwardMetaContext.set('gate_logits', gate_logits)
 
-        # If the cross_C (from B) contradicts normed_cross_C (from A),
-        # the network can learn to drive 'gate' to 0.
-        # C = C + self.dropout_cross(gate * cross_C)
-        C = C + self.dropout_cross(cross_C)
+            elif self.gate_type == 'sigmoid':
+                gate_logits = self.gate_linear(gate_input)
+                ForwardMetaContext.set('gate_logits', gate_logits)
+                gate_scalar = torch.sigmoid(gate_logits)
+
+            # Store the activated probability for analysis
+            ForwardMetaContext.set('gate', gate_scalar)
+
+            # Broadcast the scalar back across the sequence dimension -> (1, Batch, 1)
+            gate_broadcast = gate_scalar.unsqueeze(0)
+
+            # Apply the gated residual
+            C = C + self.dropout_cross(gate_broadcast * cross_C)
+
+        else:
+            C = C + self.dropout_cross(cross_C)
 
         # ==========================================
         # 3. SHARED FEEDFORWARD (Pre-Norm)
         # ==========================================
-        normed_ff_A = self.norm2(A)
+        # normed_ff_A = self.norm2(A)
         normed_ff_B = self.norm2(B)
         normed_ff_C = self.norm2(C)
 
@@ -232,18 +329,19 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         def ff_block(x):
             return self.linear2(self.dropout(self.activation(self.linear1(x))))
 
-        A = A + self.dropout2(ff_block(normed_ff_A))
+        # A = A + self.dropout2(ff_block(normed_ff_A))
         B = B + self.dropout2(ff_block(normed_ff_B))
         C = C + self.dropout2(ff_block(normed_ff_C))
 
         return A, B, C
+
 
 class FourierEncoder(nn.Module):
     def __init__(self, d_model, sigma=1.0):
         super().__init__()
         # Initialize random frequencies
         self.frequencies = nn.Parameter(torch.randn(1, d_model // 2) * sigma, requires_grad=False)
-        self.linear = nn.Linear(d_model, d_model) # Optional mixing layer
+        self.linear = nn.Linear(d_model, d_model)  # Optional mixing layer
 
     def forward(self, x):
         # x is (Seq, Batch, 1)
@@ -259,7 +357,6 @@ class TriHarmonicModel(nn.Module):
         self.x_encoder = FourierEncoder(d_model) if use_freq_enc_x else nn.Linear(1, d_model)
         self.y_encoder = nn.Linear(1, d_model)
 
-
         self.pfn_layer = PFNLayer(d_model, nhead=nhead, dropout=dropout)
         self.layer = PreNormTriStreamTransformerLayer(d_model, nhead=nhead, use_B_attn_sink=use_B_attn_sink)
 
@@ -270,7 +367,6 @@ class TriHarmonicModel(nn.Module):
         self.decoder = nn.Linear(d_model, num_bars)
 
     def forward(self, batch):
-        # FIXME: change the signature to accept this directly
         X_train_A, Y_train_A = batch['train']['X_A'], batch['train']['Y_A']
         X_train_B, Y_train_B = batch['train']['X_B'], batch['train']['Y_B']
         X_test_A = batch['test']['X_A']
@@ -296,28 +392,39 @@ class TriHarmonicModel(nn.Module):
         emb_Y_A = self.y_encoder(Y_A_train_clean)
         emb_Y_B = self.y_encoder(Y_B_train_clean)
 
-        # Inject Y into train positions
-        emb_X_A[:single_eval_pos, :, :] += emb_Y_A
-        emb_X_B[:single_eval_pos, :, :] += emb_Y_B
+        # ==========================================
+        # FIX: Inject Y into train positions without truncating the sequence
+        # ==========================================
+        A = emb_X_A.clone()
+        B = emb_X_B.clone()
 
-        emb_X_C = emb_X_A.clone()
+        A[:single_eval_pos, :, :] += emb_Y_A
+        B[:single_eval_pos, :, :] += emb_Y_B
 
-        A, B, C = self.pfn_layer(emb_X_A, emb_X_B, emb_X_C, single_eval_pos, pad_mask_A)
+        C = A.clone()
 
+        # Pass through the Marginal PFN Layer
+        A, B, C = self.pfn_layer(A, B, C, single_eval_pos, pad_mask_A)
 
-        # Pass through the Tri-Stream Layer
-        # FIXME: pad_mask_B is only here none, because it is the reference size
-        _, _, C = self.layer(A.detach(), B.detach(), C.detach(), single_eval_pos, pad_mask_A, pad_mask_B=None)
+        # ==========================================
+        # FIX: Cleaned up kwargs to match PreNormTriStreamTransformerLayer signature
+        # ==========================================
+        _, _, C = self.layer(
+            A, B, C,
+            hp_A=emb_X_A, hp_B=emb_X_B, hp_C=emb_X_A,
+            sep=single_eval_pos,
+            pad_mask_A=pad_mask_A,
+            pad_mask_B=None
+        )
 
         # Apply final norm
         out_A = self.final_norm(A)
         out_B = self.final_norm(B)
         out_C = self.final_norm(C)
 
-
         # Decode test positions into logits
         logits_A = self.decoder(out_A[single_eval_pos:, :, :])
         logits_B = self.decoder(out_B[single_eval_pos:, :, :])
-        # TODO: make sure that the decoder is frozen in the "fine-tuning" stage
         logits_C = self.decoder(out_C[single_eval_pos:, :, :])
+
         return logits_A, logits_B, logits_C

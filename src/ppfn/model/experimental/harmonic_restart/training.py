@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from datetime import datetime
 
+import torch.nn.functional as F
+
 from pfns4hpo.bar_distribution import FullSupportBarDistribution
 from ppfn.model.experimental.harmonic_restart.harmonic_prior import InfiniteHarmonicsStream
 from ppfn.model.experimental.harmonic_restart.model import TriHarmonicModel
@@ -47,7 +49,9 @@ def train(
         log_every: int = 100,
         plot_every: int = 2000,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        save_path="."
+        save_path=".",
+        share_unrelated=0.2,
+        train_jointly=False
 ):
     """Trains the Tri-Stream model using NLL loss, AMP, MLflow, and saves heatmap figures."""
     logger.info(f"Starting Tri-Stream training on {device}. Outputs to: {save_path}")
@@ -74,8 +78,13 @@ def train(
     with mlflow.start_run(run_name=run_name):
         # Log hyperparameters
         mlflow.log_params(locals())  # log all function arguments cleanly
+        # class imbalance for the gate loss:
+        pos_weight = share_unrelated / (1 - share_unrelated)
+        global_pos_weight = torch.tensor([pos_weight], device=device)
 
-        stream = InfiniteHarmonicsStream(batch_size=batch_size, n_A=10, n_B=50, n_test=300)
+        stream = InfiniteHarmonicsStream(
+            batch_size=batch_size, n_A=10, n_B=50, n_test=300,
+            share_unrelated=share_unrelated)
         dataloader = DataLoader(stream, batch_size=None)
 
         borders = torch.linspace(-7.0, 7.0, steps=150).to(device)
@@ -106,11 +115,21 @@ def train(
             if step >= max_steps:
                 break
 
-            if step == warmup_steps:
-                # freeze the backend model
-                logger.info("Warmup complete. Freezing marginal backend; unlocking Adapter C.")
-                for param in set(model.parameters()) - set(model.layer.parameters()):
-                    param.requires_grad = False  # Unfreeze all parameters after warmup
+            if not train_jointly:
+                if step == 0:
+                    # freeze the adapter
+                    logger.info("Freezing Adapter A and B for warmup phase.")
+                    for param in model.layer.parameters():
+                        param.requires_grad = False  # Freeze adapter parameters during warmup
+
+                if step == warmup_steps:
+                    # freeze the backend model
+                    logger.info("Warmup complete. Freezing marginal backend; unlocking Adapter C.")
+                    for param in set(model.parameters()) - set(model.layer.parameters()):
+                        param.requires_grad = False  # Unfreeze all parameters after warmup
+
+                    for param in set(model.layer.parameters()):
+                        param.requires_grad = True
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -134,11 +153,36 @@ def train(
             # C targets A!
             loss_C = criterion(logits_C, Y_test_A).mean()
 
-            if step < warmup_steps:
-                total_loss = loss_A + loss_B
-
+            if train_jointly:
+                total_loss = loss_A + loss_B + loss_C
             else:
-                total_loss = loss_C
+                if step < warmup_steps:
+                    total_loss = loss_A + loss_B
+
+                else:
+                    total_loss = loss_C
+
+            # 2. Fetch the gate values and the mask
+            gate_logits_val = ForwardMetaContext.get('gate_logits')
+            is_unrelated = batch['params']['is_unrelated'].to(device)
+
+            if gate_logits_val is not None:
+                # 2. Squeeze and cast to float32 for stable loss calculation
+                gate_logits = gate_logits_val.squeeze(-1).float()
+
+                # 3. Create the Ideal Target (1.0 for Related, 0.0 for Trap)
+                ideal_gate = (~is_unrelated).float()
+
+                # 4. Compute Weighted Loss using the built-in PyTorch parameter
+                loss_gate = F.binary_cross_entropy_with_logits(
+                    gate_logits,
+                    ideal_gate,
+                    pos_weight=global_pos_weight  # <--- The Magic Bullet for Imbalance
+                )
+
+                # 5. Add to main loss
+                gate_loss_weight = 1
+                total_loss  += (gate_loss_weight * loss_gate)
 
             # --- Backward Pass (AMP) ---
             scaler.scale(total_loss).backward()
@@ -193,42 +237,43 @@ def train(
                 mlflow.log_metrics(metrics, step=step)
 
                 # log attn sink metrics:
-                cross_attn_weights = ForwardMetaContext.get('cross_attn_weights')
+                # cross_attn_weights = ForwardMetaContext.get('cross_attn_weights')
+                #
+                # if cross_attn_weights is not None:
+                #     # cross_attn_weights shape: (B, Seq_C, Seq_B + 1)
+                #     # 1. Isolate attention paid specifically to the sink (last token)
+                #     # 2. Average it across all queries in Stream C
+                #     sink_attn = cross_attn_weights[:, :, -1].mean(dim=1)  # Shape: (B,)
+                #
+                #     # Split by your prior's relationship mask
+                #     is_unrelated = batch['params']['is_unrelated'].to(device)
+                #
+                #     sink_attn_unrelated = sink_attn[is_unrelated].mean().item() if is_unrelated.any() else 0.0
+                #     sink_attn_related = sink_attn[~is_unrelated].mean().item() if (~is_unrelated).any() else 0.0
+                #
+                #     mlflow.log_metrics({
+                #         "Gate/AttnSink: Unrelated_Trap": sink_attn_unrelated,
+                #         "Gate/AttnSink: Related_Task": sink_attn_related,
+                #     }, step=step)
 
-                if cross_attn_weights is not None:
-                    # cross_attn_weights shape: (B, Seq_C, Seq_B + 1)
-                    # 1. Isolate attention paid specifically to the sink (last token)
-                    # 2. Average it across all queries in Stream C
-                    sink_attn = cross_attn_weights[:, :, -1].mean(dim=1)  # Shape: (B,)
-
-                    # Split by your prior's relationship mask
-                    is_unrelated = batch['params']['is_unrelated'].to(device)
-
-                    sink_attn_unrelated = sink_attn[is_unrelated].mean().item() if is_unrelated.any() else 0.0
-                    sink_attn_related = sink_attn[~is_unrelated].mean().item() if (~is_unrelated).any() else 0.0
-
-                    mlflow.log_metrics({
-                        "Gate/AttnSink: Unrelated_Trap": sink_attn_unrelated,
-                        "Gate/AttnSink: Related_Task": sink_attn_related,
-                    }, step=step)
-
+                # TODO: check auc_roc, precision-recall, Type I / Type II error etc. for the gate predictions (if they exist in the context)
                 gate_vals = ForwardMetaContext.get('gate')
                 is_unrelated = batch['params']['is_unrelated'].to(device)
 
                 if gate_vals is not None:
-                    # Average across the sequence dimension to get one value per batch item
-                    avg_gate_per_batch = gate_vals.mean(dim=0).squeeze(-1)  # (Batch,)
+                    # The gate is ALREADY task-level: shape is (Batch, 1)
+                    # We just squeeze the last dimension to match the mask: shape -> (Batch,)
+                    gate_per_batch = gate_vals.squeeze(-1)
 
-                    gate_unrelated = avg_gate_per_batch[is_unrelated].mean().item() if is_unrelated.any() else 0.0
-                    gate_related = avg_gate_per_batch[~is_unrelated].mean().item() if (~is_unrelated).any() else 0.0
+                    # Apply masks
+                    gate_unrelated = gate_per_batch[is_unrelated].mean().item() if is_unrelated.any() else 0.0
+                    gate_related = gate_per_batch[~is_unrelated].mean().item() if (~is_unrelated).any() else 0.0
 
                     mlflow.log_metrics({
                         "Gate/Related": gate_related,  # Target: High (~1.0)
-                        "Gate/Unrelated": gate_unrelated,  # Target: Low (~0.0)
+                        "Gate/Unrelated": gate_unrelated  # Target: Low (~0.0)
                     }, step=step)
 
-                # print(f"Step {step:05d} | NLL A: {loss_A.item():.3f} | NLL C: {loss_C.item():.3f} | "
-                #       f"Diff (C-A): {(loss_C - loss_A).item():.3f} | Sparse: {grad_sparsity:.1f}%")
                 pbar.set_description(
                     f"Step {step:05d} - "
                     f"Total Loss: {total_loss.item():.4f} - "
