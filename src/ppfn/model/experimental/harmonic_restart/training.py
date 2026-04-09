@@ -236,6 +236,18 @@ def train(
                 }
                 mlflow.log_metrics(metrics, step=step)
 
+                therm = ForwardMetaContext.get('thermodynamic_energy')
+                transport = ForwardMetaContext.get('transport_energy')
+                kinetic_energy = ForwardMetaContext.get('kinetic_energy')
+
+                metrics = {
+                    "energy/thermodynamic_energy": therm.mean().item() if therm is not None else 0.0,
+                    "energy/transport": transport.mean().item() if transport is not None else 0.0,
+                    "energy/kinetic_energy": kinetic_energy.mean().item(),
+                }
+
+                mlflow.log_metrics(metrics, step=step)
+
                 # log attn sink metrics:
                 # cross_attn_weights = ForwardMetaContext.get('cross_attn_weights')
                 #

@@ -157,14 +157,19 @@ class HardSigmoidGate(nn.Module):
 # TODO what about gating against negative transfer?
 class PreNormTriStreamTransformerLayer(nn.Module):
     def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=True,
-                 gate_type=None, use_gate=False) -> None:
+                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False) -> None:
         super().__init__()
         batch_first = False
         self.use_hp = use_hp
 
         # Shared self-attention and conditional cross-attention
+        self.use_post_attn = use_post_attn
         self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
         self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+
+        self.use_add_pfn = use_add_pfn
+        if self.use_add_pfn:
+            self.pfn_layer = PFNLayer(d_model, nhead, dim_feedforward=dim_feedforward)
 
         self.use_gate = use_gate
         self.gate_type = gate_type
@@ -233,22 +238,26 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             B += hp_B
             C += hp_C
 
+        if self.use_add_pfn:
+            A, B, C = self.pfn_layer(A, B, C, sep, pad_mask_A, pad_mask_B)
+
         # ==========================================
         # 1. SHARED SELF-ATTENTION (Pre-Norm)
         # ==========================================
-        # normed_A = self.norm1(A)
-        normed_B = self.norm1(B)
-        normed_C = self.norm1(C)
+        if not self.use_post_attn: # Consider: this is the most successful under the detached
+            # normed_A = self.norm1(A)
+            normed_B = self.norm1(B)
+            normed_C = self.norm1(C)
 
-        # C has the exact same structure/padding as A
-        # FIXME: we could also just stack them and do one big attention call!
-        # src2_A = self._apply_self_attention(normed_A, single_eval_pos, pad_mask_A)
-        src2_B = self._apply_self_attention(normed_B, sep, pad_mask_B)
-        src2_C = self._apply_self_attention(normed_C, sep, pad_mask_A)
+            # C has the exact same structure/padding as A
+            # FIXME: we could also just stack them and do one big attention call!
+            # src2_A = self._apply_self_attention(normed_A, single_eval_pos, pad_mask_A)
+            src2_B = self._apply_self_attention(normed_B, sep, pad_mask_B)
+            src2_C = self._apply_self_attention(normed_C, sep, pad_mask_A)
 
-        # A = A + self.dropout1(src2_A)
-        B = B + self.dropout1(src2_B)
-        C = C + self.dropout1(src2_C)
+            # A = A + self.dropout1(src2_A)
+            B = B + self.dropout1(src2_B)
+            C = C + self.dropout1(src2_C)
 
         # ==========================================
         # 2. CONDITIONAL CROSS-ATTENTION (Pre-Norm)
@@ -267,22 +276,110 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             B_train = torch.cat([B_train, self.B_attn_sink.expand(1, batch_size, -1)], dim=0)
 
             if pad_mask_B is not None:
-                pad_mask_B_train = torch.cat(
-                    [pad_mask_B_train, torch.zeros(B_train.size(0), 1, dtype=torch.bool, device=B_train.device)], dim=1)
+                pad_mask_B_train = torch.cat([pad_mask_B_train, torch.zeros(B_train.size(0), 1, ...)], dim=1)
 
         # TODO can we take the pre-sigmoid weights and use them as signal for the gating? wouldn't that measure the data support?
         cross_C, cross_attn_weights = self.cross_attn(
             query=normed_cross_C,
+            # Avoiding task based gradient interference, we detach B here and get better uncertainty bounds
             key=B_train,
             value=B_train,
             key_padding_mask=pad_mask_B_train
         )
 
+        # --------------------------------------
+        # Adjusted Attn Entropy (Thermodynamic Energy)
+        # --------------------------------------
+        # If the space is perfectly aligned (just shifted/scaled), C should look at B and instantly know exactly which
+        # token it corresponds to. The attention distribution will be a sharp peak (a Dirac delta).If the spaces are
+        # highly warped, the relationships are ambiguous. C will hedge its bets and attend softly to many tokens in B.
+        # In thermodynamics, this spreading of state is higher entropy.How to measure it: Calculate the Shannon Entropy
+        # of the cross-attention weights.
+        # $$E_{entropy} = -\frac{1}{N} \sum_{i} \sum_{j} A_{i,j} \log(A_{i,j} + \epsilon)$$
+
+        # cross_attn_weights: (B, Heads, Tc, Tb)
+        epsilon = 1e-9
+
+        # Entropy over the source/key dimension (Tb)
+        # Resulting shape: (B, Heads, Tc)
+        entropy = - (cross_attn_weights * torch.log(cross_attn_weights + epsilon)).sum(dim=-1)
+
+        # Mean over all dimensions to get a single scalar for logging
+        thermodynamic_energy = entropy.mean()
+
+        ForwardMetaContext.set('thermodynamic_energy', thermodynamic_energy)
+
+        # --------------------------------------
+        # Measure Transport Energy
+        # --------------------------------------
+        #  The Transport Work (The "Earth Mover's" Energy)Since you know the physical/hyperparameter locations
+        #  (hp_A / hp_C and hp_B), you can measure the physical "distance" the attention mechanism has to reach
+        #  across to find a match.If B is just a shifted A, a perfectly unwarped mapping would simply be a strict
+        #  diagonal attention matrix offset by the shift $\Delta = hp_B - hp_C$. If the attention spreads out or
+        #  reaches to completely wrong hp locations, the space is heavily warped.How to measure it:Treat the
+        #  cross-attention matrix as a transport plan (or transition probability matrix), and calculate the
+        #  Wasserstein-like expected distance:
+        #  $$E_{transport} = \sum_{i} \sum_{j} A_{i,j} \cdot \mathcal{D}(hp_{C_i}, hp_{B_j})^2$$Where $A_{i,j}$
+        #  is the cross-attention weight from C's $i$-th token to B's $j$-th token, and $\mathcal{D}$ is
+        #  the distance between their known hyperparameter coordinates.
+
+        # 1. Permute HP tensors to (Batch, Seq, Dhp) for cdist
+        hp_B_train = hp_B[:sep, :, :]
+
+        # 1. Permute HP tensors to (Batch, Seq, Dhp) for cdist
+        hp_C_perm = hp_C.permute(1, 0, 2)
+        hp_B_train_perm = hp_B_train.permute(1, 0, 2)
+
+        # 2. Compute the distance/cost matrix: (Batch, Tc, sep)
+        dist_matrix = torch.cdist(hp_C_perm, hp_B_train_perm, p=2)
+        cost_matrix = dist_matrix ** 2
+
+        # 3. Check if cross_attn_weights is 3D or 4D
+        if cross_attn_weights.dim() == 4:
+            # (B, Heads, Tc, sep+1) -> (B, Tc, sep+1)
+            mean_attn = cross_attn_weights.mean(dim=1)
+        else:
+            # (B, Tc, sep+1)
+            mean_attn = cross_attn_weights
+
+        # 4. Slice the last dimension to remove the sink
+        tb_len = cost_matrix.size(-1)  # This is now exactly `sep`
+        mean_attn_no_sink = mean_attn[:, :, :tb_len]
+
+        # 5. Energy calculation
+        # Both tensors are now cleanly (Batch, Tc, sep)
+        transport_energy = (mean_attn_no_sink * cost_matrix).sum(dim=-1).mean()
+
+        ForwardMetaContext.set('transport_energy', transport_energy)
+
+        # ------------------------------------------
+
         # identify the sink relative weight
         if self.use_B_attn_sink:
             ForwardMetaContext.set('cross_attn_weights', cross_attn_weights)  # Store for later analysis
 
-        # --- THE TASK-LEVEL COHERENCE CHECK ---
+        # ------------------------------------------
+        # Update strength (Kinetic Energy)
+        # ------------------------------------------
+        # If you want to measure the energy strictly in the embedding space (rather than the sequence/hp space),
+        # look at the residual update itself.The cross-attention outputs a vector cross_C which is then added to C.
+        # This vector represents the literal mathematical "force" applied to C to pull it towards B's manifold.
+        # How to measure it:Calculate the Relative L2 Norm of the update.
+        # $$E_{kinetic} = \frac{1}{N} \sum \frac{\| \text{cross\_C} \|_2}{\| C \|_2}$$
+        # C is the pre-residual state, cross_C is the attention output
+
+
+        # Calculate L2 norm along the feature dimension (dim=-1)
+        # These results will be (Tc, B)
+        update_norm = torch.norm(cross_C, p=2, dim=-1)
+        state_norm = torch.norm(C, p=2, dim=-1)
+
+        # Relative magnitude of the warp
+        # Average across Sequence (dim=0) and Batch (dim=1)
+        kinetic_energy = (update_norm / (state_norm + 1e-8)).mean()
+
+        ForwardMetaContext.set('kinetic_energy', kinetic_energy)
+
 
         # ==========================================
         # 3. THE TASK-LEVEL COHERENCE CHECK
@@ -332,6 +429,11 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         # A = A + self.dropout2(ff_block(normed_ff_A))
         B = B + self.dropout2(ff_block(normed_ff_B))
         C = C + self.dropout2(ff_block(normed_ff_C))
+
+        if self.use_post_attn: # fixme: move this layer into the main model and detach C for it!
+            normed_C = self.norm1(C)
+            src2_C = self._apply_self_attention(normed_C, sep, pad_mask_A)
+            C = C + self.dropout1(src2_C)
 
         return A, B, C
 
@@ -410,8 +512,8 @@ class TriHarmonicModel(nn.Module):
         # FIX: Cleaned up kwargs to match PreNormTriStreamTransformerLayer signature
         # ==========================================
         _, _, C = self.layer(
-            A, B, C,
-            hp_A=emb_X_A, hp_B=emb_X_B, hp_C=emb_X_A,
+            A.detach(), B.detach(), C.detach(),
+            hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
             sep=single_eval_pos,
             pad_mask_A=pad_mask_A,
             pad_mask_B=None
