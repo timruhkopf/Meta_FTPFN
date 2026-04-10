@@ -229,14 +229,17 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             hp_B: Tensor,
             hp_C: Tensor,
             sep: int,
+            raw_hp_A: Tensor=None,
+            raw_hp_B: Tensor=None,
+            raw_hp_C: Tensor=None,
             pad_mask_A: Optional[Tensor] = None,
             pad_mask_B: Optional[Tensor] = None
     ):
 
         if self.use_hp:
-            A += hp_A
-            B += hp_B
-            C += hp_C
+            A = A + hp_A
+            B = B + hp_B
+            C = C + hp_C
 
         if self.use_add_pfn:
             A, B, C = self.pfn_layer(A, B, C, sep, pad_mask_A, pad_mask_B)
@@ -355,8 +358,8 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         # ------------------------------------------
 
         # identify the sink relative weight
-        if self.use_B_attn_sink:
-            ForwardMetaContext.set('cross_attn_weights', cross_attn_weights)  # Store for later analysis
+        # if self.use_B_attn_sink:
+        ForwardMetaContext.set('cross_attn_weights', cross_attn_weights)  # Store for later analysis
 
         # ------------------------------------------
         # Update strength (Kinetic Energy)
@@ -453,7 +456,7 @@ class FourierEncoder(nn.Module):
 
 
 class TriHarmonicModel(nn.Module):
-    def __init__(self, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_B_attn_sink=True, use_freq_enc_x=True):
+    def __init__(self, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_B_attn_sink=False, use_freq_enc_x=True):
         super().__init__()
         self.num_bars = num_bars
         self.x_encoder = FourierEncoder(d_model) if use_freq_enc_x else nn.Linear(1, d_model)
@@ -515,6 +518,9 @@ class TriHarmonicModel(nn.Module):
             A.detach(), B.detach(), C.detach(),
             hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
             sep=single_eval_pos,
+            raw_hp_A = X_A_clean,
+            raw_hp_B = X_B_clean,
+            raw_hp_C = X_A_clean,
             pad_mask_A=pad_mask_A,
             pad_mask_B=None
         )

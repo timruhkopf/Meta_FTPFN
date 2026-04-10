@@ -51,8 +51,30 @@ def train(
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         save_path=".",
         share_unrelated=0.2,
-        train_jointly=False
+        train_jointly=False,
+        use_attn_bonus=False,
 ):
+    import subprocess
+    import os
+    from pathlib import Path
+
+    # --- Git Extraction Logic ---
+    try:
+        # Get the current commit hash (short version)
+        git_hash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
+
+        # Capture uncommitted changes (the diff)
+        git_diff = subprocess.check_output(['git', 'diff']).decode('utf-8')
+
+        # Path for a temporary diff file
+        diff_file_path = os.path.join(save_path, "uncommitted_changes.diff")
+        with open(diff_file_path, "w") as f:
+            f.write(git_diff)
+    except Exception as e:
+        git_hash = "unknown"
+        diff_file_path = None
+        logger.warning(f"Could not capture Git state: {e}")
+
     """Trains the Tri-Stream model using NLL loss, AMP, MLflow, and saves heatmap figures."""
     logger.info(f"Starting Tri-Stream training on {device}. Outputs to: {save_path}")
 
@@ -78,6 +100,14 @@ def train(
     with mlflow.start_run(run_name=run_name):
         # Log hyperparameters
         mlflow.log_params(locals())  # log all function arguments cleanly
+
+        # 2. Specifically log the diff file as an artifact if it exists
+        if diff_file_path and os.path.getsize(diff_file_path) > 0:
+            mlflow.log_artifact(diff_file_path, artifact_path="git_metadata")
+            logger.info("Git diff logged to MLflow.")
+        elif diff_file_path:
+            logger.info("No uncommitted changes to log.")
+
         # class imbalance for the gate loss:
         pos_weight = share_unrelated / (1 - share_unrelated)
         global_pos_weight = torch.tensor([pos_weight], device=device)
@@ -87,7 +117,7 @@ def train(
             share_unrelated=share_unrelated)
         dataloader = DataLoader(stream, batch_size=None)
 
-        borders = torch.linspace(-7.0, 7.0, steps=150).to(device)
+        borders = torch.linspace(-7.0, 7.0, steps=250).to(device)
         criterion = FullSupportBarDistribution(borders, smoothing=0.05).to(device)
 
         # 3. Setup Model
@@ -115,7 +145,9 @@ def train(
             if step >= max_steps:
                 break
 
-            if not train_jointly:
+            if train_jointly:
+                pass
+            else:
                 if step == 0:
                     # freeze the adapter
                     logger.info("Freezing Adapter A and B for warmup phase.")
@@ -128,7 +160,7 @@ def train(
                     for param in set(model.parameters()) - set(model.layer.parameters()):
                         param.requires_grad = False  # Unfreeze all parameters after warmup
 
-                    for param in set(model.layer.parameters()):
+                    for param in model.layer.parameters():
                         param.requires_grad = True
 
             optimizer.zero_grad(set_to_none=True)
@@ -146,6 +178,70 @@ def train(
             with amp.autocast(device_type='cuda' if 'cuda' in device else 'cpu', enabled=(device == "cuda")):
                 logits_A, logits_B, logits_C = model(batch)
 
+            # ==========================================================
+            # SUPERVISED GUIDED ATTENTION (Proposal B)
+            # ==========================================================
+            # 1. Retrieve the cross attention weights from the layer
+            # Shape: (Batch * nhead, Seq_C, Seq_B + 1)
+            loss_guided_attn = torch.tensor(0.0, device=device)
+            raw_attn_weights = ForwardMetaContext.get('cross_attn_weights')
+            if use_attn_bonus and raw_attn_weights is not None:
+                if raw_attn_weights.dim() == 4:
+                    attn_weights = raw_attn_weights.mean(dim=1)  # (Batch, Seq_C, Seq_B or Seq_B+1)
+                else:
+                    attn_weights = raw_attn_weights
+
+                # 1. Reconstruct Coordinates Safely
+                X_C = torch.cat([batch['train']['X_A'], batch['test']['X_A']], dim=0)
+                X_C_clean = torch.nan_to_num(X_C, nan=0.0).transpose(0, 1)  # (Batch, Seq_C)
+
+                X_B_train = batch['train']['X_B']
+                X_B_clean = torch.nan_to_num(X_B_train, nan=0.0).transpose(0, 1)  # (Batch, Seq_B)
+
+                # 2. Target coordinates in B's space
+                h_shift = batch['params']['h_shift_A'].to(device).view(-1, 1)
+                X_target_b = X_C_clean - h_shift  # (Batch, Seq_C)
+
+                # 3. Pairwise Squared Distances
+                dist_sq = (X_target_b.unsqueeze(2) - X_B_clean.unsqueeze(1)) ** 2
+
+                # 4. Create the "Bonus Hill" (Values from 0.0 to 1.0)
+                # sigma defines the width of your "neighborhood"
+                sigma = 0.5
+                bonus_landscape = torch.exp(-dist_sq / (2 * sigma ** 2))
+
+                # 5. Calculate Expected Bonus (Reward)
+                Seq_B = X_B_clean.shape[1]
+                attn_to_B = attn_weights[:, :, :Seq_B]
+
+                # Expected Reward = Sum of (Probability * Bonus_Value)
+                expected_bonus = (attn_to_B * bonus_landscape).sum(dim=-1)  # (Batch, Seq_C)
+
+                # 6. Convert Reward to Loss (Negative Log)
+                # If expected_bonus is 1.0 (perfect), loss is 0.
+                # If expected_bonus is 0.001 (terrible), loss is ~6.9.
+                bonus_loss = -torch.log(expected_bonus + 1e-8)
+
+                # 7. Handle Traps & Sinks
+                is_unrelated = batch['params']['is_unrelated'].to(device)  # (Batch,)
+
+                if model.layer.use_B_attn_sink:
+                    # For traps, the "neighborhood" is simply the sink token
+                    sink_attn = attn_weights[:, :, -1]
+                    trap_loss = -torch.log(sink_attn + 1e-8)
+
+                    loss_per_batch = torch.where(is_unrelated.unsqueeze(1), trap_loss, bonus_loss)
+                else:
+                    loss_per_batch = torch.where(is_unrelated.unsqueeze(1), torch.zeros_like(bonus_loss), bonus_loss)
+
+                # 8. Final Mean
+                loss_guided_attn = loss_per_batch.mean()
+
+                if step % log_every:
+                    mlflow.log_metrics({
+                        "metrics/guided_Attn_Loss": loss_guided_attn.item()
+                    }, step = step)
+
             # NLL Losses
             loss_A = criterion(logits_A, Y_test_A).mean()
             loss_B = criterion(logits_B, Y_test_B).mean()
@@ -160,7 +256,11 @@ def train(
                     total_loss = loss_A + loss_B
 
                 else:
-                    total_loss = loss_C
+                    total_loss = loss_C + loss_guided_attn
+
+            total_nll_loss = total_loss.clone().item()
+
+
 
             # 2. Fetch the gate values and the mask
             gate_logits_val = ForwardMetaContext.get('gate_logits')
@@ -182,7 +282,7 @@ def train(
 
                 # 5. Add to main loss
                 gate_loss_weight = 1
-                total_loss  += (gate_loss_weight * loss_gate)
+                total_loss += (gate_loss_weight * loss_gate)
 
             # --- Backward Pass (AMP) ---
             scaler.scale(total_loss).backward()
@@ -224,7 +324,7 @@ def train(
                     diff_unrelated = 0.0  # Fallback if no unrelated samples in this batch
 
                 metrics = {
-                    "nll/Total": total_loss.item(),
+                    "nll/Total": total_nll_loss ,
                     "nll/A": loss_A.item(),
                     "nll/B": loss_B.item(),
                     "nll/C": loss_C.item(),
