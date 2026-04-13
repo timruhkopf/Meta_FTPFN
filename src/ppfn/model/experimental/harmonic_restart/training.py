@@ -53,6 +53,10 @@ def train(
         share_unrelated=0.2,
         train_jointly=False,
         use_attn_bonus=False,
+        n_A = 10,
+        n_B = 50,
+        scale=True,
+        shift=True
 ):
     import subprocess
     import os
@@ -113,8 +117,8 @@ def train(
         global_pos_weight = torch.tensor([pos_weight], device=device)
 
         stream = InfiniteHarmonicsStream(
-            batch_size=batch_size, n_A=10, n_B=50, n_test=300,
-            share_unrelated=share_unrelated)
+            batch_size=batch_size, n_A=n_A, n_B=n_B, n_test=300,
+            share_unrelated=share_unrelated, scale=scale, shift=shift)
         dataloader = DataLoader(stream, batch_size=None)
 
         borders = torch.linspace(-7.0, 7.0, steps=250).to(device)

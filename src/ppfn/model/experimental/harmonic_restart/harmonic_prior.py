@@ -11,7 +11,7 @@ class InfiniteHarmonicsStream(IterableDataset):
     """
 
     def __init__(self, batch_size=32, n_A=10, n_B=50, n_test=200, x_range=(-5, 5),
-                 num_components=4, noise_std=0.05, share_unrelated=0.2):
+                 num_components=4, noise_std=0.05, share_unrelated=0.2, scale=True, shift=True):
         super().__init__()
         self.batch_size = batch_size
         self.n_A = n_A
@@ -21,6 +21,9 @@ class InfiniteHarmonicsStream(IterableDataset):
         self.num_components = num_components
         self.noise_std = noise_std
         self.share_unrelated = share_unrelated
+
+        self.scale = scale
+        self.shift = shift
 
     def _sample_batch(self):
         B = self.batch_size
@@ -47,9 +50,17 @@ class InfiniteHarmonicsStream(IterableDataset):
 
         # 3. Constrain the Transformations
         # Reducing h_shift makes the relatedness more obvious for the cross-attn
-        scale_A = torch.empty(B).uniform_(0.3, 1.3)
-        v_shift_A = torch.empty(B).uniform_(-2.0, 2.0)
-        h_shift_A = torch.empty(B).uniform_(-1.5, 1.5)
+        if self.shift:
+            v_shift_A = torch.empty(B).uniform_(-2.0, 2.0)
+            h_shift_A = torch.empty(B).uniform_(-1.5, 1.5)
+        else:
+            v_shift_A = torch.zeros(B)
+            h_shift_A = torch.zeros(B)
+
+        if self.scale:
+            scale_A = torch.empty(B).uniform_(0.3, 1.3)
+        else:
+            scale_A = torch.ones(B)
 
         # 4. Sample X coordinates (Seq, Batch)
         # Train points are sorted uniformly random, Test points are linspace for smooth heatmaps
