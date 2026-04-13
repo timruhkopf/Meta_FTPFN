@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -66,7 +68,7 @@ class PFNLayer(nn.Module):
             if pad_mask_A is None:
                 pad_mask_A = torch.zeros((B_size, T), dtype=torch.bool, device=device)
             if pad_mask_B is None:
-                pad_mask_B = torch.zeros((B_size, T), dtype=torch.bool, device=device)
+                pad_mask_B = torch.zeros((B.shape[1], T), dtype=torch.bool, device=device)
 
             # C uses the exact same padding mask as A
             combined_mask = torch.cat([pad_mask_A, pad_mask_B, pad_mask_A], dim=0)
@@ -100,7 +102,11 @@ class PFNLayer(nn.Module):
         # 4. UNPACK BACK TO A, B, C
         # ==========================================
         # Split the combined tensor back into 3 distinct tensors along the batch dimension
-        A_out, B_out, C_out = torch.split(combined, split_size_or_sections=B_size, dim=1)
+        A_out = combined[:, :B_size, :]
+        B_out = combined[:, B_size:-B_size, :]
+        C_out = combined[:, -B_size:, :]
+
+        # A_out, B_out, C_out = torch.split(combined, split_size_or_sections=B_size, dim=1)
 
         return A_out.contiguous(), B_out.contiguous(), C_out.contiguous()
 
@@ -154,10 +160,148 @@ class HardSigmoidGate(nn.Module):
         return F.hardsigmoid(logits)
 
 
+class MetaWarpAttention(nn.Module):
+    """
+        MetaWarpAttention implements a coarse-to-fine, geometry-aware cross-attention mechanism.
+
+        Standard relative attention assumes a static or zero-centered spatial relationship.
+        When transferring features between two domains (e.g., Stream C querying Stream B)
+        where one is a physically shifted or non-linearly warped variant of the other,
+        standard attention either fails to align or suffers from massive uncertainty bounds.
+
+        MetaWarp solves this "Domain Shift" problem dynamically in three stages:
+
+        1. The Probe (Meta-Attention):
+           Projects the features into a lightweight subspace (`d_probe`) to compute a fast,
+           coarse correlation matrix between the query (C) and the key (B).
+
+        2. The Inference (Geometry Extraction):
+           Uses the coarse correlation matrix to compute the "Expected Physical Location"
+           in B's coordinate space. By subtracting C's actual coordinate, it infers a
+           dynamic, per-token physical shift (μ). A lightweight MLP then predicts the
+           confidence/strictness of this shift (γ).
+
+        3. The Transfer (Main Attention):
+           Constructs a dynamic, Shifted Radial Basis Function (RBF) mask centered exactly
+           on the inferred shift (μ) with width (γ). This mask restricts a full-capacity
+           MultiheadAttention, forcing it to only pull features from the geometrically
+           correct, dynamically inferred neighborhood.
+
+        Args:
+            d_model (int): Total dimension of the feature embeddings.
+            nhead (int): Number of parallel attention heads.
+            d_probe (int, optional): Dimension of the lightweight probing projection.
+                Keep this small (e.g., 16 or 32) to minimize computational overhead. Defaults to 16.
+            d_hp (int, optional): Dimension of the physical coordinates (Hyperparameters).
+                Usually 1 for 1D signals (X-axis). Defaults to 1.
+            dropout (float, optional): Dropout probability for the main attention. Defaults to 0.1.
+
+        Inputs to forward():
+            features_C (Tensor): Query features of shape (Batch, Seq_C, d_model).
+            features_B_real (Tensor): Key features of shape (Batch, Seq_B_real, d_model),
+                excluding non-physical tokens (like Attention Sinks) for the probe.
+            features_B_full (Tensor): Key/Value features of shape (Batch, Seq_B_full, d_model),
+                including all tokens for the final transfer.
+            raw_hp_C (Tensor): Physical coordinates of C, shape (Batch, Seq_C, d_hp).
+            raw_hp_B (Tensor): Physical coordinates of B, shape (Batch, Seq_B_real, d_hp).
+            has_sink (bool, optional): Whether to append a learned bias column for an attention sink.
+            key_padding_mask (Tensor, optional): Standard boolean mask for padded keys.
+        """
+    def __init__(self, d_model, nhead, d_probe=16, d_hp=1, dropout=0.1):
+        super().__init__()
+        self.num_heads = nhead
+
+        # ==========================================
+        # STAGE 1: The Probe (Meta-Attention)
+        # ==========================================
+        self.probe_q = nn.Linear(d_model, d_probe)
+        self.probe_k = nn.Linear(d_model, d_probe)
+        self.scale_probe = math.sqrt(d_probe)
+
+        # Predicts gamma (search width) based on the inferred shift magnitude
+        self.gamma_predictor = nn.Sequential(
+            nn.Linear(d_hp, 16),
+            nn.ReLU(),
+            nn.Linear(16, nhead)
+        )
+
+        # ==========================================
+        # STAGE 2: The Transfer (Main Attention)
+        # ==========================================
+        # We use batch_first=True internally for this module
+        self.main_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.sink_bias = nn.Parameter(torch.zeros(nhead))
+
+    def forward(self, features_C, features_B_real, features_B_full, raw_hp_C, raw_hp_B, has_sink=False,
+                key_padding_mask=None):
+        B, Tc, d_model = features_C.shape
+        _, Tb_real, _ = features_B_real.shape
+
+        # ==========================================
+        # 1. THE PROBE: Where does C match in B?
+        # ==========================================
+        Q_probe = self.probe_q(features_C)  # (Batch, Tc, d_probe)
+        K_probe = self.probe_k(features_B_real)  # (Batch, Tb_real, d_probe)
+
+        probe_scores = torch.bmm(Q_probe, K_probe.transpose(1, 2)) / self.scale_probe
+
+        # Softmax to get probabilities (ignoring padding for the probe for simplicity,
+        # though you could apply key_padding_mask here if desired)
+        probe_attn = F.softmax(probe_scores, dim=-1)
+
+        # ==========================================
+        # 2. THE INFERENCE: Extract Mu and Gamma
+        # ==========================================
+        # Expected physical location = Sum of (Probabilities * Physical Coordinates)
+        inferred_B_locs = torch.bmm(probe_attn, raw_hp_B)  # (Batch, Tc, d_hp)
+
+        # Shift = Where B is - Where C is
+        inferred_shift = inferred_B_locs - raw_hp_C
+
+        # Predict Gamma (Strictness)
+        gamma = F.softplus(self.gamma_predictor(inferred_shift))  # (Batch, Tc, Heads)
+
+        # ==========================================
+        # 3. BUILD THE RBF MASK
+        # ==========================================
+        delta = raw_hp_C.unsqueeze(2) - raw_hp_B.unsqueeze(1)  # (B, Tc, Tb_real, d_hp)
+
+        mu = inferred_shift.unsqueeze(2).view(B, 1, Tc, 1, -1)
+        delta_expanded = delta.unsqueeze(1)
+
+        shifted_dist_sq = ((delta_expanded - mu) ** 2).sum(dim=-1)  # (B, Heads, Tc, Tb_real)
+
+        gamma_expanded = gamma.transpose(1, 2).unsqueeze(-1)  # (B, Heads, Tc, 1)
+
+        bias = -gamma_expanded * shifted_dist_sq
+
+        # Handle Sink appending for the mask
+        if has_sink:
+            sink_col = self.sink_bias.view(1, self.num_heads, 1, 1).expand(B, self.num_heads, Tc, 1)
+            bias = torch.cat([bias, sink_col], dim=-1)  # (B, Heads, Tc, Tb_real + 1)
+
+
+        bias_mask = bias.reshape(B * self.num_heads, Tc, -1)
+
+        # ==========================================
+        # 4. THE TRANSFER: Main Heavy Attention
+        # ==========================================
+        # We pass features_B_full here so the sink token is available to be attended to
+        out, attn_weights = self.main_attn(
+            query=features_C,
+            key=features_B_full,
+            value=features_B_full,
+            key_padding_mask=key_padding_mask,
+            attn_mask=bias_mask
+        )
+
+        return out, attn_weights
+
+
 # TODO what about gating against negative transfer?
 class PreNormTriStreamTransformerLayer(nn.Module):
-    def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=True,
-                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False) -> None:
+    def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=False,
+                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='deform', x_encoder=None) -> None:
         super().__init__()
         batch_first = False
         self.use_hp = use_hp
@@ -165,7 +309,30 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         # Shared self-attention and conditional cross-attention
         self.use_post_attn = use_post_attn
         self.self_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
-        self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+
+        self.cross_attn_type = cross_attn_type
+        if cross_attn_type == 'meta':
+            self.cross_attn = MetaWarpAttention(d_model, nhead, d_probe=64,
+                                                d_hp=1)  # Using the full d_model as d_hp for maximum expressivity
+
+        if cross_attn_type == 'deform':
+            assert use_hp == False, 'use_hp == False, currently not supported!'
+            # Attention to find correspondences between B and C
+            self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
+
+            # MLP to predict the latent shift vector based on the correspondence
+            self.align_ffn = nn.Sequential(
+                nn.Linear(d_model * 2, d_model * 2),
+                nn.GELU(),
+                nn.Linear(d_model * 2, d_model)
+            )
+            self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+
+
+        elif cross_attn_type == 'simple':
+            self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+
+        else: raise NotImplementedError("Unknown cross_attn_type")
 
         self.use_add_pfn = use_add_pfn
         if self.use_add_pfn:
@@ -229,9 +396,9 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             hp_B: Tensor,
             hp_C: Tensor,
             sep: int,
-            raw_hp_A: Tensor=None,
-            raw_hp_B: Tensor=None,
-            raw_hp_C: Tensor=None,
+            raw_hp_A: Tensor = None,
+            raw_hp_B: Tensor = None,
+            raw_hp_C: Tensor = None,
             pad_mask_A: Optional[Tensor] = None,
             pad_mask_B: Optional[Tensor] = None
     ):
@@ -247,7 +414,7 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         # ==========================================
         # 1. SHARED SELF-ATTENTION (Pre-Norm)
         # ==========================================
-        if not self.use_post_attn: # Consider: this is the most successful under the detached
+        if not self.use_post_attn:  # Consider: this is the most successful under the detached
             # normed_A = self.norm1(A)
             normed_B = self.norm1(B)
             normed_C = self.norm1(C)
@@ -282,13 +449,88 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                 pad_mask_B_train = torch.cat([pad_mask_B_train, torch.zeros(B_train.size(0), 1, ...)], dim=1)
 
         # TODO can we take the pre-sigmoid weights and use them as signal for the gating? wouldn't that measure the data support?
-        cross_C, cross_attn_weights = self.cross_attn(
-            query=normed_cross_C,
-            # Avoiding task based gradient interference, we detach B here and get better uncertainty bounds
-            key=B_train,
-            value=B_train,
-            key_padding_mask=pad_mask_B_train
-        )
+        if self.cross_attn_type == 'meta':
+            # 1. Convert features to Batch-First: (Batch, Seq, Dim)
+            features_C_batch = normed_cross_C.transpose(0, 1)
+            features_B_full_batch = B_train.transpose(0, 1)  # Contains the sink if use_B_attn_sink=True
+
+            # 2. Convert coordinates to Batch-First and slice B to match 'sep'
+            raw_hp_C_batch = raw_hp_C.transpose(0, 1)
+            raw_hp_B_batch = raw_hp_B[:sep, :, :].transpose(0, 1)
+
+            # 3. Extract purely physical B features for the Probe (exclude the sink token)
+            features_B_real_batch = features_B_full_batch[:, :sep, :]
+
+            # 4. Execute Meta-Attention
+            cross_C_batch, cross_attn_weights = self.cross_attn(
+                features_C=features_C_batch,
+                features_B_real=features_B_real_batch,  # Used to find the shift
+                features_B_full=features_B_full_batch,  # Used for the actual feature transfer
+                raw_hp_C=raw_hp_C_batch,
+                raw_hp_B=raw_hp_B_batch,
+                has_sink=self.use_B_attn_sink,
+                key_padding_mask=pad_mask_B_train  # Pass the padding mask through!
+            )
+
+            # 5. Convert back to Seq-First: (Seq, Batch, Dim) for the residual connection
+            cross_C = cross_C_batch.transpose(0, 1)
+
+        elif self.cross_attn_type == 'deform':
+            # 1. Handle the training-time concatenated B (Warped + Ground Truth)
+            if B.shape[1] != A.shape[1]:
+                half_batch = B.shape[1] // 2
+                B_warped = normed_cross_B[:, :half_batch, :]
+                B_in_domain_A_true = normed_cross_B[:, half_batch:, :] # optionally used for aux loss channel
+            else:
+                # During inference, we only have the warped B
+                B_warped = normed_cross_B
+                B_in_domain_A_true = None
+
+            B_train_warped = B_warped[:sep, :, :]
+            C_train = normed_cross_C[:sep, :, :]
+
+            # 2. B looks at C to find landscape correspondences
+            pad_mask_C_train = pad_mask_A[:, :sep] if pad_mask_A is not None else None
+
+            align_context, _ = self.align_attn(
+                query=B_train_warped,
+                key=C_train,
+                value=C_train,
+                key_padding_mask=pad_mask_C_train
+            )
+
+            # 3. Predict the latent shift (Delta)
+            # Combine B's current state with the structural hints it got from C
+            align_features = torch.cat([B_train_warped, align_context], dim=-1)
+            B_delta = self.align_ffn(align_features)
+
+            # 4. Apply the shift to get the predicted unwarped embedding
+            B_in_domain_A_pred = B_train_warped + B_delta
+
+            # 5. Log for Auxiliary Loss (if in training mode)
+            if B_in_domain_A_true is not None:
+                B_train_true = B_in_domain_A_true[:sep, :, :]
+                # Send the predicted vs true embeddings to your loss tracker
+                ForwardMetaContext.set('B_in_A_domain', (B_train_true, B_in_domain_A_pred))
+
+            # 6. Main Cross-Attention: C now attends to the UNWARPED B predictions
+            pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
+
+            # Notice we use B_in_domain_A_pred directly as key/value, not B_train!
+            cross_C, cross_attn_weights = self.cross_attn(
+                query=normed_cross_C,
+                key=B_in_domain_A_pred,
+                value=B_in_domain_A_pred,
+                key_padding_mask=pad_mask_B_train
+            )
+        else:
+            cross_C, cross_attn_weights = self.cross_attn(
+                query=normed_cross_C,
+                # Avoiding task based gradient interference, we detach B here and get better uncertainty bounds
+                key=B_train,
+                value=B_train,
+                key_padding_mask=pad_mask_B_train
+            )
 
         # --------------------------------------
         # Adjusted Attn Entropy (Thermodynamic Energy)
@@ -371,7 +613,6 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         # $$E_{kinetic} = \frac{1}{N} \sum \frac{\| \text{cross\_C} \|_2}{\| C \|_2}$$
         # C is the pre-residual state, cross_C is the attention output
 
-
         # Calculate L2 norm along the feature dimension (dim=-1)
         # These results will be (Tc, B)
         update_norm = torch.norm(cross_C, p=2, dim=-1)
@@ -382,7 +623,6 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         kinetic_energy = (update_norm / (state_norm + 1e-8)).mean()
 
         ForwardMetaContext.set('kinetic_energy', kinetic_energy)
-
 
         # ==========================================
         # 3. THE TASK-LEVEL COHERENCE CHECK
@@ -433,7 +673,7 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         B = B + self.dropout2(ff_block(normed_ff_B))
         C = C + self.dropout2(ff_block(normed_ff_C))
 
-        if self.use_post_attn: # fixme: move this layer into the main model and detach C for it!
+        if self.use_post_attn:  # fixme: move this layer into the main model and detach C for it!
             normed_C = self.norm1(C)
             src2_C = self._apply_self_attention(normed_C, sep, pad_mask_A)
             C = C + self.dropout1(src2_C)
@@ -456,7 +696,7 @@ class FourierEncoder(nn.Module):
 
 
 class TriHarmonicModel(nn.Module):
-    def __init__(self, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_B_attn_sink=False, use_freq_enc_x=True):
+    def __init__(self, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_B_attn_sink=False, use_freq_enc_x=True, use_post_attn=True):
         super().__init__()
         self.num_bars = num_bars
         self.x_encoder = FourierEncoder(d_model) if use_freq_enc_x else nn.Linear(1, d_model)
@@ -464,6 +704,11 @@ class TriHarmonicModel(nn.Module):
 
         self.pfn_layer = PFNLayer(d_model, nhead=nhead, dropout=dropout)
         self.layer = PreNormTriStreamTransformerLayer(d_model, nhead=nhead, use_B_attn_sink=use_B_attn_sink)
+
+        self.use_post_attn = use_post_attn
+
+        if self.use_post_attn:
+            self.pfn_layer2 = PFNLayer(d_model, nhead=nhead, dropout=dropout)
 
         # Final norm for Pre-Norm architecture
         self.final_norm = LayerNorm(d_model)
@@ -508,6 +753,27 @@ class TriHarmonicModel(nn.Module):
 
         C = A.clone()
 
+        if 'X_B_in_A' in batch['train'].keys():
+            # We are in training on the prior and can compute all of the above for this, it has the same pad as B
+            X_B_train_in_A = batch['train']['X_B_in_A']
+            X_B_test_in_A = batch['test']['X_B_in_A']
+
+            X_B_train_in_A_clean = torch.nan_to_num(X_B_train_in_A, nan=0.0).unsqueeze(-1)
+            X_B_test_in_A_clean = torch.nan_to_num(X_B_test_in_A, nan=0.0).unsqueeze(-1)
+
+            X_B_in_A = torch.cat([X_B_train_in_A_clean, X_B_test_in_A_clean], dim=0)
+
+            emb_X_B_in_A = self.x_encoder(X_B_in_A)
+
+            Y_B_train_in_A = batch['train']['Y_B_in_A']
+            Y_B_train_in_A_clean = torch.nan_to_num(Y_B_train_in_A, nan=0.0).unsqueeze(-1)
+            emb_Y_B_in_A = self.y_encoder(Y_B_train_in_A_clean)
+
+            B_in_A = emb_X_B_in_A.clone()
+            B_in_A[:single_eval_pos, :, :] += emb_Y_B_in_A
+
+            B = torch.cat([B, B_in_A], dim=1) # parallel processing of the two.
+
         # Pass through the Marginal PFN Layer
         A, B, C = self.pfn_layer(A, B, C, single_eval_pos, pad_mask_A)
 
@@ -518,12 +784,21 @@ class TriHarmonicModel(nn.Module):
             A.detach(), B.detach(), C.detach(),
             hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
             sep=single_eval_pos,
-            raw_hp_A = X_A_clean,
-            raw_hp_B = X_B_clean,
-            raw_hp_C = X_A_clean,
+            raw_hp_A=X_A_clean,
+            raw_hp_B=X_B_clean,
+            raw_hp_C=X_A_clean,
             pad_mask_A=pad_mask_A,
             pad_mask_B=None
         )
+
+        if 'X_B_in_A' in batch['train'].keys():
+            # drop the auxiliary that we attached to stream B
+            B = B[:, :A.shape[1], :]
+
+        if self.use_post_attn:
+            A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A)
+
+
 
         # Apply final norm
         out_A = self.final_norm(A)

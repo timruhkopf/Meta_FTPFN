@@ -86,6 +86,12 @@ class InfiniteHarmonicsStream(IterableDataset):
         Y_train_B = eval_function(X_train_B, amps_B, freqs_B, phases_B) + torch.randn_like(X_train_B) * self.noise_std
         Y_test_B = eval_function(X_test_B, amps_B, freqs_B, phases_B)
 
+        # for training purposes: we know the true underlying warp, so we can look at B's actual location before transforming it into B's domain
+        X_train_B_in_A_domain = X_train_B-h_shift_A
+        X_test_B_in_A_domain = X_test_B -h_shift_A
+        Y_train_B_in_A_domain = eval_function(X_train_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
+        Y_test_B_in_A_domain = eval_function(X_test_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
+
         # Task A evaluates Blueprint A with spatial and amplitude transformations
         Y_train_A_clean = scale_A * eval_function(X_train_A - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
         Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
@@ -116,10 +122,12 @@ class InfiniteHarmonicsStream(IterableDataset):
             'train': {
                 'X_B': X_train_B, 'Y_B': Y_train_B,
                 'X_A': X_train_A_padded, 'Y_A': Y_train_A_padded,
+                'X_B_in_A': X_train_B_in_A_domain, 'Y_B_in_A': Y_train_B_in_A_domain,
             },
             'test': {
                 'X_B': X_test_B, 'Y_B': Y_test_B,
                 'X_A': X_test_A, 'Y_A': Y_test_A,
+                'X_B_in_A': X_test_B_in_A_domain, 'Y_B_in_A': Y_test_B_in_A_domain,
             }
         }
 

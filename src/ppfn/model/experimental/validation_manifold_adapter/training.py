@@ -289,12 +289,12 @@ if __name__ == "__main__":
     model = MetaTransferModel(
         transfer_layer=GatedLatentTransferLayer(
             dmodel=128, use_struct_gate=True,
-            gate_params={
-                "use_pointwise": args.pointwise,
-                "use_global": args.global_gate,
-                "pool_mode": args.pool_mode,
-                "zero_init": False
-            },
+            # gate_params={
+            #     "use_pointwise": args.pointwise,
+            #     "use_global": args.global_gate,
+            #     "pool_mode": args.pool_mode,
+            #     "zero_init": False
+            # },
             hp_mode=args.hp_mode
 
         ),
