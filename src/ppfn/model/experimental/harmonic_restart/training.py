@@ -262,6 +262,10 @@ def train(
                 else:
                     total_loss = loss_C + loss_guided_attn
 
+            aux = ForwardMetaContext.get('B_in_A_domain')
+            if aux is not None:
+                total_loss += 1e-5 * aux['kl_loss']
+
             total_nll_loss = total_loss.clone().item()
 
 

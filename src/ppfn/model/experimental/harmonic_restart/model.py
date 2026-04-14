@@ -301,7 +301,7 @@ class MetaWarpAttention(nn.Module):
 # TODO what about gating against negative transfer?
 class PreNormTriStreamTransformerLayer(nn.Module):
     def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=False,
-                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='deform', x_encoder=None) -> None:
+                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='deform', num_align_steps=3) -> None:
         super().__init__()
         batch_first = False
         self.use_hp = use_hp
@@ -316,15 +316,16 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                                                 d_hp=1)  # Using the full d_model as d_hp for maximum expressivity
 
         if cross_attn_type == 'deform':
+            self.num_align_steps=num_align_steps
             assert use_hp == False, 'use_hp == False, currently not supported!'
             # Attention to find correspondences between B and C
             self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
 
             # MLP to predict the latent shift vector based on the correspondence
             self.align_ffn = nn.Sequential(
-                nn.Linear(d_model * 2, d_model * 2),
+                nn.Linear(d_model * 3, d_model * 2),
                 nn.GELU(),
-                nn.Linear(d_model * 2, d_model)
+                nn.Linear(d_model * 2, d_model * 2)
             )
             self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
 
@@ -476,51 +477,87 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             cross_C = cross_C_batch.transpose(0, 1)
 
         elif self.cross_attn_type == 'deform':
-            # 1. Handle the training-time concatenated B (Warped + Ground Truth)
+            # Handle the training-time concatenated B
             if B.shape[1] != A.shape[1]:
                 half_batch = B.shape[1] // 2
                 B_warped = normed_cross_B[:, :half_batch, :]
-                B_in_domain_A_true = normed_cross_B[:, half_batch:, :] # optionally used for aux loss channel
+                B_in_domain_A_true = normed_cross_B[:, half_batch:, :]
             else:
-                # During inference, we only have the warped B
                 B_warped = normed_cross_B
                 B_in_domain_A_true = None
 
-            B_train_warped = B_warped[:sep, :, :]
+            B_train_pred = B_warped[:sep, :, :].clone()
             C_train = normed_cross_C[:sep, :, :]
-
-            # 2. B looks at C to find landscape correspondences
             pad_mask_C_train = pad_mask_A[:, :sep] if pad_mask_A is not None else None
 
-            align_context, _ = self.align_attn(
-                query=B_train_warped,
-                key=C_train,
-                value=C_train,
-                key_padding_mask=pad_mask_C_train
-            )
+            total_kl_loss = 0.0
 
-            # 3. Predict the latent shift (Delta)
-            # Combine B's current state with the structural hints it got from C
-            align_features = torch.cat([B_train_warped, align_context], dim=-1)
-            B_delta = self.align_ffn(align_features)
+            # ==========================================
+            # THE RECURRENT ALIGNMENT LOOP
+            # ==========================================
+            for step in range(self.num_align_steps):
+                # 1. Correspondence Search
+                align_context, _ = self.align_attn(
+                    query=B_train_pred,
+                    key=C_train,
+                    value=C_train,
+                    key_padding_mask=pad_mask_C_train
+                )
 
-            # 4. Apply the shift to get the predicted unwarped embedding
-            B_in_domain_A_pred = B_train_warped + B_delta
+                # 2. Extract Global Context (Point 1)
+                # Mean over the sequence dimension (0)
+                global_context = align_context.mean(dim=0, keepdim=True)
+                # Expand to match sequence length
+                global_context_expanded = global_context.expand_as(B_train_pred)
 
-            # 5. Log for Auxiliary Loss (if in training mode)
+                # 3. Combine Features
+                # (Optional: If adding raw_hp_B, concatenate it here as a 4th element)
+                align_features = torch.cat([
+                    B_train_pred,
+                    align_context,
+                    global_context_expanded
+                ], dim=-1)
+
+                # 4. Predict Uncertainty (VIB)
+                B_delta_params = self.align_ffn(align_features)
+                mu, log_var = torch.chunk(B_delta_params, chunks=2, dim=-1)
+
+                # 5. Reparameterization Trick & Shift
+                if self.training:
+                    std = torch.exp(0.5 * log_var)
+                    eps = torch.randn_like(std)
+                    B_delta = mu + eps * std
+
+                    # Accumulate KL Divergence across recurrent steps
+                    step_kl = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
+                    total_kl_loss += step_kl.mean()
+                else:
+                    B_delta = mu
+
+                # 6. Apply Shift (Updates B_train_pred for the next loop)
+                B_train_pred = B_train_pred + B_delta
+
+            # ==========================================
+            # END LOOP
+            # ==========================================
+
+            # Log to MetaContext
             if B_in_domain_A_true is not None:
                 B_train_true = B_in_domain_A_true[:sep, :, :]
-                # Send the predicted vs true embeddings to your loss tracker
-                ForwardMetaContext.set('B_in_A_domain', (B_train_true, B_in_domain_A_pred))
 
-            # 6. Main Cross-Attention: C now attends to the UNWARPED B predictions
+                # We track the final prediction and the accumulated KL loss
+                ForwardMetaContext.set('B_in_A_domain', {
+                    'pred': B_train_pred,
+                    'true': B_train_true,
+                    'kl_loss': total_kl_loss / self.num_align_steps  # Average KL per step
+                })
+
+            # Main Cross-Attention uses the fully refined, stochastic prediction
             pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
-
-            # Notice we use B_in_domain_A_pred directly as key/value, not B_train!
             cross_C, cross_attn_weights = self.cross_attn(
                 query=normed_cross_C,
-                key=B_in_domain_A_pred,
-                value=B_in_domain_A_pred,
+                key=B_train_pred,
+                value=B_train_pred,
                 key_padding_mask=pad_mask_B_train
             )
         else:
