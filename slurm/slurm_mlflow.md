@@ -99,7 +99,9 @@ Ulysses:
 
 sudo chown -R $USER $HOME/PycharmProjects/Meta_FTPFN/mlruns
 uv run mlflow ui --backend-store-uri file:///$HOME/PycharmProjects/Meta_FTPFN/mlruns --port 5010 --host 0.0.0.0
-uv run mlflow ui --backend-store-uri sqlite://$HOME/PycharmProjects/Meta_FTPFN/mlflow.db --port 5010 --host 0.0.0.0
+
+source .venv/bin/activate
+mlflow ui --backend-store-uri sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db --port 5010 --host 0.0.0.0
 ```
 
 on local 
