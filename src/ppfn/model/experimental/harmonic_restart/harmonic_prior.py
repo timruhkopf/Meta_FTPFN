@@ -11,7 +11,7 @@ class InfiniteHarmonicsStream(IterableDataset):
     """
 
     def __init__(self, batch_size=32, n_A=10, n_B=50, n_test=200, x_range=(-5, 5),
-                 num_components=4, noise_std=0.05, share_unrelated=0.2, scale=True, shift=True):
+                 num_components=4, noise_std=0.05, share_unrelated=0.2, scale=True, shift=True, warp=True):
         super().__init__()
         self.batch_size = batch_size
         self.n_A = n_A
@@ -24,14 +24,13 @@ class InfiniteHarmonicsStream(IterableDataset):
 
         self.scale = scale
         self.shift = shift
+        self.warp = warp
 
     def _sample_batch(self):
         B = self.batch_size
         K = self.num_components
 
-        # 1. Randomize "Hidden Blueprint" with LOWER frequencies
-        # Old: uniform_(0.2, 2.0) -> New: uniform_(0.1, 0.5)
-        # This ensures about 1-2 full cycles across the x_range of 10 units.
+        # 1. Randomize "Hidden Blueprint"
         amps_A = torch.empty(K, B).uniform_(0.5, 2.0)
         freqs_A = torch.empty(K, B).uniform_(0.1, 0.5)
         phases_A = torch.empty(K, B).uniform_(0, 2 * torch.pi)
@@ -41,7 +40,7 @@ class InfiniteHarmonicsStream(IterableDataset):
         freqs_B = freqs_A.clone()
         phases_B = phases_A.clone()
 
-        # Unrelated Traps: also use lower frequencies for consistency
+        # Unrelated Traps
         num_unrelated = int(B * self.share_unrelated)
         if num_unrelated > 0:
             amps_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0.5, 2.0)
@@ -49,7 +48,6 @@ class InfiniteHarmonicsStream(IterableDataset):
             phases_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0, 2 * torch.pi)
 
         # 3. Constrain the Transformations
-        # Reducing h_shift makes the relatedness more obvious for the cross-attn
         if self.shift:
             v_shift_A = torch.empty(B).uniform_(-2.0, 2.0)
             h_shift_A = torch.empty(B).uniform_(-1.5, 1.5)
@@ -62,42 +60,69 @@ class InfiniteHarmonicsStream(IterableDataset):
         else:
             scale_A = torch.ones(B)
 
-        # 4. Sample X coordinates (Seq, Batch)
-        # Train points are sorted uniformly random, Test points are linspace for smooth heatmaps
+        # ==========================================
+        # NEW: Mild Non-Linear Spatial Warping
+        # ==========================================
+        if self.warp:
+            # Keep amplitude small (0.0 to 0.4) so we don't scramble the topology
+            warp_amp_A = torch.empty(B).uniform_(0.0, 0.7)
+            # Low frequency so it stretches/compresses gently across the domain
+            warp_freq_A = torch.empty(B).uniform_(0.0, 0.2)
+            warp_phase_A = torch.empty(B).uniform_(0, 2 * torch.pi)
+        else:
+            warp_amp_A = torch.zeros(B)
+            warp_freq_A = torch.zeros(B)
+            warp_phase_A = torch.zeros(B)
+
+        def apply_spatial_warp(X, w_amp, w_freq, w_phase):
+            # X is (Seq, Batch). Param tensors are (Batch).
+            # We unsqueeze to broadcast across the sequence dimension.
+            w_amp_ext = w_amp.unsqueeze(0)
+            w_freq_ext = w_freq.unsqueeze(0)
+            w_phase_ext = w_phase.unsqueeze(0)
+            return w_amp_ext * torch.sin(2 * torch.pi * w_freq_ext * X + w_phase_ext)
+
+        # 4. Sample X coordinates
         X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
         X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, self.max_x), dim=0)
-
         X_test_B = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
         X_test_A = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
 
         # Helper to evaluate based on explicit parameters
         def eval_function(X, amps, freqs, phases):
-            # X: (Seq, B), amps/freqs/phases: (K, B)
-            X_ext = X.unsqueeze(0)  # (1, Seq, B)
-            a_ext = amps.unsqueeze(1)  # (K, 1, B)
-            f_ext = freqs.unsqueeze(1)  # (K, 1, B)
-            p_ext = phases.unsqueeze(1)  # (K, 1, B)
-            # Standard harmonic formula with 2*pi
+            X_ext = X.unsqueeze(0)
+            a_ext = amps.unsqueeze(1)
+            f_ext = freqs.unsqueeze(1)
+            p_ext = phases.unsqueeze(1)
             terms = a_ext * torch.sin(2 * torch.pi * f_ext * X_ext + p_ext)
-            return terms.sum(dim=0)  # (Seq, B)
+            return terms.sum(dim=0)
 
-        # 5. Evaluate Y coordinates
-        # Task B evaluates its own blueprint (which might be unrelated)
+            # 5. Evaluate Y coordinates
+
         Y_train_B = eval_function(X_train_B, amps_B, freqs_B, phases_B) + torch.randn_like(X_train_B) * self.noise_std
         Y_test_B = eval_function(X_test_B, amps_B, freqs_B, phases_B)
 
-        # for training purposes: we know the true underlying warp, so we can look at B's actual location before transforming it into B's domain
-        X_train_B_in_A_domain = X_train_B-h_shift_A
-        X_test_B_in_A_domain = X_test_B -h_shift_A
+        # ==========================================
+        # NEW: Apply the Warp to the X-coordinates before evaluation
+        # ==========================================
+        # The true location in A is now shifted globally AND warped locally
+        X_train_B_in_A_domain = X_train_B - h_shift_A + apply_spatial_warp(X_train_B, warp_amp_A, warp_freq_A,
+                                                                           warp_phase_A)
+        X_test_B_in_A_domain = X_test_B - h_shift_A + apply_spatial_warp(X_test_B, warp_amp_A, warp_freq_A,
+                                                                         warp_phase_A)
+
         Y_train_B_in_A_domain = eval_function(X_train_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
         Y_test_B_in_A_domain = eval_function(X_test_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
 
-        # Task A evaluates Blueprint A with spatial and amplitude transformations
-        Y_train_A_clean = scale_A * eval_function(X_train_A - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
-        Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
-        Y_test_A = scale_A * eval_function(X_test_A - h_shift_A, amps_A, freqs_A, phases_A) + v_shift_A
+        # Task A evaluates Blueprint A with the exact same spatial deformation
+        X_train_A_warped = X_train_A - h_shift_A + apply_spatial_warp(X_train_A, warp_amp_A, warp_freq_A, warp_phase_A)
+        X_test_A_warped = X_test_A - h_shift_A + apply_spatial_warp(X_test_A, warp_amp_A, warp_freq_A, warp_phase_A)
 
-        # 6. Pad A to match B's sequence length (Pipeline Requirement)
+        Y_train_A_clean = scale_A * eval_function(X_train_A_warped, amps_A, freqs_A, phases_A) + v_shift_A
+        Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
+        Y_test_A = scale_A * eval_function(X_test_A_warped, amps_A, freqs_A, phases_A) + v_shift_A
+
+        # 6. Pad A
         pad_size = self.n_B - self.n_A
         if pad_size > 0:
             nan_pad = torch.full((pad_size, B), float('nan'))
@@ -107,7 +132,6 @@ class InfiniteHarmonicsStream(IterableDataset):
             X_train_A_padded = X_train_A
             Y_train_A_padded = Y_train_A
 
-        # 7. Add boolean mask for tracking which tasks are unrelated traps
         is_unrelated = torch.zeros(B, dtype=torch.bool)
         if num_unrelated > 0:
             is_unrelated[-num_unrelated:] = True
@@ -117,6 +141,11 @@ class InfiniteHarmonicsStream(IterableDataset):
                 'amps_A': amps_A, 'freqs_A': freqs_A, 'phases_A': phases_A,
                 'amps_B': amps_B, 'freqs_B': freqs_B, 'phases_B': phases_B,
                 'scale_A': scale_A, 'v_shift_A': v_shift_A, 'h_shift_A': h_shift_A,
+
+                'warp_amp_A': warp_amp_A,
+                'warp_freq_A': warp_freq_A,
+                'warp_phase_A': warp_phase_A,
+
                 'is_unrelated': is_unrelated
             },
             'train': {
@@ -130,7 +159,6 @@ class InfiniteHarmonicsStream(IterableDataset):
                 'X_B_in_A': X_test_B_in_A_domain, 'Y_B_in_A': Y_test_B_in_A_domain,
             }
         }
-
     def __iter__(self):
         while True:
             yield self._sample_batch()
@@ -206,20 +234,55 @@ class InfiniteHarmonicsStream(IterableDataset):
             is_trap = is_unrelated_flat[batch_idx]
             col_title = "RELATED CONTEXT" if not is_trap else "UNRELATED TRAP"
 
-            # Reconstruct true lines
-            def build_func(X, amps, freqs, phases, scale=1.0, h_shift=0.0, v_shift=0.0):
-                X_shifted = X - h_shift
-                terms = amps[:, None] * np.sin(2 * np.pi * freqs[:, None] * X_shifted[None, :] + phases[:, None])
+            # Reconstruct true lines with spatial/phase warps
+            def build_func(X, amps, freqs, phases, scale=1.0, h_shift=0.0, v_shift=0.0,
+                           w_amp=0.0, w_freq=0.0, w_phase=0.0,
+                           p_w_amp=0.0, p_w_freq=0.0, p_w_phase=0.0):
+
+                # Apply both Global Shift and Local Non-Linear Warps
+                X_warped = X - h_shift
+
+                # 1. Spatial Sinusoidal Wobble (if active)
+                if w_amp > 0:
+                    X_warped += w_amp * np.sin(2 * np.pi * w_freq * X + w_phase)
+
+                # 2. Phase Warp (if active)
+                if p_w_amp > 0:
+                    X_warped += p_w_amp * np.sin(2 * np.pi * p_w_freq * X + p_w_phase)
+
+                # Evaluate harmonic function at the warped coordinates
+                terms = amps[:, None] * np.sin(2 * np.pi * freqs[:, None] * X_warped[None, :] + phases[:, None])
                 return scale * np.sum(terms, axis=0) + v_shift
 
+            # Safely extract warp parameters (default to 0.0 if not present in older batches)
+            def get_param(key, default=0.0):
+                return to_np(p[key][batch_idx]) if key in p else default
+
+            w_amp = get_param('warp_amp_A')
+            w_freq = get_param('warp_freq_A')
+            w_phase = get_param('warp_phase_A')
+
+            p_w_amp = get_param('p_warp_amp')
+            p_w_freq = get_param('p_warp_freq')
+            p_w_phase = get_param('p_warp_phase')
+
             y_dense_A = build_func(
-                x_dense, to_np(p['amps_A'][:, batch_idx]), to_np(p['freqs_A'][:, batch_idx]),
+                x_dense,
+                to_np(p['amps_A'][:, batch_idx]),
+                to_np(p['freqs_A'][:, batch_idx]),
                 to_np(p['phases_A'][:, batch_idx]),
-                scale=to_np(p['scale_A'][batch_idx]), h_shift=to_np(p['h_shift_A'][batch_idx]),
-                v_shift=to_np(p['v_shift_A'][batch_idx])
+                scale=to_np(p['scale_A'][batch_idx]),
+                h_shift=to_np(p['h_shift_A'][batch_idx]),
+                v_shift=to_np(p['v_shift_A'][batch_idx]),
+                w_amp=w_amp, w_freq=w_freq, w_phase=w_phase,
+                p_w_amp=p_w_amp, p_w_freq=p_w_freq, p_w_phase=p_w_phase
             )
+
+            # Stream B evaluates its own blueprint unwarped
             y_dense_B = build_func(
-                x_dense, to_np(p['amps_B'][:, batch_idx]), to_np(p['freqs_B'][:, batch_idx]),
+                x_dense,
+                to_np(p['amps_B'][:, batch_idx]),
+                to_np(p['freqs_B'][:, batch_idx]),
                 to_np(p['phases_B'][:, batch_idx])
             )
 

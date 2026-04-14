@@ -301,7 +301,7 @@ class MetaWarpAttention(nn.Module):
 # TODO what about gating against negative transfer?
 class PreNormTriStreamTransformerLayer(nn.Module):
     def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=False,
-                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='deform', num_align_steps=3) -> None:
+                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='cycle', num_align_steps=3) -> None:
         super().__init__()
         batch_first = False
         self.use_hp = use_hp
@@ -315,7 +315,7 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             self.cross_attn = MetaWarpAttention(d_model, nhead, d_probe=64,
                                                 d_hp=1)  # Using the full d_model as d_hp for maximum expressivity
 
-        if cross_attn_type == 'deform':
+        elif cross_attn_type == 'deform':
             self.num_align_steps=num_align_steps
             assert use_hp == False, 'use_hp == False, currently not supported!'
             # Attention to find correspondences between B and C
@@ -329,6 +329,18 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             )
             self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
 
+
+        elif cross_attn_type == 'cycle':
+            assert use_hp == False, 'use_hp == False, currently not supported!'
+            self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
+
+            # FIX: Input is only d_model * 2 (Token + Context)
+            self.align_ffn = nn.Sequential(
+                nn.Linear(d_model * 2, d_model * 2),
+                nn.GELU(),
+                nn.Linear(d_model * 2, d_model * 2)
+            )
+            self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=False)
 
         elif cross_attn_type == 'simple':
             self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
@@ -560,6 +572,87 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                 value=B_train_pred,
                 key_padding_mask=pad_mask_B_train
             )
+        elif self.cross_attn_type == 'cycle':
+             # Adain for feature matching between B & C (originally used in neural style transfer)
+            if B.shape[1] != A.shape[1]:
+                half_batch = B.shape[1] // 2
+                B_warped = normed_cross_B[:, :half_batch, :]
+                B_in_domain_A_true = normed_cross_B[:, half_batch:, :]
+            else:
+                B_warped = normed_cross_B
+                B_in_domain_A_true = None
+
+            B_train = B_warped[:sep, :, :]
+            C_train = normed_cross_C[:sep, :, :]
+            pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
+            pad_mask_C_train = pad_mask_A[:, :sep] if pad_mask_A is not None else None
+
+            # --- 1. GLOBAL ALIGNMENT (AdaIN Style) ---
+            global_C = C_train.mean(dim=0, keepdim=True)
+            global_B = B_train.mean(dim=0, keepdim=True)
+            B_train_aligned = B_train + (global_C - global_B)
+
+            # --- 2. BATCHED CORRESPONDENCE PASS ---
+            cycle_loss = torch.tensor(0.0, device=B_train.device)
+
+            if self.training:
+                # BATCHING: Stack Forward and Backward queries along the Batch Dimension (dim=1)
+                # Forward Q: B, K/V: C  |  Backward Q: C, K/V: B
+                batched_Q = torch.cat([B_train_aligned, C_train], dim=1)
+                batched_K = torch.cat([C_train, B_train_aligned], dim=1)
+
+                # Batch the padding masks (Batch dimension is dim=0 for pad masks)
+                if pad_mask_B_train is not None and pad_mask_C_train is not None:
+                    batched_mask = torch.cat([pad_mask_C_train, pad_mask_B_train], dim=0)
+                else:
+                    batched_mask = None
+
+                # ONE single attention call for both directions!
+                batched_context, _ = self.align_attn(batched_Q, batched_K, batched_K, key_padding_mask=batched_mask)
+
+                # ONE single FFN call!
+                batched_features = torch.cat([batched_Q, batched_context], dim=-1)
+                batched_params = self.align_ffn(batched_features)
+
+                # SPLIT the results back into Forward and Backward
+                params_fwd, params_back = torch.chunk(batched_params, chunks=2, dim=1)
+
+                # Extract mu and log_var
+                mu_fwd, log_var_fwd = torch.chunk(params_fwd, chunks=2, dim=-1)
+                mu_back, _ = torch.chunk(params_back, chunks=2, dim=-1)
+
+                # Calculate Cycle Constraint
+                cycle_loss = F.mse_loss(mu_fwd, -mu_back)
+
+            else:
+                # INFERENCE ONLY: Just run the forward pass normally to save compute
+                align_context_fwd, _ = self.align_attn(B_train_aligned, C_train, C_train,
+                                                       key_padding_mask=pad_mask_C_train)
+                fwd_features = torch.cat([B_train_aligned, align_context_fwd], dim=-1)
+                params_fwd = self.align_ffn(fwd_features)
+                mu_fwd, log_var_fwd = torch.chunk(params_fwd, chunks=2, dim=-1)
+
+            # --- 3. REPARAMETERIZATION & LOGGING ---
+            # Sample Delta
+            delta_fwd = mu_fwd + torch.randn_like(mu_fwd) * torch.exp(0.5 * log_var_fwd) if self.training else mu_fwd
+            B_in_domain_A_pred = B_train_aligned + delta_fwd
+
+            if B_in_domain_A_true is not None:
+                kl_loss = -0.5 * torch.sum(1 + log_var_fwd - mu_fwd.pow(2) - log_var_fwd.exp(), dim=-1).mean()
+                ForwardMetaContext.set('B_in_A_domain', {
+                    'pred': B_in_domain_A_pred,
+                    'true': B_in_domain_A_true[:sep, :, :],
+                    'kl_loss': kl_loss,
+                    'cycle_loss': cycle_loss
+                })
+
+            # --- 4. MAIN CROSS-ATTENTION ---
+            cross_C, _ = self.cross_attn(
+                query=normed_cross_C,
+                key=B_in_domain_A_pred,
+                value=B_in_domain_A_pred,
+                key_padding_mask=pad_mask_B_train
+            )
         else:
             cross_C, cross_attn_weights = self.cross_attn(
                 query=normed_cross_C,
@@ -569,27 +662,27 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                 key_padding_mask=pad_mask_B_train
             )
 
-        # --------------------------------------
-        # Adjusted Attn Entropy (Thermodynamic Energy)
-        # --------------------------------------
-        # If the space is perfectly aligned (just shifted/scaled), C should look at B and instantly know exactly which
-        # token it corresponds to. The attention distribution will be a sharp peak (a Dirac delta).If the spaces are
-        # highly warped, the relationships are ambiguous. C will hedge its bets and attend softly to many tokens in B.
-        # In thermodynamics, this spreading of state is higher entropy.How to measure it: Calculate the Shannon Entropy
-        # of the cross-attention weights.
-        # $$E_{entropy} = -\frac{1}{N} \sum_{i} \sum_{j} A_{i,j} \log(A_{i,j} + \epsilon)$$
-
-        # cross_attn_weights: (B, Heads, Tc, Tb)
-        epsilon = 1e-9
-
-        # Entropy over the source/key dimension (Tb)
-        # Resulting shape: (B, Heads, Tc)
-        entropy = - (cross_attn_weights * torch.log(cross_attn_weights + epsilon)).sum(dim=-1)
-
-        # Mean over all dimensions to get a single scalar for logging
-        thermodynamic_energy = entropy.mean()
-
-        ForwardMetaContext.set('thermodynamic_energy', thermodynamic_energy)
+        # # --------------------------------------
+        # # Adjusted Attn Entropy (Thermodynamic Energy)
+        # # --------------------------------------
+        # # If the space is perfectly aligned (just shifted/scaled), C should look at B and instantly know exactly which
+        # # token it corresponds to. The attention distribution will be a sharp peak (a Dirac delta).If the spaces are
+        # # highly warped, the relationships are ambiguous. C will hedge its bets and attend softly to many tokens in B.
+        # # In thermodynamics, this spreading of state is higher entropy.How to measure it: Calculate the Shannon Entropy
+        # # of the cross-attention weights.
+        # # $$E_{entropy} = -\frac{1}{N} \sum_{i} \sum_{j} A_{i,j} \log(A_{i,j} + \epsilon)$$
+        #
+        # # cross_attn_weights: (B, Heads, Tc, Tb)
+        # epsilon = 1e-9
+        #
+        # # Entropy over the source/key dimension (Tb)
+        # # Resulting shape: (B, Heads, Tc)
+        # entropy = - (cross_attn_weights * torch.log(cross_attn_weights + epsilon)).sum(dim=-1)
+        #
+        # # Mean over all dimensions to get a single scalar for logging
+        # thermodynamic_energy = entropy.mean()
+        #
+        # ForwardMetaContext.set('thermodynamic_energy', thermodynamic_energy)
 
         # --------------------------------------
         # Measure Transport Energy
@@ -604,41 +697,41 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         #  $$E_{transport} = \sum_{i} \sum_{j} A_{i,j} \cdot \mathcal{D}(hp_{C_i}, hp_{B_j})^2$$Where $A_{i,j}$
         #  is the cross-attention weight from C's $i$-th token to B's $j$-th token, and $\mathcal{D}$ is
         #  the distance between their known hyperparameter coordinates.
-
-        # 1. Permute HP tensors to (Batch, Seq, Dhp) for cdist
-        hp_B_train = hp_B[:sep, :, :]
-
-        # 1. Permute HP tensors to (Batch, Seq, Dhp) for cdist
-        hp_C_perm = hp_C.permute(1, 0, 2)
-        hp_B_train_perm = hp_B_train.permute(1, 0, 2)
-
-        # 2. Compute the distance/cost matrix: (Batch, Tc, sep)
-        dist_matrix = torch.cdist(hp_C_perm, hp_B_train_perm, p=2)
-        cost_matrix = dist_matrix ** 2
-
-        # 3. Check if cross_attn_weights is 3D or 4D
-        if cross_attn_weights.dim() == 4:
-            # (B, Heads, Tc, sep+1) -> (B, Tc, sep+1)
-            mean_attn = cross_attn_weights.mean(dim=1)
-        else:
-            # (B, Tc, sep+1)
-            mean_attn = cross_attn_weights
-
-        # 4. Slice the last dimension to remove the sink
-        tb_len = cost_matrix.size(-1)  # This is now exactly `sep`
-        mean_attn_no_sink = mean_attn[:, :, :tb_len]
-
-        # 5. Energy calculation
-        # Both tensors are now cleanly (Batch, Tc, sep)
-        transport_energy = (mean_attn_no_sink * cost_matrix).sum(dim=-1).mean()
-
-        ForwardMetaContext.set('transport_energy', transport_energy)
-
-        # ------------------------------------------
-
-        # identify the sink relative weight
-        # if self.use_B_attn_sink:
-        ForwardMetaContext.set('cross_attn_weights', cross_attn_weights)  # Store for later analysis
+        #
+        # # 1. Permute HP tensors to (Batch, Seq, Dhp) for cdist
+        # hp_B_train = hp_B[:sep, :, :]
+        #
+        # # 1. Permute HP tensors to (Batch, Seq, Dhp) for cdist
+        # hp_C_perm = hp_C.permute(1, 0, 2)
+        # hp_B_train_perm = hp_B_train.permute(1, 0, 2)
+        #
+        # # 2. Compute the distance/cost matrix: (Batch, Tc, sep)
+        # dist_matrix = torch.cdist(hp_C_perm, hp_B_train_perm, p=2)
+        # cost_matrix = dist_matrix ** 2
+        #
+        # # 3. Check if cross_attn_weights is 3D or 4D
+        # if cross_attn_weights.dim() == 4:
+        #     # (B, Heads, Tc, sep+1) -> (B, Tc, sep+1)
+        #     mean_attn = cross_attn_weights.mean(dim=1)
+        # else:
+        #     # (B, Tc, sep+1)
+        #     mean_attn = cross_attn_weights
+        #
+        # # 4. Slice the last dimension to remove the sink
+        # tb_len = cost_matrix.size(-1)  # This is now exactly `sep`
+        # mean_attn_no_sink = mean_attn[:, :, :tb_len]
+        #
+        # # 5. Energy calculation
+        # # Both tensors are now cleanly (Batch, Tc, sep)
+        # transport_energy = (mean_attn_no_sink * cost_matrix).sum(dim=-1).mean()
+        #
+        # ForwardMetaContext.set('transport_energy', transport_energy)
+        #
+        # # ------------------------------------------
+        #
+        # # identify the sink relative weight
+        # # if self.use_B_attn_sink:
+        # ForwardMetaContext.set('cross_attn_weights', cross_attn_weights)  # Store for later analysis
 
         # ------------------------------------------
         # Update strength (Kinetic Energy)
@@ -650,16 +743,16 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         # $$E_{kinetic} = \frac{1}{N} \sum \frac{\| \text{cross\_C} \|_2}{\| C \|_2}$$
         # C is the pre-residual state, cross_C is the attention output
 
-        # Calculate L2 norm along the feature dimension (dim=-1)
-        # These results will be (Tc, B)
-        update_norm = torch.norm(cross_C, p=2, dim=-1)
-        state_norm = torch.norm(C, p=2, dim=-1)
-
-        # Relative magnitude of the warp
-        # Average across Sequence (dim=0) and Batch (dim=1)
-        kinetic_energy = (update_norm / (state_norm + 1e-8)).mean()
-
-        ForwardMetaContext.set('kinetic_energy', kinetic_energy)
+        # # Calculate L2 norm along the feature dimension (dim=-1)
+        # # These results will be (Tc, B)
+        # update_norm = torch.norm(cross_C, p=2, dim=-1)
+        # state_norm = torch.norm(C, p=2, dim=-1)
+        #
+        # # Relative magnitude of the warp
+        # # Average across Sequence (dim=0) and Batch (dim=1)
+        # kinetic_energy = (update_norm / (state_norm + 1e-8)).mean()
+        #
+        # ForwardMetaContext.set('kinetic_energy', kinetic_energy)
 
         # ==========================================
         # 3. THE TASK-LEVEL COHERENCE CHECK
