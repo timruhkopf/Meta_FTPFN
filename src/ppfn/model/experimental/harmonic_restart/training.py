@@ -56,7 +56,8 @@ def train(
         n_A = 10,
         n_B = 50,
         scale=True,
-        shift=True
+        shift=True,
+        warp=True,
 ):
     import subprocess
     import os
@@ -118,7 +119,7 @@ def train(
 
         stream = InfiniteHarmonicsStream(
             batch_size=batch_size, n_A=n_A, n_B=n_B, n_test=300,
-            share_unrelated=share_unrelated, scale=scale, shift=shift)
+            share_unrelated=share_unrelated, scale=scale, shift=shift, warp=warp)
         dataloader = DataLoader(stream, batch_size=None)
 
         borders = torch.linspace(-7.0, 7.0, steps=250).to(device)
@@ -190,6 +191,9 @@ def train(
             loss_guided_attn = torch.tensor(0.0, device=device)
             raw_attn_weights = ForwardMetaContext.get('cross_attn_weights')
             if use_attn_bonus and raw_attn_weights is not None:
+                # Fixme: this should not be a hill bonus, but an attractor valley with flat valley.
+                #  But the idea is flawed, because deeper layers might be "lobotomized" if we force it to attend based on
+                #  spatial attention only. Discovering the optimal manifold alignment on its own is a better way fwd.
                 if raw_attn_weights.dim() == 4:
                     attn_weights = raw_attn_weights.mean(dim=1)  # (Batch, Seq_C, Seq_B or Seq_B+1)
                 else:
@@ -203,6 +207,7 @@ def train(
                 X_B_clean = torch.nan_to_num(X_B_train, nan=0.0).transpose(0, 1)  # (Batch, Seq_B)
 
                 # 2. Target coordinates in B's space
+                # FIXME: warping is not accounted for
                 h_shift = batch['params']['h_shift_A'].to(device).view(-1, 1)
                 X_target_b = X_C_clean - h_shift  # (Batch, Seq_C)
 
@@ -263,8 +268,11 @@ def train(
                     total_loss = loss_C + loss_guided_attn
 
             aux = ForwardMetaContext.get('B_in_A_domain')
-            if aux is not None:
+            if aux is not None and 'kl_loss' in aux:
                 total_loss += 1e-5 * aux['kl_loss']
+
+            if aux is not None and 'cycle_loss' in aux:
+                total_loss += 1e-5 * aux['cycle_loss']
 
             total_nll_loss = total_loss.clone().item()
 
@@ -344,17 +352,17 @@ def train(
                 }
                 mlflow.log_metrics(metrics, step=step)
 
-                therm = ForwardMetaContext.get('thermodynamic_energy')
-                transport = ForwardMetaContext.get('transport_energy')
-                kinetic_energy = ForwardMetaContext.get('kinetic_energy')
-
-                metrics = {
-                    "energy/thermodynamic_energy": therm.mean().item() if therm is not None else 0.0,
-                    "energy/transport": transport.mean().item() if transport is not None else 0.0,
-                    "energy/kinetic_energy": kinetic_energy.mean().item(),
-                }
-
-                mlflow.log_metrics(metrics, step=step)
+                # therm = ForwardMetaContext.get('thermodynamic_energy')
+                # transport = ForwardMetaContext.get('transport_energy')
+                # kinetic_energy = ForwardMetaContext.get('kinetic_energy')
+                #
+                # metrics = {
+                #     "energy/thermodynamic_energy": therm.mean().item() if therm is not None else 0.0,
+                #     "energy/transport": transport.mean().item() if transport is not None else 0.0,
+                #     "energy/kinetic_energy": kinetic_energy.mean().item(),
+                # }
+                #
+                # mlflow.log_metrics(metrics, step=step)
 
                 # log attn sink metrics:
                 # cross_attn_weights = ForwardMetaContext.get('cross_attn_weights')

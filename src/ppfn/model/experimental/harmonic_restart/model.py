@@ -9,6 +9,40 @@ from torch import Tensor
 
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
+"""
+On Gating: "How do we ask for plausibility without overusing the data?"
+
+If you use Domain C's points to compute the warp, and then you evaluate the NLL on those exact same C points to decide if the warp was "plausible," you will always get a false positive. The network has already perfectly overfit those anchors.
+
+The Conceptual Solution: Evaluate the Transformation, Not the Data.
+You don't need to look at Domain C to know if the transfer is plausible; you need to look at the energy of the deformation field itself.
+
+Think of Domain B as a rubber sheet. To align it with a related Domain C, you might have to stretch it a little bit (low energy). To align it with an unrelated Domain C, you have to violently stretch, twist, and fold the sheet (high energy).
+
+Instead of asking, "Does this warped B fit C?", you ask, "How hard did the network have to work to warp B?"
+
+What is the magnitude of the predicted shift vector (mu)?
+
+How erratic are the attention weights in the align_attn?
+
+Does the shift vector change violently between adjacent tokens?
+
+If the transformation requires extreme, high-frequency changes, it is mathematically implausible, indicating negative transfer.
+"""
+
+"""
+reasons for mild nll improvement conditioning on unrelated contexts 
+1. spurious correlation
+2. The "Process of Elimination" (Your Second Point)Knowing what $A$ is not is mathematically valuable. If your model operates in a constrained space, and the unrelated context $B$ occupies a certain volume of that space, the model can confidently say, "Well, $A$ cannot be there." By eliminating a chunk of the probability mass, the remaining distribution is forced to squeeze into a smaller volume, artificially sharpening the confidence bounds.
+3. overfitting & miscalibration
+4. The Information Theory Trap: $H(A|B) \leq H(A)$In pure information theory, conditioning reduces entropy.
+ The entropy of $A$ given $B$ can never be mathematically greater than the entropy of $A$ alone, on average.
+ Many architectures (especially self-attention or conditional normalizations) are structurally biased to 
+ behave this way. When you give the model an input $B$ to condition on, the network's internal representations
+  contract. It assumes that because it was given a condition, it must use it to reduce the hypothesis space. 
+  It tightens the bounds mechanically, unaware that $B$ is pure garbage.
+"""
+
 
 class PFNLayer(nn.Module):
     def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, ):
@@ -207,6 +241,7 @@ class MetaWarpAttention(nn.Module):
             has_sink (bool, optional): Whether to append a learned bias column for an attention sink.
             key_padding_mask (Tensor, optional): Standard boolean mask for padded keys.
         """
+
     def __init__(self, d_model, nhead, d_probe=16, d_hp=1, dropout=0.1):
         super().__init__()
         self.num_heads = nhead
@@ -280,7 +315,6 @@ class MetaWarpAttention(nn.Module):
             sink_col = self.sink_bias.view(1, self.num_heads, 1, 1).expand(B, self.num_heads, Tc, 1)
             bias = torch.cat([bias, sink_col], dim=-1)  # (B, Heads, Tc, Tb_real + 1)
 
-
         bias_mask = bias.reshape(B * self.num_heads, Tc, -1)
 
         # ==========================================
@@ -298,10 +332,33 @@ class MetaWarpAttention(nn.Module):
         return out, attn_weights
 
 
+def apply_adain(content, style, eps=1e-5):
+    """
+    Applies AdaIN across the sequence dimension (dim=0).
+    Expects shapes: (seq, batch, dim)
+    """
+    # 1. Compute statistics over the sequence length
+    c_mean = content.mean(dim=0, keepdim=True)
+    c_std = content.std(dim=0, keepdim=True) + eps
+
+    s_mean = style.mean(dim=0, keepdim=True)
+    s_std = style.std(dim=0, keepdim=True) + eps
+
+    # 2. Normalize content, then scale and shift to match style
+    normalized_content = (content - c_mean) / c_std
+    return (normalized_content * s_std) + s_mean
+
+
 # TODO what about gating against negative transfer?
 class PreNormTriStreamTransformerLayer(nn.Module):
+    """
+    This class tries to learn the diffeomorphism between C and B
+    """
+
     def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=False,
-                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='cycle', num_align_steps=3) -> None:
+                 gate_type=None, use_gate=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='gated_deform',
+                 num_align_steps=3,
+                 use_spectral_norm=False) -> None:
         super().__init__()
         batch_first = False
         self.use_hp = use_hp
@@ -316,20 +373,64 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                                                 d_hp=1)  # Using the full d_model as d_hp for maximum expressivity
 
         elif cross_attn_type == 'deform':
-            self.num_align_steps=num_align_steps
+            self.num_align_steps = num_align_steps
             assert use_hp == False, 'use_hp == False, currently not supported!'
             # Attention to find correspondences between B and C
             self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
 
             # MLP to predict the latent shift vector based on the correspondence
-            self.align_ffn = nn.Sequential(
-                nn.Linear(d_model * 3, d_model * 2),
-                nn.GELU(),
-                nn.Linear(d_model * 2, d_model * 2)
-            )
+            if use_spectral_norm:
+                import torch.nn.utils.parametrizations as param
+
+                # Inside your cross_attn_type init:
+                self.align_ffn = nn.Sequential(
+                    param.spectral_norm(nn.Linear(d_model * 2, d_model * 2)),
+                    nn.GELU(),
+                    param.spectral_norm(nn.Linear(d_model * 2, d_model * 2))
+                )
+            else:
+                self.align_ffn = nn.Sequential(
+                    nn.Linear(d_model * 3, d_model * 2),
+                    nn.GELU(),
+                    nn.Linear(d_model * 2, d_model * 2)
+                )
             self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
 
+        elif cross_attn_type == 'gated_deform':
+            self.num_align_steps = num_align_steps
+            assert use_hp == False, 'use_hp == False, currently not supported!'
 
+            # Attention to find correspondences between B and C
+            self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
+
+            # MLP to predict the latent shift vector based on the correspondence
+            if use_spectral_norm:
+                import torch.nn.utils.parametrizations as param
+                self.align_ffn = nn.Sequential(
+                    param.spectral_norm(nn.Linear(d_model * 2, d_model * 2)),
+                    nn.GELU(),
+                    param.spectral_norm(nn.Linear(d_model * 2, d_model * 2))
+                )
+            else:
+                self.align_ffn = nn.Sequential(
+                    nn.Linear(d_model * 3, d_model * 2),
+                    nn.GELU(),
+                    nn.Linear(d_model * 2, d_model * 2)
+                )
+
+            # ==========================================
+            # NEW: The Valve Controller
+            # Inputs: [mean_log_var, mean_warp_energy] (Size 2)
+            # Output: gate_scale (Size 1)
+            # ==========================================
+            self.valve_controller = nn.Sequential(
+                nn.Linear(2, 16),
+                nn.GELU(),
+                nn.Linear(16, 1),
+                nn.Softplus()  # Ensures the scale magnitude is always positive
+            )
+
+            self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
         elif cross_attn_type == 'cycle':
             assert use_hp == False, 'use_hp == False, currently not supported!'
             self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
@@ -345,7 +446,8 @@ class PreNormTriStreamTransformerLayer(nn.Module):
         elif cross_attn_type == 'simple':
             self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
 
-        else: raise NotImplementedError("Unknown cross_attn_type")
+        else:
+            raise NotImplementedError("Unknown cross_attn_type")
 
         self.use_add_pfn = use_add_pfn
         if self.use_add_pfn:
@@ -502,6 +604,12 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             C_train = normed_cross_C[:sep, :, :]
             pad_mask_C_train = pad_mask_A[:, :sep] if pad_mask_A is not None else None
 
+            # ==========================================
+            # NEW: Pre-Conditioning with AdaIN
+            # Transfer the global domain statistics of C onto B
+            # ==========================================
+            B_train_pred = apply_adain(content=B_train_pred, style=C_train)
+
             total_kl_loss = 0.0
 
             # ==========================================
@@ -572,8 +680,155 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                 value=B_train_pred,
                 key_padding_mask=pad_mask_B_train
             )
+
+        elif self.cross_attn_type == 'gated_deform':
+            """
+            Implements a Gated Deformable Cross-Attention mechanism using Variational Information 
+            Bottleneck (VIB) statistics to dynamically route attention away from distorted tokens. 
+
+            This branch aligns a source sequence (B) to a target sequence (A/C) through a recurrent 
+            warping loop. It tracks the uncertainty (`log_var`) and shift energy (`B_delta`) of this 
+            transformation. These statistics are fed into a learned 'Valve Controller' to scale an 
+            orthogonalized Attention Sink (the 'Null Key'). 
+
+            When the structural warp is highly uncertain or energetic, the Sink Key's magnitude 
+            increases, overshadowing the distorted B tokens in the Softmax competition. Because the 
+            Sink Token is paired with a strictly zero-valued Value vector, this effectively closes 
+            the attention valve, allowing the original target sequence to bypass the cross-attention 
+            unchanged via the module's residual connection.
+            """
+            # Handle the training-time concatenated B
+            if B.shape[1] != A.shape[1]:
+                half_batch = B.shape[1] // 2
+                B_warped = normed_cross_B[:, :half_batch, :]
+                B_in_domain_A_true = normed_cross_B[:, half_batch:, :]
+            else:
+                B_warped = normed_cross_B
+                B_in_domain_A_true = None
+
+            B_train_pred = B_warped[:sep, :, :].clone()
+            C_train = normed_cross_C[:sep, :, :]
+            pad_mask_C_train = pad_mask_A[:, :sep] if pad_mask_A is not None else None
+
+            # ==========================================
+            # NEW: Pre-Conditioning with AdaIN
+            # Transfer the global domain statistics of C onto B
+            # ==========================================
+            B_train_pred = apply_adain(content=B_train_pred, style=C_train)
+
+            total_kl_loss = 0.0
+
+            # ==========================================
+            # THE RECURRENT ALIGNMENT LOOP
+            # ==========================================
+            for step in range(self.num_align_steps):
+                # 1. Correspondence Search
+                align_context, _ = self.align_attn(
+                    query=B_train_pred,
+                    key=C_train,
+                    value=C_train,
+                    key_padding_mask=pad_mask_C_train
+                )
+
+                # 2. Extract Global Context
+                global_context = align_context.mean(dim=0, keepdim=True)
+                global_context_expanded = global_context.expand_as(B_train_pred)
+
+                # 3. Combine Features
+                align_features = torch.cat([
+                    B_train_pred,
+                    align_context,
+                    global_context_expanded
+                ], dim=-1)
+
+                # 4. Predict Uncertainty (VIB)
+                B_delta_params = self.align_ffn(align_features)
+                mu, log_var = torch.chunk(B_delta_params, chunks=2, dim=-1)
+
+                # 5. Reparameterization Trick & Shift
+                if self.training:
+                    std = torch.exp(0.5 * log_var)
+                    eps = torch.randn_like(std)
+                    B_delta = mu + eps * std
+
+                    step_kl = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
+                    total_kl_loss += step_kl.mean()
+                else:
+                    B_delta = mu
+
+                # 6. Apply Shift
+                B_train_pred = B_train_pred + B_delta
+
+            # Log to MetaContext
+            if B_in_domain_A_true is not None:
+                B_train_true = B_in_domain_A_true[:sep, :, :]
+                ForwardMetaContext.set('B_in_A_domain', {
+                    'pred': B_train_pred,
+                    'true': B_train_true,
+                    'kl_loss': total_kl_loss / self.num_align_steps
+                })
+
+            # ==========================================
+            # THE NULL-ATTENTION VALVE (NEW)
+            # ==========================================
+            batch_size = B_train_pred.shape[1]
+
+            # 1. Calculate Global Warp Statistics for the Valve Controller
+            # We collapse across the sequence (dim=0) and feature (dim=2) dimensions
+            # to get a single scalar per batch item.
+            mean_log_var = log_var.mean(dim=[0, 2])  # Shape: (batch,)
+            mean_energy = B_delta.pow(2).mean(dim=[0, 2])  # Shape: (batch,)
+
+            # 2. Predict the Gate Scale
+            valve_inputs = torch.stack([mean_log_var, mean_energy], dim=-1)  # (batch, 2)
+            gate_scale = self.valve_controller(valve_inputs)  # (batch, 1)
+            gate_scale = gate_scale.unsqueeze(0)  # (1, batch, 1) to broadcast over d_model
+
+            # 3. Define the Sink Key Base (The Ideal Query)
+            k_sink_base = normed_cross_C.mean(dim=0, keepdim=True)  # (1, batch, d_model)
+
+            # 4. The "Anti-B" Mean Projection (Fast Orthogonalization)
+            mu_B = B_train_pred.mean(dim=0, keepdim=True)  # (1, batch, d_model)
+
+            # dot_product and norm_sq shape: (1, batch, 1)
+            dot_product = (k_sink_base * mu_B).sum(dim=-1, keepdim=True)
+            norm_sq = (mu_B * mu_B).sum(dim=-1, keepdim=True) + 1e-8  # Add epsilon
+
+            # Subtract the component of k_sink_base that aligns with B
+            k_null_dir = k_sink_base - (dot_product / norm_sq) * mu_B
+
+            # 5. Apply the Valve Scale
+            k_null = k_null_dir * gate_scale  # (1, batch, d_model)
+
+            # 6. Define the Zero-Value Vector
+            v_null = torch.zeros_like(k_null)  # (1, batch, d_model)
+
+            # 7. Concatenate Keys and Values separately
+            # B_train_pred is (seq, batch, dim)
+            K_train_with_sink = torch.cat([B_train_pred, k_null], dim=0)  # (seq + 1, batch, dim)
+            V_train_with_sink = torch.cat([B_train_pred, v_null], dim=0)  # (seq + 1, batch, dim)
+
+            # 8. Update the Padding Mask (Don't mask the sink!)
+            pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
+            if pad_mask_B_train is not None:
+                # Append 'False' (0) for the sink token across the batch
+                # Assuming pad_mask_B_train shape is (batch, seq)
+                sink_mask = torch.zeros((batch_size, 1), dtype=torch.bool, device=pad_mask_B_train.device)
+                pad_mask_B_train = torch.cat([pad_mask_B_train, sink_mask], dim=1)
+
+            # ==========================================
+            # FINAL CROSS-ATTENTION
+            # ==========================================
+            cross_C, cross_attn_weights = self.cross_attn(
+                query=normed_cross_C,
+                key=K_train_with_sink,  # Uses the appended k_null
+                value=V_train_with_sink,  # Uses the appended v_null (zeros)
+                key_padding_mask=pad_mask_B_train
+            )
+
         elif self.cross_attn_type == 'cycle':
-             # Adain for feature matching between B & C (originally used in neural style transfer)
+            # Adain for feature matching between B & C (originally used in neural style transfer)
+            # 1. Handle training/inference split
             if B.shape[1] != A.shape[1]:
                 half_batch = B.shape[1] // 2
                 B_warped = normed_cross_B[:, :half_batch, :]
@@ -587,55 +842,77 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
             pad_mask_C_train = pad_mask_A[:, :sep] if pad_mask_A is not None else None
 
-            # --- 1. GLOBAL ALIGNMENT (AdaIN Style) ---
-            global_C = C_train.mean(dim=0, keepdim=True)
-            global_B = B_train.mean(dim=0, keepdim=True)
-            B_train_aligned = B_train + (global_C - global_B)
+            # ==========================================
+            # 1. FULL ADAIN GLOBAL ALIGNMENT (Mean & Variance)
+            # ==========================================
+            # Safely calculate Mean and Std for C (ignoring padded NaNs)
+            if pad_mask_C_train is not None:
+                valid_mask_C = (~pad_mask_C_train).unsqueeze(-1).float().transpose(0, 1)  # (Seq, Batch, 1)
+                count_C = valid_mask_C.sum(dim=0, keepdim=True).clamp(min=1.0)
 
-            # --- 2. BATCHED CORRESPONDENCE PASS ---
+                mean_C = (C_train * valid_mask_C).sum(dim=0, keepdim=True) / count_C
+                var_C = (((C_train - mean_C) ** 2) * valid_mask_C).sum(dim=0, keepdim=True) / count_C
+                std_C = torch.sqrt(var_C + 1e-5)
+            else:
+                mean_C = C_train.mean(dim=0, keepdim=True)
+                std_C = C_train.std(dim=0, keepdim=True) + 1e-5
+
+            # B is dense, so standard calculations work
+            mean_B = B_train.mean(dim=0, keepdim=True)
+            std_B = B_train.std(dim=0, keepdim=True) + 1e-5
+
+            # Full AdaIN Transformation: Match Mean AND Spread
+            B_train_aligned = ((B_train - mean_B) / std_B) * std_C + mean_C
+
+            # ==========================================
+            # 2. FORWARD PASS (B -> C)
+            # ==========================================
+            align_context_fwd, _ = self.align_attn(
+                query=B_train_aligned,
+                key=C_train,
+                value=C_train,
+                key_padding_mask=pad_mask_C_train
+            )
+
+            fwd_features = torch.cat([B_train_aligned, align_context_fwd], dim=-1)
+            mu_fwd, log_var_fwd = torch.chunk(self.align_ffn(fwd_features), 2, dim=-1)
+
+            # ==========================================
+            # 3. BACKWARD PASS (True Cycle Consistency)
+            # ==========================================
             cycle_loss = torch.tensor(0.0, device=B_train.device)
 
             if self.training:
-                # BATCHING: Stack Forward and Backward queries along the Batch Dimension (dim=1)
-                # Forward Q: B, K/V: C  |  Backward Q: C, K/V: B
-                batched_Q = torch.cat([B_train_aligned, C_train], dim=1)
-                batched_K = torch.cat([C_train, B_train_aligned], dim=1)
+                # We map B_aligned to its intermediate "Fake C" position
+                B_fake_C = B_train_aligned + mu_fwd
 
-                # Batch the padding masks (Batch dimension is dim=0 for pad masks)
-                if pad_mask_B_train is not None and pad_mask_C_train is not None:
-                    batched_mask = torch.cat([pad_mask_C_train, pad_mask_B_train], dim=0)
-                else:
-                    batched_mask = None
+                # Backward Pass: Fake C looks back at the original B_aligned
+                # Notice the Query is B_fake_C, but Key/Value is B_train_aligned
+                align_context_back, _ = self.align_attn(
+                    query=B_fake_C,
+                    key=B_train_aligned,
+                    value=B_train_aligned,
+                    key_padding_mask=pad_mask_B_train
+                )
 
-                # ONE single attention call for both directions!
-                batched_context, _ = self.align_attn(batched_Q, batched_K, batched_K, key_padding_mask=batched_mask)
+                back_features = torch.cat([B_fake_C, align_context_back], dim=-1)
+                mu_back, _ = torch.chunk(self.align_ffn(back_features), 2, dim=-1)
 
-                # ONE single FFN call!
-                batched_features = torch.cat([batched_Q, batched_context], dim=-1)
-                batched_params = self.align_ffn(batched_features)
-
-                # SPLIT the results back into Forward and Backward
-                params_fwd, params_back = torch.chunk(batched_params, chunks=2, dim=1)
-
-                # Extract mu and log_var
-                mu_fwd, log_var_fwd = torch.chunk(params_fwd, chunks=2, dim=-1)
-                mu_back, _ = torch.chunk(params_back, chunks=2, dim=-1)
-
-                # Calculate Cycle Constraint
+                # TRUE Cycle Constraint: mu_fwd and mu_back are evaluated on the exact
+                # same physical token sequence (B_train), so element-wise MSE is perfect.
                 cycle_loss = F.mse_loss(mu_fwd, -mu_back)
 
+            # ==========================================
+            # 4. REPARAMETERIZATION & LOGGING
+            # ==========================================
+            if self.training:
+                std = torch.exp(0.5 * log_var_fwd)
+                eps = torch.randn_like(std)
+                B_delta = mu_fwd + eps * std
             else:
-                # INFERENCE ONLY: Just run the forward pass normally to save compute
-                align_context_fwd, _ = self.align_attn(B_train_aligned, C_train, C_train,
-                                                       key_padding_mask=pad_mask_C_train)
-                fwd_features = torch.cat([B_train_aligned, align_context_fwd], dim=-1)
-                params_fwd = self.align_ffn(fwd_features)
-                mu_fwd, log_var_fwd = torch.chunk(params_fwd, chunks=2, dim=-1)
+                B_delta = mu_fwd
 
-            # --- 3. REPARAMETERIZATION & LOGGING ---
-            # Sample Delta
-            delta_fwd = mu_fwd + torch.randn_like(mu_fwd) * torch.exp(0.5 * log_var_fwd) if self.training else mu_fwd
-            B_in_domain_A_pred = B_train_aligned + delta_fwd
+            B_in_domain_A_pred = B_train_aligned + B_delta
 
             if B_in_domain_A_true is not None:
                 kl_loss = -0.5 * torch.sum(1 + log_var_fwd - mu_fwd.pow(2) - log_var_fwd.exp(), dim=-1).mean()
@@ -646,7 +923,11 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                     'cycle_loss': cycle_loss
                 })
 
-            # --- 4. MAIN CROSS-ATTENTION ---
+            # ==========================================
+            # 5. MAIN CROSS-ATTENTION
+            # ==========================================
+            pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
+
             cross_C, _ = self.cross_attn(
                 query=normed_cross_C,
                 key=B_in_domain_A_pred,
@@ -826,7 +1107,8 @@ class FourierEncoder(nn.Module):
 
 
 class TriHarmonicModel(nn.Module):
-    def __init__(self, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_B_attn_sink=False, use_freq_enc_x=True, use_post_attn=True):
+    def __init__(self, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_B_attn_sink=False, use_freq_enc_x=True,
+                 use_post_attn=True):
         super().__init__()
         self.num_bars = num_bars
         self.x_encoder = FourierEncoder(d_model) if use_freq_enc_x else nn.Linear(1, d_model)
@@ -902,7 +1184,7 @@ class TriHarmonicModel(nn.Module):
             B_in_A = emb_X_B_in_A.clone()
             B_in_A[:single_eval_pos, :, :] += emb_Y_B_in_A
 
-            B = torch.cat([B, B_in_A], dim=1) # parallel processing of the two.
+            B = torch.cat([B, B_in_A], dim=1)  # parallel processing of the two.
 
         # Pass through the Marginal PFN Layer
         A, B, C = self.pfn_layer(A, B, C, single_eval_pos, pad_mask_A)
@@ -928,8 +1210,6 @@ class TriHarmonicModel(nn.Module):
         if self.use_post_attn:
             A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A)
 
-
-
         # Apply final norm
         out_A = self.final_norm(A)
         out_B = self.final_norm(B)
@@ -940,4 +1220,119 @@ class TriHarmonicModel(nn.Module):
         logits_B = self.decoder(out_B[single_eval_pos:, :, :])
         logits_C = self.decoder(out_C[single_eval_pos:, :, :])
 
-        return logits_A, logits_B, logits_C
+        if self.training:
+            return logits_A, logits_B, logits_C
+
+        else:
+            raise NotImplementedError("Energy-Penalized BMA is still in development")
+
+            """
+            Forward pass with dynamic Energy-Penalized Bayesian Model Averaging (BMA).
+
+            This method processes a target sequence (A/C) alongside a set of related 
+            contexts (B_i) passed through the batch dimension. During inference, it 
+            dynamically routes probability mass between the available conditional 
+            contexts and the unconditional baseline based on their predictive confidence 
+            and structural deformation cost.
+
+            Args:
+                batch (dict): Dictionary containing train/test splits for X_A, Y_A, X_B, Y_B.
+                bma_lambda (float, optional): The energy penalty multiplier. Controls how 
+                    harshly a context is penalized for requiring heavy structural warping. 
+                    Setting this to 0.0 results in pure Predictive Entropy BMA. Defaults to 1.0.
+                bma_temp (float, optional): Temperature for the BMA Softmax selection. 
+                    Higher values smoothly blend contexts; lower values force a sharp, 
+                    argmax-like selection of the single best context. Defaults to 1.0.
+
+            Returns:
+                tuple:
+                    - logits_A (Tensor): Unconditional predictions (A only).
+                    - logits_B (Tensor): Auxiliary target predictions.
+                    - logits_C (Tensor): Conditional predictions (A | B).
+                    - bma_probs (Tensor, inference only): The final model-averaged 
+                      probability distribution across all contexts and the baseline.
+
+            BMA Mechanics (Inference Only):
+                1. Calculates the token-level Shannon entropy of the Posterior Predictive 
+                   Distribution (PPD) for all conditional contexts and the unconditional baseline.
+                2. Retrieves the Variational Information Bottleneck (VIB) statistics (`log_var` 
+                   and `B_delta`) from the `gated_deform` cross-attention layer to compute 
+                   the 'Warp Energy' required to align each context.
+                3. Computes log-weights by penalizing the predictive entropy with the warp 
+                   energy: Weight = -(Entropy + lambda * Energy) / Temperature.
+                4. If all contexts require excessive energy, the Softmax denominator naturally 
+                   routes probability mass to the unconditional baseline, which has zero 
+                   warp energy by definition.
+            """
+
+            # TODO: in the deform
+            #  if not self.training:
+            #     # Log the energy statistics for BMA at inference
+            #     ForwardMetaContext.set('vib_stats', {
+            #         'mean_log_var': log_var.mean(dim=[0, 2]), # Shape: (batch,)
+            #         'mean_energy': B_delta.pow(2).mean(dim=[0, 2]) # Shape: (batch,)
+            #     })
+
+            # ==========================================
+            # ENERGY-PENALIZED BMA (Inference Only)
+            # ==========================================
+
+            seq_len, batch_size, num_bars = logits_C.shape
+
+            # 1. Convert Logits to Probabilities
+            probs_C = F.softmax(logits_C, dim=-1)  # Conditional (A|B_i)
+            probs_A = F.softmax(logits_A, dim=-1)  # Unconditional (A)
+
+            # Since A is expanded in the batch dim, all batch items for A are identical.
+            # We just need one copy of the unconditional probability.
+            probs_A_single = probs_A[:, 0:1, :]  # Shape: (seq_len, 1, num_bars)
+
+            # 2. Calculate Predictive Entropy (Token-level)
+            # H = - sum(p * log(p))
+            # Adding a tiny epsilon to prevent log(0)
+            entropy_C = -torch.sum(probs_C * torch.log(probs_C + 1e-9), dim=-1)  # (seq, batch)
+            entropy_A = -torch.sum(probs_A_single * torch.log(probs_A_single + 1e-9), dim=-1)  # (seq, 1)
+
+            # 3. Retrieve Warp Energy from MetaContext
+            vib_stats = ForwardMetaContext.get('vib_stats')
+            if vib_stats is not None:
+                # Shape: (1, batch) so it broadcasts over seq_len
+                mean_log_var = vib_stats['mean_log_var'].unsqueeze(0)
+                mean_energy = vib_stats['mean_energy'].unsqueeze(0)
+
+                # Total Energy Penalty for each context B_i
+                # Softplus ensures the penalty is strictly positive
+                warp_energy_C = F.softplus(mean_log_var + mean_energy)
+            else:
+                # Fallback if no warp occurred
+                warp_energy_C = torch.zeros((1, batch_size), device=logits_C.device)
+
+            # The unconditional model (A) has zero warp energy by definition
+            warp_energy_A = torch.zeros((1, 1), device=logits_A.device)
+
+            # 4. Formulate the Unnormalized Log-Weights
+            # Weight = -(Entropy + lambda * Energy) / Temperature
+            log_w_C = -(entropy_C + bma_lambda * warp_energy_C) / bma_temp  # (seq, batch)
+            log_w_A = -(entropy_A + bma_lambda * warp_energy_A) / bma_temp  # (seq, 1)
+
+            # 5. Concatenate all models (N conditionals + 1 unconditional)
+            # Shape: (seq, batch + 1)
+            all_log_weights = torch.cat([log_w_C, log_w_A], dim=1)
+
+            # 6. Normalize weights across the model dimension using Softmax
+            bma_weights = F.softmax(all_log_weights, dim=1)  # (seq, batch + 1)
+
+            # Extract the weights for C and A
+            weights_C = bma_weights[:, :-1].unsqueeze(-1)  # (seq, batch, 1)
+            weights_A = bma_weights[:, -1:].unsqueeze(-1)  # (seq, 1, 1)
+
+            # 7. Compute the Final BMA Probability Distribution
+            # Sum the weighted conditional probabilities
+            weighted_C_sum = torch.sum(probs_C * weights_C, dim=1, keepdim=True)  # (seq, 1, num_bars)
+
+            # Add the weighted unconditional probability
+            bma_probs = weighted_C_sum + (probs_A_single * weights_A)  # (seq, 1, num_bars)
+
+            # Return standard logits for training, but add the BMA probs for inference
+            return logits_A, logits_B, logits_C, bma_probs
+
