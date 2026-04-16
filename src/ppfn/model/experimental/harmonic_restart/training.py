@@ -103,6 +103,7 @@ def train(
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name=run_name):
+        logger.info(f'mlflow db location: {mlflow.get_tracking_uri()}')
         # Log hyperparameters
         mlflow.log_params(locals())  # log all function arguments cleanly
 
@@ -130,7 +131,7 @@ def train(
         model = TriHarmonicModel(d_model=d_model, nhead=nhead, num_bars=criterion.num_bars).to(device)
 
         if bool(load_chkpt):
-            model.load_state_dict(torch.load(load_chkpt, map_location=device, weights_only=True))
+            model.load_state_dict(torch.load(load_chkpt, map_location=device, weights_only=True), strict=False)
 
         # 4. Setup Optimizer, Scheduler, and AMP Scaler
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -435,5 +436,38 @@ def train(
 
 if __name__ == "__main__":
     import fire
+    import os
+    import sys
+
+    # --- Setup paths for the printout ---
+    project_dir = os.getcwd()
+    python_exec = sys.executable
+    script_name = sys.argv[0]
+    args = ' '.join(sys.argv[1:])
+    db_uri = f"sqlite:///{project_dir}/mlflow.db"
+
+    # --- The Cheat Sheet String ---
+    print("\n" + "═" * 60)
+    print(" 🚀 REMOTE TRAINING COCKPIT")
+    print("═" * 60)
+
+    print(f"\n1. START/ATTACH TO TMUX WHEN LOGGED IN ON REMOTE:")
+    print(f"   tmux attach -t training || tmux new -s training")
+
+    print(f"\n2. RUN YOUR TRAINING (Copy & Paste into tmux):")
+    print(f"   cd {project_dir} && {python_exec} {script_name} {args}")
+
+    print(f"\n3. LAUNCH MLFLOW UI (In a second tmux window or separate terminal):")
+    print(f"   mlflow ui --backend-store-uri {db_uri} --port 5010 --host 0.0.0.0")
+
+    print(f"\n4. TMUX EMERGENCY CHEAT SHEET:")
+    print(f"   • Detach (Keep running!):  Ctrl+B, then D")
+    print(f"   • Create new window:       Ctrl+B, then C")
+    print(f"   • Switch windows:          Ctrl+B, then [0-9]")
+    print(f"   • Scroll (Copy mode):      Ctrl+B, then [    (Use arrows, 'q' to exit)")
+
+    print("═" * 60 + "\n")
+
+
 
     fire.Fire(train)

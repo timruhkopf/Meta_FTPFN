@@ -403,6 +403,8 @@ class PreNormTriStreamTransformerLayer(nn.Module):
             # Attention to find correspondences between B and C
             self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
 
+            self.valve_gain = nn.Parameter(torch.tensor(1.0))
+
             # MLP to predict the latent shift vector based on the correspondence
             if use_spectral_norm:
                 import torch.nn.utils.parametrizations as param
@@ -427,10 +429,11 @@ class PreNormTriStreamTransformerLayer(nn.Module):
                 nn.Linear(2, 16),
                 nn.GELU(),
                 nn.Linear(16, 1),
-                nn.Softplus()  # Ensures the scale magnitude is always positive
+                # nn.Softplus()  # Ensures the scale magnitude is always positive
             )
 
             self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
+
         elif cross_attn_type == 'cycle':
             assert use_hp == False, 'use_hp == False, currently not supported!'
             self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
@@ -781,8 +784,9 @@ class PreNormTriStreamTransformerLayer(nn.Module):
 
             # 2. Predict the Gate Scale
             valve_inputs = torch.stack([mean_log_var, mean_energy], dim=-1)  # (batch, 2)
-            gate_scale = self.valve_controller(valve_inputs)  # (batch, 1)
-            gate_scale = gate_scale.unsqueeze(0)  # (1, batch, 1) to broadcast over d_model
+            raw_gate = self.valve_controller(valve_inputs)  # (batch, 1)
+            gate_scale = torch.exp(raw_gate * self.valve_gain).unsqueeze(0)
+            # gate_scale = gate_scale.unsqueeze(0)  # (1, batch, 1) to broadcast over d_model
 
             # 3. Define the Sink Key Base (The Ideal Query)
             k_sink_base = normed_cross_C.mean(dim=0, keepdim=True)  # (1, batch, d_model)
