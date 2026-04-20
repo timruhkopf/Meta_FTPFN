@@ -58,11 +58,10 @@ def main(cfg: DictConfig) -> None:
 
     # Create a simple DataLoader around the dataset
     loader = instantiate(
-        cfg.dataset.dataloader_class, dataset=dataset, collate_fn=lambda x: x
+        cfg.dataset.dataloader_class, dataset=dataset
     )
-    # next(iter(loader))  # sanity check
 
-    # FIXME: this is the old API for pfns4bo.utils.PriorDataLoader: remove
+    # DEPREC: old API for pfns4bo.utils.PriorDataLoader
     # loader = instantiate(cfg.dataset.dataloader)  # PriorDataLoader / DistributedPriorDataLoader
     # if cfg.dataset.dataloader.get("store", True):
     #     logger.info("Storing prior samples...")
@@ -81,14 +80,6 @@ def main(cfg: DictConfig) -> None:
     # Load frozen model and get criterion from it
     logger.info("Loading frozen model...")
     model = instantiate(cfg.model.model_class).to(device)
-    criterion = model.criterion
-
-    if hasattr(cfg.trainer, "objective"):
-        # TODO consider moving this into the wrapper model; then both the backend
-        #  and the model are accessing 'criterion'
-        logger.info("Wrapping criterion with objective...")
-        # this is a wrapper objective around the model's criterion
-        criterion = instantiate(cfg.trainer.objective, criterion=criterion)
 
     # Instantiate optimizer and scheduler as partials
     # They will be called with model params and optimizer respectively in trainer.__init__
@@ -104,7 +95,6 @@ def main(cfg: DictConfig) -> None:
         train_loader=loader,
         optimizer=optimizer_partial,
         scheduler=scheduler_partial,
-        criterion=criterion,
         device=device,
     )
     # dictconfig cannot be passed directly; neither a dict with _target_ key
@@ -140,7 +130,7 @@ if __name__ == "__main__":
 
     OmegaConf.register_new_resolver("mod", lambda x, y: x % y)
     OmegaConf.register_new_resolver("div", lambda x, y: int(x / y))
-    OmegaConf.register_new_resolver("eval", eval)
+    OmegaConf.register_new_resolver("add", lambda x, y: x + y)
     OmegaConf.register_new_resolver("githash", githash)
 
     main()

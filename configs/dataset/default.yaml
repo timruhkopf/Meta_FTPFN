@@ -35,5 +35,8 @@ dataloader_class:
   _target_: torch.utils.data.DataLoader
   batch_size: 1 # number of batches -- because the dataset yields batches already!
   shuffle: False
+  collate_fn:
+    _target_: ppfn.utils.mybatch.identity
+    _partial_: True
   #  num_workers: 1
 #  collate_fn  is overwritten in train.py, since we cannot collate batches with different hp dim!

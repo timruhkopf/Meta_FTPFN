@@ -12,8 +12,8 @@ from datetime import datetime
 import torch.nn.functional as F
 
 from pfns4hpo.bar_distribution import FullSupportBarDistribution
-from ppfn.model.experimental.harmonic_restart.harmonic_prior import InfiniteHarmonicsStream
-from ppfn.model.experimental.harmonic_restart.model import TriHarmonicModel
+from prototype.harmonic_restart.harmonic_prior import InfiniteHarmonicsStream
+from prototype.harmonic_restart.model import TriHarmonicModel
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 import logging
@@ -30,6 +30,8 @@ def calculate_gradient_sparsity(model, threshold=1e-8):
             zero_grads += (grads < threshold).sum().item()
             total_grads += grads.numel()
     return (zero_grads / total_grads) * 100 if total_grads > 0 else 0.0
+
+
 
 
 def train(
@@ -59,6 +61,7 @@ def train(
         shift=True,
         warp=True,
 ):
+    assert train_jointly == False
     import subprocess
     import os
     from pathlib import Path

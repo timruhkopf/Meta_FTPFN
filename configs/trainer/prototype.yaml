@@ -1,0 +1,19 @@
+
+epochs: 10
+steps: 100
+trainer_class:
+  _target_: ppfn.trainer.prototype_trainer.TriStreamTrainer
+  train_jointly: False
+  warmup_steps: 0
+
+  criterion:
+    _target_: prototype.harmonic_restart.loss.TriHarmonicLoss
+    share_unrelated: ${dataset.dataset_class.share_unrelated}
+    use_attn_bonus: False
+    criterion:
+      _target_: pfns4hpo.bar_distribution.FullSupportBarDistribution
+      borders:
+        _target_: torch.linspace
+        start: -7
+        end: 7
+        steps: ${add:${model.model_class.num_bars}, 1}

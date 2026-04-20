@@ -6,6 +6,10 @@ import torch
 from pfns4hpo.priors import Batch
 
 
+def identity(x):
+    return x
+
+
 @dataclass
 class MyBatch(Batch):
     src_key_padding_mask: Optional[torch.Tensor] = None

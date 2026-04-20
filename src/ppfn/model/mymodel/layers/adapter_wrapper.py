@@ -1,4 +1,4 @@
-from ppfn.model.mymodel.layers.nw_adapter import NadarayaWatsonAdapter
+from ppfn.model.experimental.layers.nw_adapter import NadarayaWatsonAdapter
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 import torch
 import torch.nn as nn

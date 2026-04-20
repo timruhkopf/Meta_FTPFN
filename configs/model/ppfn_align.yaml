@@ -11,9 +11,16 @@ layer_base: # &layer_logic
   modify_B: False
 
 trainer:
-  objective:
-    _target_: ppfn.model.mymodel.multistream_objective.MultiStreamObjective
-
+  trainer_class:
+    criterion:
+      _target_: ppfn.model.mymodel.multistream_objective.MultiStreamObjective
+      criterion:
+        _target_: pfns4hpo.bar_distribution.BarDistribution
+        borders:
+          _target_: torch.linspace
+          start: 0
+          end: 1
+          steps: 1001
 model:
   frozen_version: "0.0.1"
 

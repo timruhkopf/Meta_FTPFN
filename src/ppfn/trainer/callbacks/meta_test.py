@@ -1,6 +1,7 @@
 from typing import Dict
 
 import torch
+from torch import amp
 
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
 
@@ -56,9 +57,13 @@ class MetaTestCallback(AbstractCallback):
         with torch.no_grad():
             for batch in evaluation_dataloader:
                 batch = batch.to(self.device)
-                losses, step_metrics = self.trainer._forward_pass(
-                    batch, batch.single_eval_pos
-                )
+
+                fwd_kwargs = {'single_eval_pos': batch.single_eval_pos}
+                with amp.autocast(device_type="cuda", enabled=self.trainer.use_amp):
+                    output = self.trainer.model(batch, **fwd_kwargs)
+
+                    # loss calculation outside of autocast for stable training
+                loss, step_metrics = self.trainer.criterion(output, batch=batch, **fwd_kwargs)
 
                 results.append(step_metrics)
 

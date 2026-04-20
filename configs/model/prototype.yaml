@@ -1,0 +1,27 @@
+# @package _global_
+
+model:
+  frozen_version: "0.0.1"
+
+  model_class:
+    _target_: prototype.harmonic_restart.model.TriHarmonicModel
+    d_model: 64
+    nhead: 4
+    dropout: 0.1
+    num_bars: 100
+    use_freq_enc_x: True
+
+    cross_attn_layer:
+      _target_: prototype.harmonic_restart.layer.TriStreamLayer
+      d_model: 64
+      dim_feedforward: 128
+      nhead: 4
+      use_B_attn_sink: False
+      use_hp: False
+
+      use_add_pfn: True
+      use_post_attn: False
+      cross_attn_type: gated_deform
+      num_align_steps: 3
+      use_spectral_norm: False
+

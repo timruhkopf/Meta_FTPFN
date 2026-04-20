@@ -2,10 +2,10 @@
 defaults:
   - /callbacks:
       - mlflow
-      - validation_real
+#      - validation_real
   - _self_
 
-experiment_name: debug
+experiment_name: prototype
 run_name: Null
 
 mlflow_tracking_uri: 'sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db'
