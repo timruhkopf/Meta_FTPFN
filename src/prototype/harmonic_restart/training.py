@@ -32,8 +32,6 @@ def calculate_gradient_sparsity(model, threshold=1e-8):
     return (zero_grads / total_grads) * 100 if total_grads > 0 else 0.0
 
 
-
-
 def train(
         experiment_name: str = "TriHarmonic_Transfer",
         run_name: str = "PreNorm_AdamW",
@@ -55,8 +53,8 @@ def train(
         share_unrelated=0.2,
         train_jointly=False,
         use_attn_bonus=False,
-        n_A = 10,
-        n_B = 50,
+        n_A=10,
+        n_B=50,
         scale=True,
         shift=True,
         warp=True,
@@ -103,6 +101,7 @@ def train(
     logger.info("Output directories set up at: {}".format(save_path))
 
     # 1. Setup MLflow
+    mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI'))
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name=run_name):
@@ -131,7 +130,14 @@ def train(
 
         # 3. Setup Model
         # (Assuming you imported the actual model from model.py)
-        model = TriHarmonicModel(d_model=d_model, nhead=nhead, num_bars=criterion.num_bars).to(device)
+        from prototype.harmonic_restart.layer import TriStreamLayer
+        model = TriHarmonicModel(
+            cross_attn_layer=TriStreamLayer(
+                d_model=d_model, dim_feedforward=d_model, nhead=nhead, use_B_attn_sink=False,
+                use_hp=False, use_add_pfn=True, use_post_attn=False, cross_attn_type='deform',
+                num_align_steps=2, use_spectral_norm=False
+            ),
+            d_model=d_model, nhead=nhead, num_bars=criterion.num_bars).to(device)
 
         if bool(load_chkpt):
             model.load_state_dict(torch.load(load_chkpt, map_location=device, weights_only=True), strict=False)
@@ -253,7 +259,7 @@ def train(
                 if step % log_every:
                     mlflow.log_metrics({
                         "metrics/guided_Attn_Loss": loss_guided_attn.item()
-                    }, step = step)
+                    }, step=step)
 
             # NLL Losses
             loss_A = criterion(logits_A, Y_test_A).mean()
@@ -279,8 +285,6 @@ def train(
                 total_loss += 1e-5 * aux['cycle_loss']
 
             total_nll_loss = total_loss.clone().item()
-
-
 
             # 2. Fetch the gate values and the mask
             gate_logits_val = ForwardMetaContext.get('gate_logits')
@@ -344,7 +348,7 @@ def train(
                     diff_unrelated = 0.0  # Fallback if no unrelated samples in this batch
 
                 metrics = {
-                    "nll/Total": total_nll_loss ,
+                    "nll/Total": total_nll_loss,
                     "nll/A": loss_A.item(),
                     "nll/B": loss_B.item(),
                     "nll/C": loss_C.item(),
@@ -443,34 +447,32 @@ if __name__ == "__main__":
     import sys
 
     # --- Setup paths for the printout ---
-    project_dir = os.getcwd()
-    python_exec = sys.executable
-    script_name = sys.argv[0]
-    args = ' '.join(sys.argv[1:])
-    db_uri = f"sqlite:///{project_dir}/mlflow.db"
-
-    # --- The Cheat Sheet String ---
-    print("\n" + "═" * 60)
-    print(" 🚀 REMOTE TRAINING COCKPIT")
-    print("═" * 60)
-
-    print(f"\n1. START/ATTACH TO TMUX WHEN LOGGED IN ON REMOTE:")
-    print(f"   tmux attach -t training || tmux new -s training")
-
-    print(f"\n2. RUN YOUR TRAINING (Copy & Paste into tmux):")
-    print(f"   cd {project_dir} && {python_exec} {script_name} {args}")
-
-    print(f"\n3. LAUNCH MLFLOW UI (In a second tmux window or separate terminal):")
-    print(f"   mlflow ui --backend-store-uri {db_uri} --port 5010 --host 0.0.0.0")
-
-    print(f"\n4. TMUX EMERGENCY CHEAT SHEET:")
-    print(f"   • Detach (Keep running!):  Ctrl+B, then D")
-    print(f"   • Create new window:       Ctrl+B, then C")
-    print(f"   • Switch windows:          Ctrl+B, then [0-9]")
-    print(f"   • Scroll (Copy mode):      Ctrl+B, then [    (Use arrows, 'q' to exit)")
-
-    print("═" * 60 + "\n")
-
-
+    # project_dir = os.getcwd()
+    # python_exec = sys.executable
+    # script_name = sys.argv[0]
+    # args = ' '.join(sys.argv[1:])
+    # db_uri = f"sqlite:///{project_dir}/mlflow.db"
+    #
+    # # --- The Cheat Sheet String ---
+    # print("\n" + "═" * 60)
+    # print(" 🚀 REMOTE TRAINING COCKPIT")
+    # print("═" * 60)
+    #
+    # print(f"\n1. START/ATTACH TO TMUX WHEN LOGGED IN ON REMOTE:")
+    # print(f"   tmux attach -t training || tmux new -s training")
+    #
+    # print(f"\n2. RUN YOUR TRAINING (Copy & Paste into tmux):")
+    # print(f"   cd {project_dir} && {python_exec} {script_name} {args}")
+    #
+    # print(f"\n3. LAUNCH MLFLOW UI (In a second tmux window or separate terminal):")
+    # print(f"   mlflow ui --backend-store-uri {db_uri} --port 5010 --host 0.0.0.0")
+    #
+    # print(f"\n4. TMUX EMERGENCY CHEAT SHEET:")
+    # print(f"   • Detach (Keep running!):  Ctrl+B, then D")
+    # print(f"   • Create new window:       Ctrl+B, then C")
+    # print(f"   • Switch windows:          Ctrl+B, then [0-9]")
+    # print(f"   • Scroll (Copy mode):      Ctrl+B, then [    (Use arrows, 'q' to exit)")
+    #
+    # print("═" * 60 + "\n")
 
     fire.Fire(train)

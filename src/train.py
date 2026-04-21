@@ -131,6 +131,7 @@ if __name__ == "__main__":
     OmegaConf.register_new_resolver("mod", lambda x, y: x % y)
     OmegaConf.register_new_resolver("div", lambda x, y: int(x / y))
     OmegaConf.register_new_resolver("add", lambda x, y: x + y)
+    OmegaConf.register_new_resolver('mul', lambda x, y: x * y)
     OmegaConf.register_new_resolver("githash", githash)
 
     main()

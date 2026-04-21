@@ -7,9 +7,9 @@ logger = logging.getLogger(__name__)
 
 
 class TriStreamTrainer(PPFNTrainer):
-    def __init__(self, warmup_steps, train_jointly, *args, **kwargs):
+    def __init__(self, warmup_epochs, train_jointly, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.warmup_steps = warmup_steps
+        self.warmup_epochs = warmup_epochs
         self.train_jointly = train_jointly
         self.criterion.train_jointly = self.train_jointly
 
@@ -42,7 +42,7 @@ class TriStreamTrainer(PPFNTrainer):
                 # now change the criterion state to change the objective as well!
                 self.criterion.is_warmup = True
 
-            elif self.global_step == self.warmup_steps:
+            elif self.global_step == self.warmup_epochs * step:
                 logger.info("Warmup complete. Freezing marginal backend; unlocking Adapter C.")
                 for param in set(self.model.parameters()) - set(self.model.layer.parameters()):
                     param.requires_grad = False

@@ -2,10 +2,38 @@
 defaults:
   - /callbacks:
       - mlflow
-#      - validation_real
+      - plot_1dheatmap
   - _self_
 
 experiment_name: prototype
 run_name: Null
 
-mlflow_tracking_uri: 'sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db'
+trainer:
+  epochs: 10000 # * steps = total number of steps
+  steps: 10 # will trigger scheduler.step() at the end!!!!
+  total_steps: ${mul:${trainer.epochs},${trainer.steps}}
+
+  trainer_class:
+    warmup_epochs: 1000
+
+    use_amp: True
+    grad_clip: 1.0
+    aggregate_k_gradients: 1
+    verbose: true
+
+callbacks:
+  plot_heat:
+    plot_every: 2500
+
+optimizer:
+  lr: 3e-4
+  weight_decay: 1e-2
+
+dataset:
+  dataset_class:
+    share_unrelated: 0.2
+    scale: True
+    shift: True
+    warp: False
+
+mlflow_tracking_uri: Null # 'file:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlruns'
