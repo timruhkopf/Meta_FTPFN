@@ -139,42 +139,61 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
     def on_train_start(self, **kwargs):
         logger.info("Setting up MLflow tracking...")
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-        exp_id = self._setup_experiment()
 
-        # Check if we are running in Slurm. Submitit sets SLURM_JOB_ID.
-        # If SLURM_ARRAY_JOB_ID is set, it's definitely a batch.
-        slurm_id = os.environ.get("SLURM_JOB_ID")
-        is_sweep = "sweep" in str(HydraConfig.get().runtime.output_dir)
+        # Experiment is now guaranteed to exist because of slim.sh
+        mlflow.set_experiment(self.experiment_name)
 
-        if slurm_id and is_sweep:
-            # --- DISTRIBUTED NESTED LOGIC ---
-            sweep_identifier = self.sweep_id  # Passed from config
+        # Are we in a sweep? (Check if "sweeps" is in the output path)
+        out_dir = str(HydraConfig.get().runtime.output_dir)
+        is_sweep = "sweeps" in out_dir
 
-            # 1. Look for an existing Parent Run for this sweep
-            parent_run = self._get_or_create_parent(exp_id, sweep_identifier)
+        if is_sweep and getattr(self, "sweep_id", None):
+            parent_name = f"Sweep_{self.sweep_id}"
 
-            # 2. Start the Parent (to make it active)
-            mlflow.start_run(run_id=parent_run.info.run_id)
+            # --- ATOMIC NFS LOCK FOR PARENT RUN ---
+            mlruns_base = Path(self._get_mlruns_path(self.mlflow_tracking_uri))
+            lock_dir = mlruns_base.parent / f".lock_{self.sweep_id}"
+            parent_id_file = lock_dir / "parent_id.txt"
 
-            # 3. Start the Child (Nested)
+            try:
+                # exist_ok=False + mkdir is ATOMIC. Only ONE worker will succeed here.
+                lock_dir.mkdir(parents=True, exist_ok=False)
+
+                # LEADER WORKER: Creates the parent run
+                with mlflow.start_run(run_name=parent_name, tags={"mode": "parent"}) as r:
+                    parent_id = r.info.run_id
+                    parent_id_file.write_text(parent_id)
+                    self._log_global_metadata()  # Log git diffs to parent
+
+            except FileExistsError:
+                # FOLLOWER WORKERS: Wait for the leader to write the ID
+                logger.info("Waiting for Leader to initialize Parent Run...")
+                while not parent_id_file.exists() or not parent_id_file.read_text().strip():
+                    time.sleep(1)
+                parent_id = parent_id_file.read_text().strip()
+
+            # --- START CHILD RUN ---
+            # Generate the specific name (e.g., dataset_n_A_10)
             dynamic_name = get_dynamic_run_name()
-            self.run = mlflow.start_run(
-                run_name=dynamic_name,
-                nested=True,
-                log_system_metrics=self.log_system_metrics
-            )
+
+            # To nest in MLflow, you must open the parent context first
+            with mlflow.start_run(run_id=parent_id):
+                self.run = mlflow.start_run(
+                    run_name=dynamic_name,
+                    nested=True,
+                    log_system_metrics=self.log_system_metrics
+                )
             self._log_task_metadata()
 
         else:
-            # --- SINGLE RUN LOGIC ---
+            # --- SINGLE RUN ---
             self.run = mlflow.start_run(
-                experiment_id=exp_id,
                 run_name=self.run_name,
                 log_system_metrics=self.log_system_metrics
             )
             self._log_global_metadata()
             self._log_task_metadata()
-
+            
     def _get_or_create_parent(self, exp_id: str, sweep_id: str):
         """Uses MLflow API to find the parent, avoiding file locks."""
         query = f"tags.sweep_id = '{sweep_id}' and tags.mode = 'parent'"
