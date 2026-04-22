@@ -121,6 +121,7 @@ class PPFNTrainer:
         advance) for dev purposes we introduce eons; i.e. passes over the stream
         """
         self.epochs = epochs  # helper for eon logging in mlflow callback
+        self.steps = steps
         logger.info("Starting training...")
         self.callback_handler.on_event("on_train_start")
 
@@ -200,6 +201,7 @@ class PPFNTrainer:
 
         logger.info("Training complete.")
         self.epochs = None
+        self.steps = None
 
     def _get_next_batch(self):
 

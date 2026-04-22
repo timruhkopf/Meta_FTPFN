@@ -42,7 +42,7 @@ class TriStreamTrainer(PPFNTrainer):
                 # now change the criterion state to change the objective as well!
                 self.criterion.is_warmup = True
 
-            elif self.global_step == self.warmup_epochs * step:
+            elif self.global_step % self.steps == self.warmup_epochs:
                 logger.info("Warmup complete. Freezing marginal backend; unlocking Adapter C.")
                 for param in set(self.model.parameters()) - set(self.model.layer.parameters()):
                     param.requires_grad = False
