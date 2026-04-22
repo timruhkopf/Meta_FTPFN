@@ -2,5 +2,5 @@ mlflow:
   _target_: ppfn.trainer.callbacks.mlflow_cb.MLflowCallback
   experiment_name: ${experiment_name}
   run_name: ${run_name}
-  mlflow_tracking_uri: ${mlflow_tracking_uri}
-  log_system_metrics: False
+  # Use the sweep directory timestamp as a unique identifier for the whole batch # to work nicely with slurm
+  sweep_id: ${hydra:sweep.dir, ${now:%Y-%m-%d_%H-%M-%S}}

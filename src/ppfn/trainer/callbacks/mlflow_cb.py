@@ -136,56 +136,66 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
 
     def on_train_start(self, **kwargs):
         logger.info("Setting up MLflow tracking...")
-
-        # 1. Setup URI
-        uri = self.mlflow_tracking_uri or os.getenv("MLFLOW_TRACKING_URI")
-        mlflow.set_tracking_uri(uri)
-        mlruns_path = self._get_mlruns_path(uri)
-
-        # 2. Safe Experiment Init
+        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         exp_id = self._setup_experiment()
 
-        # 3. Detect Context & Build the Run Stack
-        hydra_initialized = HydraConfig.initialized()
-        hydra_mode = HydraConfig.get().mode if hydra_initialized else None
+        # Check if we are running in Slurm. Submitit sets SLURM_JOB_ID.
+        # If SLURM_ARRAY_JOB_ID is set, it's definitely a batch.
+        slurm_id = os.environ.get("SLURM_JOB_ID")
+        is_sweep = "sweep" in str(HydraConfig.get().runtime.output_dir)
 
-        # Determine if we should nest. We nest if in MULTIRUN.
-        if hydra_mode == hydra.types.RunMode.MULTIRUN:
+        if slurm_id and is_sweep:
+            # --- DISTRIBUTED NESTED LOGIC ---
+            sweep_identifier = self.sweep_id  # Passed from config
 
-            job_id = os.environ.get("SLURM_ARRAY_JOB_ID",
-                                    os.environ.get("MOCK_JOB_ID", f"sweep_{HydraConfig.get().job.id}"))
+            # 1. Look for an existing Parent Run for this sweep
+            parent_run = self._get_or_create_parent(exp_id, sweep_identifier)
 
-            # --- START PARENT RUN ---
-            parent_id = get_safe_parent_run(exp_id, self.experiment_name, job_id, mlruns_path)
-            mlflow.start_run(run_id=parent_id)
+            # 2. Start the Parent (to make it active)
+            mlflow.start_run(run_id=parent_run.info.run_id)
 
-            # Check if this parent needs the global Git metadata
-            # (If the leader just created it, it won't have the git commit tag yet)
-            parent_run = mlflow.get_run(parent_id)
-            if "mlflow.source.git.commit" not in parent_run.data.tags:
-                self._log_global_metadata()
-
-            # --- START CHILD RUN ---
-            dynamic_name = get_dynamic_run_name(default_prefix="task")
+            # 3. Start the Child (Nested)
+            dynamic_name = get_dynamic_run_name()
             self.run = mlflow.start_run(
                 run_name=dynamic_name,
                 nested=True,
                 log_system_metrics=self.log_system_metrics
             )
-            logger.info(f"Nested Run Stack Active. Parent: {parent_id} | Child: {self.run.info.run_id}")
+            self._log_task_metadata()
 
         else:
-            # --- START SINGLE RUN ---
+            # --- SINGLE RUN LOGIC ---
             self.run = mlflow.start_run(
                 experiment_id=exp_id,
                 run_name=self.run_name,
                 log_system_metrics=self.log_system_metrics
             )
             self._log_global_metadata()
-            logger.info(f"Single Run Active: {self.run.info.run_id}")
+            self._log_task_metadata()
 
-        # 4. Log Task-Specific Data (Logs to whichever run is currently at the top of the stack)
-        self._log_task_metadata()
+    def _get_or_create_parent(self, exp_id: str, sweep_id: str):
+        """Uses MLflow API to find the parent, avoiding file locks."""
+        query = f"tags.sweep_id = '{sweep_id}' and tags.mode = 'parent'"
+        existing_runs = mlflow.search_runs(experiment_ids=[exp_id], filter_string=query)
+
+        if not existing_runs.empty:
+            return mlflow.get_run(existing_runs.iloc[0].run_id)
+
+        # If no parent exists, try to create one.
+        # (Wrap in try/except in case of a race condition between two workers)
+        try:
+            with mlflow.start_run(
+                    experiment_id=exp_id,
+                    run_name=f"Sweep_{sweep_id}",
+                    tags={"sweep_id": sweep_id, "mode": "parent"}
+            ) as r:
+                self._log_global_metadata()  # Log git diffs to parent
+                return r
+        except Exception:
+            # If it failed, another worker probably beat us to it. Fetch it again.
+            time.sleep(10)
+            existing_runs = mlflow.search_runs(experiment_ids=[exp_id], filter_string=query)
+            return mlflow.get_run(existing_runs.iloc[0].run_id)
 
     def _log_global_metadata(self):
         """Logs heavyweight or identical metadata only once per Job/Sweep."""

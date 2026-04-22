@@ -10,6 +10,7 @@ model:
     dropout: 0.1
     num_bars: 100
     use_freq_enc_x: True
+    use_cross_attn: True
 
     cross_attn_layer:
       _target_: prototype.harmonic_restart.layer.TriStreamLayer

@@ -1,12 +1,19 @@
 # @package _global_
 defaults:
+  - /model: prototype
+  - /dataset: prototype
+  - /optimizer: adamw
+  - /scheduler: cosine_with_warmup
+  - /trainer: prototype
   - /callbacks:
       - mlflow
       - plot_1dheatmap
   - _self_
 
 experiment_name: prototype
-run_name: Null
+run_name: ???
+
+device: "cuda"
 
 trainer:
   epochs: 10000 # * steps = total number of steps

@@ -1,6 +1,6 @@
 # Slurm experiment Tracking with MLflow
 
-First of, we will use the soon to be depreciated local file system tracking of MLFlow, 
+First of, we will use the soon to be depreciated local file system tracking of MLFlow,
 meaning that we set `mlflow.set_tracking_uri=file:///<bigwork/user/project>/mlruns` to a local path on the compute node.
 
 With this setup, we can use MLflow to log parameters, metrics, and artifacts during our training runs.
@@ -8,6 +8,7 @@ With this setup, we can use MLflow to log parameters, metrics, and artifacts dur
 To analyse our results in the dashboard, we will need to do port forwarding from the login node to our local machine.
 
 ## on remote
+
 ```bash
 # 1. Get a random free port
 PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
@@ -24,23 +25,24 @@ echo "PASTE THIS ON YOUR LOCAL MACHINE:"
 echo "ssh -o IdentitiesOnly=yes -L $LOCAL_PORT:localhost:$PORT $USERNAME@$NODE_HOSTNAME.cluster.uni-hannover.de"
 echo "----------------------------------------------------------------"
 
+cd /bigwork/nhwpruht/Meta_FTPFN
+source .venv/bin/activate
+
 # 4. Run the UI
 uv run mlflow ui --backend-store-uri file:///bigwork/$USERNAME/Meta_FTPFN/mlruns --port $PORT
 ```
 
-## on local 
+## on local
+
 ```bash 
 ssh -o IdentitiesOnly=yes -L <unused-local-port>:localhost:<remote-port> nhwpruht@login.cluster.uni-hannover.de
 ```
+
 Then open your browser and navigate to `http://localhost:<local-port>` to access the MLflow dashboard.
 It may need a refresh to show the data.
 
-
-
-
-
-
-Victory! It’s a common headache with clusters that use multiple login nodes. Here is a concise "cheat sheet" you can save to avoid the "Connection Refused" dance next time.
+Victory! It’s a common headache with clusters that use multiple login nodes. Here is a concise "cheat sheet" you can
+save to avoid the "Connection Refused" dance next time.
 
 🚀 MLflow UI on Cluster: Quick Start
 Step 1: Start MLflow on a Specific Login Node
@@ -49,6 +51,7 @@ Log in to a specific node (e.g., login02) rather than the generic address to ens
 Bash
 
 # 1. Connect to a specific node
+
 ssh nhwpruht@login02.cluster.uni-hannover.de
 
 # 2. Start the UI in the background
@@ -68,6 +71,7 @@ Open a new terminal on your laptop. Match the node number and the port from Step
 PORT=52801
 ssh -L 8080:127.0.0.1:$PORT nhwpruht@login02.cluster.uni-hannover.de
 ```
+
 Step 3: Access
 Navigate to http://localhost:8080 in your browser.
 
@@ -82,18 +86,16 @@ Cleanup:
 
 To stop the UI, run `pkill -u nhwpruht -f mlflow` on the cluster.
 
+on local:
 
-on local: 
 ```bash
 ps aux | grep "ssh -L 8080"
 kill <PID>
 ```
 
+# Addendum:
 
-
-
-# Addendum: 
-Ulysses: 
+Ulysses:
 
 ```bash
 
@@ -104,18 +106,55 @@ source .venv/bin/activate
 mlflow ui --backend-store-uri sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db --port 5010 --host 0.0.0.0
 ```
 
-on local 
+on local
+
 ```bash
 ssh -N -L 8080:localhost:5010 ulysses
 ```
 
-in browser: 
+in browser:
+
 ```
 http://localhost:8080
 ```
 
-
 # Download from cluster to local
+
 ```bash
 rsync -avzP nhwpruht@transfer.cluster.uni-hannover.de:$BIGWORK/Meta_FTPFN/mlruns $HOME/VSCode/Meta_FTPFN/slurm/downloads/mlruns_03_19
 ```
+
+# SLURM + MLFLOW Experiment organization:
+
+## With nested runs:
+
+Because of the -m, Hydra groups them, generates one timestamp (or ID), and Submitit fires off two Slurm jobs. Your
+MLflow callback sees they share the same ID, designates the first one to create the Parent Run, and nests both as Child
+Runs.
+
+```bash
+python src/train.py --multirun experiment=prototype trainer.epochs=100 dataset.n_A=10,20
+```
+
+How do you resume or add to a failed nested run?
+This is where your dynamic naming strategy shines. If job dataset.n_A=20 fails, you don't want to create a whole new
+parent run; you want it grouped with the original.
+
+You just manually override the run_name via the CLI with the exact ID of the failed batch:
+
+```bash
+python src/train.py -m experiment=prototype trainer.epochs=100 dataset.n_A=20 +run_name="2026-04-22_09-30-51"
+```
+
+Your MLflow callback will search for a Parent Run tagged with 2026-04-22_09-30-51, find it already exists, skip creating
+a new one, and just nest this new attempt right where it belongs.
+
+## How to run a single run without nesting?
+
+Just drop the -m:
+
+```Bash
+python src/train.py experiment=prototype trainer.epochs=100 dataset.n_A=10
+```
+Hydra runs it as a single job. Your MLflow callback logic will hit the else block (because it's not a multirun/sweep),
+skip the parent-creation phase, and just log a standard, flat MLflow run.

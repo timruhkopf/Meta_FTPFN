@@ -61,7 +61,7 @@ class FourierEncoder(nn.Module):
 
 class TriHarmonicModel(nn.Module):
     def __init__(self, cross_attn_layer, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_freq_enc_x=True,
-                 use_post_attn=True):
+                 use_post_attn=True, use_cross_attn=True):
         super().__init__()
         self.num_bars = num_bars
         self.x_encoder = FourierEncoder(d_model) if use_freq_enc_x else nn.Linear(1, d_model)
@@ -70,6 +70,7 @@ class TriHarmonicModel(nn.Module):
         self.pfn_layer = PFNLayer(d_model, nhead=nhead, dropout=dropout)
         self.layer = cross_attn_layer
 
+        self.use_cross_attn = use_cross_attn # to allow baseline calculations for nll scores (once)
         self.use_post_attn = use_post_attn
 
         if self.use_post_attn:
@@ -146,7 +147,7 @@ class TriHarmonicModel(nn.Module):
         # FIX: Cleaned up kwargs to match PreNormTriStreamTransformerLayer signature
         # ==========================================
         # fixme: this will prevent joint training, but be more efficient in warmup
-        if next(self.pfn_layer.parameters()).requires_grad == False:
+        if self.use_cross_attn and next(self.pfn_layer.parameters()).requires_grad == False:
             _, _, C = self.layer(
                 A.detach(), B.detach(), C.detach(),
                 hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
