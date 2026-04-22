@@ -173,6 +173,7 @@ class MLflowCallback(AbstractCallback):
             try:
                 overrides = HydraConfig.get().overrides.task
                 params = {o.strip("+").split("=")[0]: o.split("=")[1] for o in overrides if "=" in o}
+                params.update({'hydra_dir': os.getcwd()})
                 mlflow.log_params(params)
             except Exception:
                 logger.warning("Could not log Hydra overrides.")

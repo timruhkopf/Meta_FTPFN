@@ -32,12 +32,13 @@ class TriStreamLayer(nn.Module):
     """
 
     def __init__(self, d_model, nhead=4, dim_feedforward=128, dropout=0.1, use_B_attn_sink=False, use_hp=False,
-                 use_add_pfn=True, use_post_attn=False, cross_attn_type='gated_deform',
+                 use_add_pfn=True, use_post_attn=False, cross_attn_type='gated_deform', use_adain=True,
                  num_align_steps=3,
                  use_spectral_norm=False) -> None:
         super().__init__()
         batch_first = False
         self.use_hp = use_hp
+        self.use_adain = use_adain
 
         # Shared self-attention and conditional cross-attention
         self.use_post_attn = use_post_attn
@@ -263,7 +264,10 @@ class TriStreamLayer(nn.Module):
             # NEW: Pre-Conditioning with AdaIN
             # Transfer the global domain statistics of C onto B
             # ==========================================
-            B_train_pred = apply_adain(content=B_train_pred, style=C_train)
+            A_train = A[:sep, :, :].clone()
+
+            if self.use_adain:
+                B_train_pred = apply_adain(content=B_train_pred, style=A_train)
 
             total_kl_loss = 0.0
 
@@ -369,7 +373,8 @@ class TriStreamLayer(nn.Module):
             # NEW: Pre-Conditioning with AdaIN
             # Transfer the global domain statistics of C onto B
             # ==========================================
-            B_train_pred = apply_adain(content=B_train_pred, style=C_train)
+            if self.use_adain:
+                B_train_pred = apply_adain(content=B_train_pred, style=C_train)
 
             total_kl_loss = 0.0
 
@@ -518,7 +523,10 @@ class TriStreamLayer(nn.Module):
             std_B = B_train.std(dim=0, keepdim=True) + 1e-5
 
             # Full AdaIN Transformation: Match Mean AND Spread
-            B_train_aligned = ((B_train - mean_B) / std_B) * std_C + mean_C
+            if self.use_adain:
+                B_train_aligned = ((B_train - mean_B) / std_B) * std_C + mean_C
+            else:
+                B_train_aligned = B_train
 
             # ==========================================
             # 2. FORWARD PASS (B -> C)
@@ -606,6 +614,10 @@ class TriStreamLayer(nn.Module):
             # Extract the memory tokens
             B_train = B_warped[:sep, :, :]
             pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
+
+            if self.use_adain:
+                B_train = apply_adain(content=B_train, style=normed_cross_C[:sep, :, :])
+
             # 1. First Cross-Attention Pass (C queries B)
             cross_C_1, _ = self.align_attn(
                 query=normed_cross_C,
