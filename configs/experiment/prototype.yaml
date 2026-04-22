@@ -20,7 +20,7 @@ trainer:
   total_steps: ${mul:${trainer.epochs},${trainer.steps}}
 
   trainer_class:
-    warmup_epochs: 1000
+    warmup_epochs: 2000
 
     use_amp: True
     grad_clip: 1.0
