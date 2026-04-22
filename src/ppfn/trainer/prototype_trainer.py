@@ -34,22 +34,28 @@ class TriStreamTrainer(PPFNTrainer):
 
         # 2. Dynamic Freezing Logic
         if not self.train_jointly:
+
+            # Calculate the exact step where warmup ends
+            # (Assuming self.steps is 'steps_per_epoch')
+            transition_step = self.warmup_epochs * self.steps
+
             if self.global_step == 0:
-                logger.info("Freezing Adapter C for warmup phase.")
+                logger.info("Phase 1: Freezing Adapter C for warmup phase.")
                 for param in self.model.layer.parameters():
                     param.requires_grad = False
 
-                # now change the criterion state to change the objective as well!
                 self.criterion.is_warmup = True
 
-            elif self.global_step % self.steps == self.warmup_epochs:
-                logger.info("Warmup complete. Freezing marginal backend; unlocking Adapter C.")
-                for param in set(self.model.parameters()) - set(self.model.layer.parameters()):
+            elif self.global_step == transition_step:
+                logger.info("Phase 2: Warmup complete. Freezing marginal backend; unlocking Adapter C.")
+
+                # Cleaner PyTorch idiom: Freeze everything first...
+                for param in self.model.parameters():
                     param.requires_grad = False
+
+                # ...then explicitly unfreeze the layer you want to train
                 for param in self.model.layer.parameters():
                     param.requires_grad = True
 
-                # now change the criterion state to change the objective as well!
                 self.criterion.is_warmup = False
-
         return super()._train_step(step, batch, **fwd_kwargs)
