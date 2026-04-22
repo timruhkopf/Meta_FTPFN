@@ -10,16 +10,11 @@ from typing import Dict, Optional
 
 import mlflow
 from hydra.core.hydra_config import HydraConfig
-
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
-
-import logging
-
 from ppfn.utils.git_hash import get_git_hash
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
 
 
 def get_git_hash() -> str:
@@ -29,46 +24,16 @@ def get_git_hash() -> str:
         return "unknown"
 
 
-
-def get_safe_parent_run(experiment_id, experiment_name, job_id, mlruns_path):
-    lock_base = Path(mlruns_path).parent / ".mlflow_locks"
-    lock_base.mkdir(exist_ok=True)
-
-    safe_exp_name = str(experiment_name).replace("/", "_").replace(" ", "_")
-    lock_path = lock_base / f"lock_{job_id}_{safe_exp_name}"
-    id_file = lock_path / "parent_id.txt"
-
-    parent_id = None
-
+def get_dynamic_run_name(default_prefix="run"):
+    """Generates a run name by appending swept parameters to the prefix."""
     try:
-        lock_path.mkdir()
-        logger.info(f"LEADER: Creating parent run for Job {job_id}")
-        with mlflow.start_run(
-                experiment_id=experiment_id,
-                run_name=f"Multirun_{job_id}",
-                tags={"job_id": job_id, "mode": "parent"}
-        ) as r:
-            parent_id = r.info.run_id
-        id_file.write_text(parent_id)
-        return parent_id
-    except FileExistsError:
-        logger.info("FOLLOWER: Waiting for Leader to write Parent ID...")
-        for _ in range(420):
-            if id_file.exists():
-                potential_id = id_file.read_text().strip()
-                try:
-                    mlflow.get_run(potential_id)
-                    return potential_id
-                except Exception:
-                    time.sleep(0.5)
-            time.sleep(0.5)
-    raise RuntimeError("Parent run resolution timed out.")
+        if not HydraConfig.initialized():
+            return default_prefix
 
-
-def get_dynamic_run_name(default_prefix="task"):
-    try:
         hc = HydraConfig.get()
         task_overrides = hc.overrides.task
+
+        # Determine if we are in a multirun by looking for multirun.yaml
         sweep_dir = Path(hc.runtime.output_dir).parent.absolute()
         multirun_yaml_path = sweep_dir / "multirun.yaml"
 
@@ -94,24 +59,33 @@ def get_dynamic_run_name(default_prefix="task"):
             elif key not in ("experiment_name", "run_name", "nested"):
                 dynamic_parts.append(clean_override.replace("=", "_").replace("/", "_"))
 
-        if not dynamic_parts:
-            return f"{default_prefix}_{hc.job.num}"
-        return "-".join(dynamic_parts)[:97]
+        # Construct final name
+        suffix = "-".join(dynamic_parts)[:97]
+        if suffix:
+            return f"{default_prefix}_{suffix}"
+
+        # Fallback to job number if no dynamic parts
+        job_num = hc.job.get("num", "")
+        if job_num != "":
+            return f"{default_prefix}_{job_num}"
+
+        return default_prefix
+
     except Exception as e:
         logger.error(f"Name gen failed: {e}")
         return f"{default_prefix}_unknown"
 
-class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
+
+class MLflowCallback(AbstractCallback):
     def __init__(
             self,
-            sweep_id: str = None,
+            sweep_id: Optional[str] = None,  # Left here just in case config still passes it
             experiment_name: str = "ppfn_training",
             run_name: Optional[str] = None,
             mlflow_tracking_uri: Optional[str] = None,
             log_system_metrics: bool = True,
     ):
         super().__init__()
-        self.sweep_id = sweep_id
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.run = None
@@ -120,14 +94,13 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
 
     def _setup_experiment(self):
         """Robust experiment initialization bypassing NFS cache via ID."""
-
         # 1. Check if the login node explicitly passed us the resolved ID
         env_exp_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
         if env_exp_id:
             logger.info(f"Inherited Experiment ID {env_exp_id} from Leader Node. Bypassing NFS check.")
             return env_exp_id
 
-        # 2. Fallback for local debugging (when not using slim.sh)
+        # 2. Fallback for local debugging
         exp_id = None
         for _ in range(5):
             try:
@@ -138,100 +111,37 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
                 time.sleep(1)
         return exp_id
 
-    def _get_mlruns_path(self, uri: str) -> str:
-        """Extracts the physical path from the tracking URI for the lock mechanism."""
-        if uri.startswith("file://"):
-            return uri.replace("file://", "")
-        return os.path.abspath("./mlruns")  # Fallback
-
     def on_train_start(self, **kwargs):
         logger.info("Setting up MLflow tracking...")
-        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
 
-        # Experiment is now guaranteed to exist because of slim.sh
-        mlflow.set_experiment(self.experiment_name)
+        # 1. Connect
+        uri = self.mlflow_tracking_uri or os.environ.get('MLFLOW_TRACKING_URI')
+        if uri:
+            mlflow.set_tracking_uri(uri)
 
-        # Are we in a sweep? (Check if "sweeps" is in the output path)
-        out_dir = str(HydraConfig.get().runtime.output_dir)
-        is_sweep = "sweeps" in out_dir
+        # 2. Resolve Experiment (Crucially, using the ID from slim.sh)
+        exp_id = self._setup_experiment()
 
-        if is_sweep and getattr(self, "sweep_id", None):
-            parent_name = f"Sweep_{self.sweep_id}"
+        # 3. Resolve dynamic Run Name (e.g. Baseline-n_A_dataset_n_A_10)
+        prefix = self.run_name or "run"
+        final_run_name = get_dynamic_run_name(default_prefix=prefix)
 
-            # --- ATOMIC NFS LOCK FOR PARENT RUN ---
-            mlruns_base = Path(self._get_mlruns_path(self.mlflow_tracking_uri))
-            lock_dir = mlruns_base.parent / f".lock_{self.sweep_id}"
-            parent_id_file = lock_dir / "parent_id.txt"
+        # 4. Start the single flat run
+        self.run = mlflow.start_run(
+            experiment_id=exp_id,
+            run_name=final_run_name,
+            log_system_metrics=self.log_system_metrics
+        )
+        logger.info(f"Flat Run Active: {self.run.info.run_id} under name {final_run_name}")
 
-            try:
-                # exist_ok=False + mkdir is ATOMIC. Only ONE worker will succeed here.
-                lock_dir.mkdir(parents=True, exist_ok=False)
-
-                # LEADER WORKER: Creates the parent run
-                with mlflow.start_run(run_name=parent_name, tags={"mode": "parent"}) as r:
-                    parent_id = r.info.run_id
-                    parent_id_file.write_text(parent_id)
-                    self._log_global_metadata()  # Log git diffs to parent
-
-            except FileExistsError:
-                # FOLLOWER WORKERS: Wait for the leader to write the ID
-                logger.info("Waiting for Leader to initialize Parent Run...")
-                while not parent_id_file.exists() or not parent_id_file.read_text().strip():
-                    time.sleep(1)
-                parent_id = parent_id_file.read_text().strip()
-
-            # --- START CHILD RUN ---
-            # Generate the specific name (e.g., dataset_n_A_10)
-            dynamic_name = get_dynamic_run_name()
-
-            # To nest in MLflow, you must open the parent context first
-            with mlflow.start_run(run_id=parent_id):
-                self.run = mlflow.start_run(
-                    run_name=dynamic_name,
-                    nested=True,
-                    log_system_metrics=self.log_system_metrics
-                )
-            self._log_task_metadata()
-
-        else:
-            # --- SINGLE RUN ---
-            self.run = mlflow.start_run(
-                run_name=self.run_name,
-                log_system_metrics=self.log_system_metrics
-            )
-            self._log_global_metadata()
-            self._log_task_metadata()
-
-    def _get_or_create_parent(self, exp_id: str, sweep_id: str):
-        """Uses MLflow API to find the parent, avoiding file locks."""
-        query = f"tags.sweep_id = '{sweep_id}' and tags.mode = 'parent'"
-        existing_runs = mlflow.search_runs(experiment_ids=[exp_id], filter_string=query)
-
-        if not existing_runs.empty:
-            return mlflow.get_run(existing_runs.iloc[0].run_id)
-
-        # If no parent exists, try to create one.
-        # (Wrap in try/except in case of a race condition between two workers)
-        try:
-            with mlflow.start_run(
-                    experiment_id=exp_id,
-                    run_name=f"Sweep_{sweep_id}",
-                    tags={"sweep_id": sweep_id, "mode": "parent"}
-            ) as r:
-                self._log_global_metadata()  # Log git diffs to parent
-                return r
-        except Exception:
-            # If it failed, another worker probably beat us to it. Fetch it again.
-            time.sleep(10)
-            existing_runs = mlflow.search_runs(experiment_ids=[exp_id], filter_string=query)
-            return mlflow.get_run(existing_runs.iloc[0].run_id)
+        # 5. Log Metadata
+        self._log_global_metadata()
+        self._log_task_metadata()
 
     def _log_global_metadata(self):
-        """Logs heavyweight or identical metadata only once per Job/Sweep."""
+        """Logs heavyweight metadata."""
         mlflow.set_tag("mlflow.source.git.commit", get_git_hash())
-
         try:
-            # Capture the current uncommitted changes
             git_diff = subprocess.check_output(["git", "diff"], stderr=subprocess.STDOUT).decode("utf-8")
             if git_diff.strip():
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as tmp:
@@ -240,16 +150,13 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
 
                 mlflow.log_artifact(tmp_path, artifact_path="scripts")
                 Path(tmp_path).unlink()
-                logger.info("Uncommitted git changes logged as diff.patch to Parent Run.")
+                logger.info("Uncommitted git changes logged as diff.patch.")
         except Exception as e:
             logger.warning(f"Failed to capture git diff: {e}")
 
     def _log_task_metadata(self):
         """Logs configuration specific to this specific worker/task."""
         mlflow.set_tag("mlflow.folder", os.getcwd())
-
-        if self.run_name:
-            mlflow.set_tag("mlflow.runName", self.run_name)
 
         if HydraConfig.initialized():
             try:
@@ -259,158 +166,12 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
             except Exception:
                 logger.warning("Could not log Hydra overrides.")
 
-
-
-
     def log_on_epoch_end(self, epoch: int, eon: int, metrics: Dict[str, float], **kwargs):
         global_step = (eon * self.trainer.epochs) + epoch
         mlflow.log_metrics(metrics, step=global_step)
 
     def log_on_train_end(self, **kwargs):
-        """Pops all active runs off the MLflow stack."""
-        # A while loop is required here!
-        # If we are nested, we have 2 active runs. This closes Child, then Parent.
-        while mlflow.active_run():
+        """Ends the active MLflow run."""
+        if mlflow.active_run():
             logger.info(f"Closing active MLflow run: {mlflow.active_run().info.run_id}")
             mlflow.end_run()
-
-
-# class MLflowCallback(AbstractCallback):
-#     def __init__(
-#             self,
-#             experiment_name: str = "ppfn_training",
-#             run_name: str | None = None,
-#             mlflow_tracking_uri: str | None = None,
-#             log_system_metrics: bool = True,
-#     ):
-#         super().__init__()
-#         self.experiment_name = experiment_name
-#         self.run_name = run_name
-#
-#         self.run = None
-#         self.mlflow_tracking_uri = mlflow_tracking_uri
-#         self.log_system_metrics = log_system_metrics
-#
-#     def on_train_start(self, **kwargs):
-#         logger.info("Setting up MLflow tracking...")
-#         if self.mlflow_tracking_uri:
-#             mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-#         else:
-#             mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
-#
-#         mlflow.set_experiment(self.experiment_name)
-#         self.run = mlflow.start_run(
-#             run_name=self.run_name, log_system_metrics=self.log_system_metrics
-#         )
-#
-#         # TODO log run_name and run_id
-#
-#         # Log Git Metadata
-#         mlflow.set_tag("mlflow.folder", os.getcwd())
-#         mlflow.set_tag("mlflow.runName", self.run_name)
-#         mlflow.set_tag("mlflow.source.git.commit", get_git_hash())
-#
-#
-#         # Log Hydra Overrides if available
-#         try:
-#             from hydra.core.hydra_config import HydraConfig
-#
-#             overrides = HydraConfig.get().overrides.task
-#             params = {
-#                 o.strip("+").split("=")[0]: o.split("=")[1]
-#                 for o in overrides
-#                 if "=" in o
-#             }
-#             mlflow.log_params(params)
-#
-#         except Exception:
-#             logger.warning("Could not log Hydra overrides.")
-#
-#         # Log Git Metadata & Diff
-#         current_hash = get_git_hash()
-#         mlflow.set_tag("mlflow.folder", os.getcwd())
-#         mlflow.set_tag("mlflow.source.git.commit", current_hash)
-#
-#         try:
-#             # Capture the current uncommitted changes
-#             git_diff = subprocess.check_output(["git", "diff"], stderr=subprocess.STDOUT).decode("utf-8")
-#
-#             if git_diff.strip():
-#                 with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as tmp:
-#                     tmp.write(git_diff)
-#                     tmp_path = tmp.name
-#
-#                 mlflow.log_artifact(tmp_path, artifact_path="scripts")
-#                 # Clean up the local temp file
-#                 Path(tmp_path).unlink()
-#                 logger.info("Uncommitted git changes logged as diff.patch")
-#             else:
-#                 logger.info("No uncommitted git changes detected.")
-#         except Exception as e:
-#             logger.warning(f"Failed to capture git diff: {e}")
-#
-#         # Log Config Dict
-#         if self.trainer.config is not None:
-#             mlflow.log_dict(self.trainer.config, "config.yaml")
-#
-#     def log_on_epoch_end(self, epoch: int, eon: int, metrics: Dict[str, float], **kwargs):
-#         # Formula: (current_eon * total_epochs_in_one_eon) + current_epoch
-#         global_step = (eon * self.trainer.epochs) + epoch
-#
-#         # Log metrics to MLflow using the continuous step
-#         mlflow.log_metrics(metrics, step=global_step)
-#
-#     def log_on_train_end(self, **kwargs):
-#         if mlflow.active_run():
-#             mlflow.end_run()
-
-
-class MockTrainer:
-    def __init__(self, config):
-        self.config = config
-        self.epochs = 3
-
-from omegaconf import DictConfig, OmegaConf
-
-
-@hydra.main(config_path="/home/ruhkopf/PycharmProjects/Meta_FTPFN/configs", config_name="config", version_base="1.3")
-def main(cfg: DictConfig):
-    # Setup Mock Framework
-    trainer = MockTrainer(dict(cfg))
-    callback = MLflowCallback(experiment_name=cfg.experiment_name)
-    callback.trainer = trainer
-
-    # Simulate Training Loop
-    callback.on_train_start()
-
-    for epoch in range(trainer.epochs):
-        logger.info(f"Simulating Epoch {epoch}...")
-        metrics = {
-            "loss": 1.0 / (epoch + 1),
-            "accuracy": cfg.lr * (epoch + 1)
-        }
-        callback.log_on_epoch_end(epoch, eon=0, metrics=metrics)
-
-
-    callback.log_on_train_end()
-
-
-if __name__ == "__main__":
-    def githash(*args, **kwargs) -> str:
-        try:
-            import subprocess
-
-            git_hash = (
-                subprocess.check_output(["git", "rev-parse", "HEAD"])
-                .decode("ascii")
-                .strip()
-            )
-            return git_hash
-        except Exception as e:
-            logger.warning(f"Could not retrieve git hash: {e}")
-            return "unknown"
-
-
-    OmegaConf.register_new_resolver("githash", githash)
-
-    main()
