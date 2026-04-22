@@ -188,9 +188,10 @@ class PPFNTrainer:
             # This block specifically catches the Slurm Timeout / USR1
             logger.warning(f"Training interrupted by Slurm: {e}")
 
-        except Exception as e:
-            logger.error(f"An error occurred during training: {e}")
-            raise e
+        except Exception:
+            # This will now print the full traceback to your logs/terminal
+            logger.exception("An error occurred during training:")
+            raise
 
         finally:
             logger.info("Reached end of training...")
@@ -275,9 +276,13 @@ class PPFNTrainer:
 
         # Average metrics for epoch (except time)
         num_batches = epoch_metrics.pop("num_batches")
-        for key in epoch_metrics:
-            if key != "time":
-                epoch_metrics[key] /= num_batches
+
+        if num_batches > 0:
+            for key in epoch_metrics:
+                if key != "time":
+                    epoch_metrics[key] /= num_batches
+        else:
+            logger.warning("Epoch finished with 0 batches processed.")
 
         epoch_metrics["time"] = time.time() - epoch_start
         self.scheduler.step()

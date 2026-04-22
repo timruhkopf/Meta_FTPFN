@@ -13,3 +13,7 @@ experiment_name: ???
 run_name: ???
 
 mlflow_tracking_uri: 'file:////bigwork/nhwpruht/Meta_FTPFN/mlruns'
+
+trainer:
+  trainer_class:
+    verbose: False # tqdm

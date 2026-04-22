@@ -26,7 +26,6 @@ def apply_adain(content, style, eps=1e-5):
     return (normalized_content * s_std) + s_mean
 
 
-
 class TriStreamLayer(nn.Module):
     """
     This class tries to learn the diffeomorphism between C and B
@@ -46,6 +45,7 @@ class TriStreamLayer(nn.Module):
 
         self.cross_attn_type = cross_attn_type
         if cross_attn_type == 'deform':
+            assert num_align_steps >= 1, "num_align_steps should be >= 1 (2 is first recursion)"
             self.num_align_steps = num_align_steps
             assert use_hp == False, 'use_hp == False, currently not supported!'
             # Attention to find correspondences between B and C
@@ -121,18 +121,22 @@ class TriStreamLayer(nn.Module):
 
         elif cross_attn_type == 'simple':
 
-            # 2. Define the "Template" for a single layer
-            decoder_layer = nn.TransformerDecoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                batch_first=True  # Makes shapes (batch, seq, feature)
-            )
+            assert use_hp == False, 'use_hp == False, currently not supported!'
 
-            # 3. Stack them into the Decoder
-            self.cross_attn = nn.TransformerDecoder(
-                decoder_layer,
-                num_layers=2
+            # Layer 1: First Cross-Attention
+            self.align_attn = nn.MultiheadAttention(d_model, num_heads=nhead, dropout=dropout)
+
+            # Match the capacity of deform's align_ffn (~10 * d_model^2 params).
+            # We use a standard FFN expansion of 4x, which yields ~8 * d_model^2 params.
+            self.align_ffn = nn.Sequential(
+                nn.Linear(d_model, d_model * 4),
+                nn.GELU(),
+                nn.Linear(d_model * 4, d_model)
             )
+            self.norm_inter = nn.LayerNorm(d_model)
+
+            # Layer 2: Second Cross-Attention
+            self.cross_attn = MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
 
         else:
             raise NotImplementedError("Unknown cross_attn_type")
@@ -140,7 +144,6 @@ class TriStreamLayer(nn.Module):
         self.use_add_pfn = use_add_pfn
         if self.use_add_pfn:
             self.pfn_layer = PFNLayer(d_model, nhead, dim_feedforward=dim_feedforward)
-
 
         # Shared Feedforward
         self.linear1 = Linear(d_model, dim_feedforward)
@@ -240,7 +243,10 @@ class TriStreamLayer(nn.Module):
 
         # TODO can we take the pre-sigmoid weights and use them as signal for the gating? wouldn't that measure the data support?
         if self.cross_attn_type == 'deform':
-            # Handle the training-time concatenated B
+            # Handle the training-time concatenated B (where we actually know what B would look without corruption; i.e.
+            # when B is observed in the domain of A. This obviously can not be used during inference)
+            # but during training, we can actually provide a supervision signal, of where we would expect B to be on the
+            # manifold at this exact point!
             if B.shape[1] != A.shape[1]:
                 half_batch = B.shape[1] // 2
                 B_warped = normed_cross_B[:, :half_batch, :]
@@ -584,15 +590,42 @@ class TriStreamLayer(nn.Module):
                 value=B_in_domain_A_pred,
                 key_padding_mask=pad_mask_B_train
             )
-        else:
-            cross_C, cross_attn_weights = self.cross_attn(
+
+        elif self.cross_attn_type == 'simple':
+
+            # ==========================================
+            # FIX: Handle the training-time concatenated B
+            # B's batch size is 2x C's batch size during training
+            # ==========================================
+            if B.shape[1] != A.shape[1]:
+                half_batch = B.shape[1] // 2
+                B_warped = normed_cross_B[:, :half_batch, :]
+            else:
+                B_warped = normed_cross_B
+
+            # Extract the memory tokens
+            B_train = B_warped[:sep, :, :]
+            pad_mask_B_train = pad_mask_B[:, :sep] if pad_mask_B is not None else None
+            # 1. First Cross-Attention Pass (C queries B)
+            cross_C_1, _ = self.align_attn(
                 query=normed_cross_C,
-                # Avoiding task based gradient interference, we detach B here and get better uncertainty bounds
                 key=B_train,
                 value=B_train,
                 key_padding_mask=pad_mask_B_train
             )
 
+            # 2. Intermediate Processing (Matches align_ffn parameter capacity)
+            # Add & Norm, then FFN, then Add.
+            inter_C = self.norm_inter(normed_cross_C + cross_C_1)
+            inter_C = inter_C + self.align_ffn(inter_C)
+
+            # 3. Second Cross-Attention Pass (Refined C queries B again)
+            cross_C, cross_attn_weights = self.cross_attn(
+                query=inter_C,
+                key=B_train,
+                value=B_train,
+                key_padding_mask=pad_mask_B_train
+            )
 
         C = C + self.dropout_cross(cross_C)
 

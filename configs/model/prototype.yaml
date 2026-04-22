@@ -20,9 +20,9 @@ model:
       use_B_attn_sink: False
       use_hp: False
 
+      cross_attn_type: deform # TYPE!!
       use_add_pfn: True
       use_post_attn: False
-      cross_attn_type: deform
       num_align_steps: 3
       use_spectral_norm: False
 
