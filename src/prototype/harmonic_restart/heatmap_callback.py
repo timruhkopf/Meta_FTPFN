@@ -1,8 +1,9 @@
 import os
 import matplotlib.pyplot as plt
 import mlflow
-import torch
+
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
+from prototype.harmonic_restart.harmonic_prior import HarmonicsVisualizer
 
 
 class HeatmapCallback(AbstractCallback):  # Assuming you inherit from your AbstractCallback
@@ -16,20 +17,29 @@ class HeatmapCallback(AbstractCallback):  # Assuming you inherit from your Abstr
 
         step = self.trainer.global_step
 
-        batch, _ = self.trainer._get_next_batch()
 
         if step % self.plot_every == 0:
+            batch, _ = self.trainer._get_next_batch()
+
+            logits_A, logits_B, logits_C = self.trainer.model(batch)
+
             fig = plt.figure(figsize=(10, 8))
             plot_name = f"heatmaps_step_{step:05d}.png"
             plot_path = os.path.join(self.plot_dir, plot_name)
 
-            # Assuming trainer.model is accessible
-            self.trainer.train_loader.dataset.save_heatmaps(
+
+
+            # Updated to use the separated Visualizer class
+            HarmonicsVisualizer.save_heatmaps(
                 fig=fig,
-                batch_data=batch,  # Make sure batch is accessible here
+                batch_data=batch,
                 borders=self.trainer.criterion.criterion_backend.borders,
                 save_path=plot_path,
-                model=self.trainer.model
+                logits_A=logits_A,
+                logits_B=logits_B,
+                logits_C=logits_C,
+                plot=False
             )
+
             mlflow.log_artifact(plot_path, "heatmap_plots")
 

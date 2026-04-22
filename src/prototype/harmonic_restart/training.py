@@ -12,7 +12,8 @@ from datetime import datetime
 import torch.nn.functional as F
 
 from pfns4hpo.bar_distribution import FullSupportBarDistribution
-from prototype.harmonic_restart.harmonic_prior import InfiniteHarmonicsStream
+from prototype.harmonic_restart import HarmonicsVisualizer
+from prototype.harmonic_restart.harmonic_prior import GlobalSparseHarmonicsStream
 from prototype.harmonic_restart.model import TriHarmonicModel
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
@@ -120,7 +121,7 @@ def train(
         pos_weight = share_unrelated / (1 - share_unrelated)
         global_pos_weight = torch.tensor([pos_weight], device=device)
 
-        stream = InfiniteHarmonicsStream(
+        stream = GlobalSparseHarmonicsStream(
             batch_size=batch_size, n_A=n_A, n_B=n_B, n_test=300,
             share_unrelated=share_unrelated, scale=scale, shift=shift, warp=warp)
         dataloader = DataLoader(stream, batch_size=None)
@@ -421,18 +422,31 @@ def train(
 
             # --- Logging (Plots to File) ---
             if step % plot_every == 0 or step == max_steps - 1:
+                raise NotImplementedError('This section needs updating after refactor' )
                 fig = plt.figure(figsize=(10, 8))
                 plot_name = f"heatmaps_step_{step:05d}.png"
                 plot = os.path.join(plot_dir, plot_name)
                 os.makedirs(os.path.dirname(plot), exist_ok=True)
 
                 # Pass the model; it will handle the eval()/no_grad() context automatically
-                InfiniteHarmonicsStream.save_heatmaps(
+                batch, _ = self.trainer._get_next_batch()
+
+                logits_A, logits_B, logits_C = self.trainer.model(batch)
+
+                fig = plt.figure(figsize=(10, 8))
+                plot_name = f"heatmaps_step_{step:05d}.png"
+                plot_path = os.path.join(self.plot_dir, plot_name)
+
+                # Updated to use the separated Visualizer class
+                HarmonicsVisualizer.save_heatmaps(
                     fig=fig,
                     batch_data=batch,
-                    borders=borders,
-                    save_path=plot,
-                    model=model  # <-- Dynamic Logits
+                    borders=self.trainer.criterion.criterion_backend.borders,
+                    save_path=plot_path,
+                    logits_A=logits_A,
+                    logits_B=logits_B,
+                    logits_C=logits_C,
+                    plot=False
                 )
 
                 # Log plot to MLflow as artifact
