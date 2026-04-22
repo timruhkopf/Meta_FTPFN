@@ -51,13 +51,25 @@ def get_dynamic_run_name(default_prefix="run"):
         dynamic_parts = []
         for override in task_overrides:
             clean_override = override.lstrip("+~")
-            key = clean_override.split("=")[0] if "=" in clean_override else clean_override
 
+            # --- Extract the short key and format the value ---
+            if "=" in clean_override:
+                full_key, val = clean_override.split("=", 1)
+                # Grab only the final string after the last period
+                short_key = full_key.split(".")[-1]
+                safe_val = val.replace("/", "_")
+                formatted_part = f"{short_key}_{safe_val}"
+            else:
+                full_key = clean_override
+                # Handle flags that don't have an equals sign
+                formatted_part = full_key.split(".")[-1]
+
+                # Filter against swept_keys using the full_key, but append the formatted_part
             if swept_keys:
-                if key in swept_keys:
-                    dynamic_parts.append(clean_override.replace("=", "_").replace("/", "_"))
-            elif key not in ("experiment_name", "run_name", "nested"):
-                dynamic_parts.append(clean_override.replace("=", "_").replace("/", "_"))
+                if full_key in swept_keys:
+                    dynamic_parts.append(formatted_part)
+            elif full_key not in ("experiment_name", "run_name", "nested"):
+                dynamic_parts.append(formatted_part)
 
         # Construct final name
         suffix = "-".join(dynamic_parts)[:97]
@@ -74,7 +86,6 @@ def get_dynamic_run_name(default_prefix="run"):
     except Exception as e:
         logger.error(f"Name gen failed: {e}")
         return f"{default_prefix}_unknown"
-
 
 class MLflowCallback(AbstractCallback):
     def __init__(
