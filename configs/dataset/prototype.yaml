@@ -1,5 +1,5 @@
 dataset_class:
-  _target_: prototype.harmonic_restart.harmonic_prior.InfiniteHarmonicsStream
+  _target_: prototype.harmonic_restart.harmonic_prior.GlobalSparseHarmonicsStream
   batch_size: 32
   n_A: 10
   n_B: 50

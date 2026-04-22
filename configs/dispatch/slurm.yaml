@@ -1,0 +1,41 @@
+# @package _global_
+defaults:
+  - override /hydra/launcher: submitit_slurm
+
+
+hydra:
+  sweep:
+    # Organize outputs nicely by SLURM job ID
+    dir: multirun/${experiment_name}/${run_name}_${now:%Y-%m-%d}_${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  launcher:
+    # Directory where submitit logs (stdout/stderr) are written
+    submitit_folder: ${hydra.sweep.dir}/.submitit/%j
+
+    # SLURM resource requests
+    timeout_min: 120           # Maximum job time in minutes
+    cpus_per_task: 4           # Number of CPUs
+
+    tasks_per_node: 1          # Number of tasks (usually 1 for standard training)
+    mem_gb: 16                 # RAM in GB
+    nodes: 1                   # Number of nodes
+    name: ${hydra.job.name}    # Job name
+    additional_parameters:
+      gres: gpu:1
+
+    partition: gpu  # Uncomment and set your specific SLURM partition/queue
+
+    # (Optional) Run bash commands before the python script executes
+    setup:
+      - module load cuda/11.8
+      - REPO="Meta_FTPFN"
+      - export MLFLOW_TRACKING_URI="file://$BIGWORK/$REPO/mlruns"
+
+      # Environment Setup
+      - export REPO_DIR="$BIGWORK/$REPO"
+      - export PYTHONPATH="$REPO_DIR/src:$REPO_DIR/ifBO_main:$REPO_DIR/ifbo_icml2024:$PYTHONPATH"
+      - cd "$REPO_DIR" || exit
+
+      # Check if uv is available, else load it
+      - if ! command -v uv &> /dev/null; then module load uv; fi
+#      - source $BIGWORK/$REPO/.venv/bin/activate

@@ -38,6 +38,7 @@ dependencies = [
 	"notebook[plotting]>=7.5.3",
 	"pip[plotting]>=26.0.1",
 	"mlflow==2.19.0",
+	"hydra-submitit-launcher>=1.2.0",
 ]
 
 [dependency-groups]
