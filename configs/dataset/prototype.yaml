@@ -1,6 +1,6 @@
 dataset_class:
   _target_: prototype.harmonic_restart.harmonic_prior.GlobalSparseHarmonicsStream
-  batch_size: 32
+  batch_size: 256
   n_A: 10
   n_B: 50
   n_test: 300
