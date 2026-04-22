@@ -9,8 +9,7 @@ export ROOT=/bigwork/nhwpruht/PycharmProjects/Meta_FTPFN/
 export DATADIR=/bigwork/nhwpruht/PycharmProjects/Meta_FTPFN/data
 export MODELDIR=/bigwork/nhwpruht/PycharmProjects/Meta_FTPFN/models/
 
-source /bigwork/nhwpruht/Meta_FTPFN/.venv/bin/activate
-module load uv
+
 uv run /bigwork/nhwpruht/Meta_FTPFN/src/train.py "$@"
 
 
