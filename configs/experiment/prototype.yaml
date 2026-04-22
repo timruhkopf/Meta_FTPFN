@@ -3,7 +3,7 @@ defaults:
   - override /model: prototype
   - override /dataset: prototype
   - override /trainer: prototype
-  - override /callbacks:
+  - /callbacks:
       - mlflow
       - plot_1dheatmap
   - _self_
