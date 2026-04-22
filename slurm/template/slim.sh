@@ -12,6 +12,7 @@ export MODELDIR=/bigwork/nhwpruht/PycharmProjects/Meta_FTPFN/models/
 
 uv run /bigwork/nhwpruht/Meta_FTPFN/src/train.py "$@"
 
+HYDRA_FULL_ERROR=1;bash ./slurm/template/slim.sh experiment=prototype  experiment_name=prototype +dispatch=slurm dataset.dataset_class.n_A=10,20,30,40,50,60 run_name=Baseline-n_A --multirun
 
 
 #experiment=prototype  \
