@@ -104,12 +104,14 @@ def get_dynamic_run_name(default_prefix="task"):
 class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
     def __init__(
             self,
+            sweep_id: str = None,
             experiment_name: str = "ppfn_training",
             run_name: Optional[str] = None,
             mlflow_tracking_uri: Optional[str] = None,
             log_system_metrics: bool = True,
     ):
         super().__init__()
+        self.sweep_id = sweep_id
         self.experiment_name = experiment_name
         self.run_name = run_name
         self.run = None

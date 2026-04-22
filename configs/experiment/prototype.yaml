@@ -1,11 +1,12 @@
 # @package _global_
 defaults:
+  - /callbacks: # overwriting the default config's callbacks
+      - mlflow
+      - plot_1dheatmap
+
   - override /model: prototype
   - override /dataset: prototype
   - override /trainer: prototype
-  - callbacks:          # 2. Define the new list (Notice: NO leading '/')
-      - mlflow
-      - plot_1dheatmap
   - _self_
 
 experiment_name: prototype
