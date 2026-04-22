@@ -119,7 +119,15 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
         self.log_system_metrics = log_system_metrics
 
     def _setup_experiment(self):
-        """Robust experiment initialization for file backends."""
+        """Robust experiment initialization bypassing NFS cache via ID."""
+
+        # 1. Check if the login node explicitly passed us the resolved ID
+        env_exp_id = os.environ.get("MLFLOW_EXPERIMENT_ID")
+        if env_exp_id:
+            logger.info(f"Inherited Experiment ID {env_exp_id} from Leader Node. Bypassing NFS check.")
+            return env_exp_id
+
+        # 2. Fallback for local debugging (when not using slim.sh)
         exp_id = None
         for _ in range(5):
             try:
@@ -193,7 +201,7 @@ class MLflowCallback(AbstractCallback):  # Inherit from your AbstractCallback
             )
             self._log_global_metadata()
             self._log_task_metadata()
-            
+
     def _get_or_create_parent(self, exp_id: str, sweep_id: str):
         """Uses MLflow API to find the parent, avoiding file locks."""
         query = f"tags.sweep_id = '{sweep_id}' and tags.mode = 'parent'"
