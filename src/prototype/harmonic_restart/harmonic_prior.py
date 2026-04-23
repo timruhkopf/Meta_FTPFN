@@ -93,8 +93,10 @@ class BaseHarmonicsStream(IterableDataset):
             X_train_B, warp_amp_A, warp_freq_A, warp_phase_A)
         X_test_B_in_A_domain = X_test_B - h_shift_A + self.apply_spatial_warp(
             X_test_B, warp_amp_A, warp_freq_A, warp_phase_A)
-        Y_train_B_in_A_domain = self.eval_function(X_train_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
-        Y_test_B_in_A_domain = self.eval_function(X_test_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
+
+        # [CORRECTION]: Added scale_A to match A's true domain scaling
+        Y_train_B_in_A_domain = scale_A * self.eval_function(X_train_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
+        Y_test_B_in_A_domain = scale_A * self.eval_function(X_test_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
 
         # 5. Evaluate A
         X_train_A_warped = X_train_A - h_shift_A + self.apply_spatial_warp(
@@ -106,14 +108,29 @@ class BaseHarmonicsStream(IterableDataset):
         Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
         Y_test_A = scale_A * self.eval_function(X_test_A_warped, amps_A, freqs_A, phases_A) + v_shift_A
 
-        # 6. Pad A
+        # --- NEW: Evaluate A in B's Domain (Canonical) ---
+        # A's observed coordinates map to their warped counterparts in B's base space.
+        X_train_A_in_B_domain = X_train_A_warped
+        X_test_A_in_B_domain = X_test_A_warped
+
+        # We evaluate these canonical coordinates using B's clean blueprint
+        Y_train_A_in_B_domain = self.eval_function(X_train_A_in_B_domain, amps_B, freqs_B, phases_B)
+        Y_test_A_in_B_domain = self.eval_function(X_test_A_in_B_domain, amps_B, freqs_B, phases_B)
+
+        # 6. Pad A (and A_in_B) to match n_B
         pad_size = self.n_B - self.n_A
         if pad_size > 0:
             nan_pad = torch.full((pad_size, self.batch_size), float('nan'), device=X_train_A.device)
+
             X_train_A_padded = torch.cat([X_train_A, nan_pad], dim=0)
             Y_train_A_padded = torch.cat([Y_train_A, nan_pad], dim=0)
+
+            # Pad the new A_in_B variables
+            X_train_A_in_B_padded = torch.cat([X_train_A_in_B_domain, nan_pad], dim=0)
+            Y_train_A_in_B_padded = torch.cat([Y_train_A_in_B_domain, nan_pad], dim=0)
         else:
             X_train_A_padded, Y_train_A_padded = X_train_A, Y_train_A
+            X_train_A_in_B_padded, Y_train_A_in_B_padded = X_train_A_in_B_domain, Y_train_A_in_B_domain
 
         return {
             'params': {
@@ -127,11 +144,13 @@ class BaseHarmonicsStream(IterableDataset):
                 'X_B': X_train_B, 'Y_B': Y_train_B,
                 'X_A': X_train_A_padded, 'Y_A': Y_train_A_padded,
                 'X_B_in_A': X_train_B_in_A_domain, 'Y_B_in_A': Y_train_B_in_A_domain,
+                'X_A_in_B': X_train_A_in_B_padded, 'Y_A_in_B': Y_train_A_in_B_padded, # Added
             },
             'test': {
                 'X_B': X_test_B, 'Y_B': Y_test_B,
                 'X_A': X_test_A, 'Y_A': Y_test_A,
                 'X_B_in_A': X_test_B_in_A_domain, 'Y_B_in_A': Y_test_B_in_A_domain,
+                'X_A_in_B': X_test_A_in_B_domain, 'Y_A_in_B': Y_test_A_in_B_domain,   # Added
             }
         }
 

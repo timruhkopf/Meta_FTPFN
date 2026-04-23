@@ -25,4 +25,5 @@ model:
       use_post_attn: False
       num_align_steps: 3
       use_spectral_norm: False
+      use_adain: False # using it within the layer seems to very mildly hurt performance
 
