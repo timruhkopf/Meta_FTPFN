@@ -41,7 +41,7 @@ class TriStreamTrainer(PPFNTrainer):
 
             if self.global_step == 0:
                 logger.info("Phase 1: Freezing Adapter C for warmup phase.")
-                for param in self.model.layer.parameters():
+                for param in self.model.cross_layer.parameters():
                     param.requires_grad = False
 
                 self.criterion.is_warmup = True
@@ -54,7 +54,7 @@ class TriStreamTrainer(PPFNTrainer):
                     param.requires_grad = False
 
                 # ...then explicitly unfreeze the layer you want to train
-                for param in self.model.layer.parameters():
+                for param in self.model.cross_layer.parameters():
                     param.requires_grad = True
 
                 self.criterion.is_warmup = False

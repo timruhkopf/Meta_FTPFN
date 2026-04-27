@@ -68,9 +68,9 @@ class TriHarmonicModel(nn.Module):
         self.y_encoder = nn.Linear(1, d_model)
 
         self.pfn_layer = PFNLayer(d_model, nhead=nhead, dropout=dropout)
-        self.layer = cross_attn_layer
+        self.cross_layer = cross_attn_layer
 
-        self.use_cross_attn = use_cross_attn # to allow baseline calculations for nll scores (once)
+        self.use_cross_attn = use_cross_attn  # to allow baseline calculations for nll scores (once)
         self.use_post_attn = use_post_attn
 
         if self.use_post_attn:
@@ -91,6 +91,7 @@ class TriHarmonicModel(nn.Module):
         single_eval_pos = batch['train']['X_B'].shape[0]
 
         # Concat train and test X
+        # fixme: fix prior to give unsqueezed version here
         X_A = torch.cat([X_train_A, X_test_A], dim=0)
         X_B = torch.cat([X_train_B, X_test_B], dim=0)
 
@@ -101,6 +102,8 @@ class TriHarmonicModel(nn.Module):
         X_B_clean = torch.nan_to_num(X_B, nan=0.0).unsqueeze(-1)
         Y_A_train_clean = torch.nan_to_num(Y_train_A, nan=0.0).unsqueeze(-1)
         Y_B_train_clean = torch.nan_to_num(Y_train_B, nan=0.0).unsqueeze(-1)
+
+        # FIXME: use ADAIN here?
 
         # Encode
         emb_X_A = self.x_encoder(X_A_clean)
@@ -117,9 +120,37 @@ class TriHarmonicModel(nn.Module):
         A[:single_eval_pos, :, :] += emb_Y_A
         B[:single_eval_pos, :, :] += emb_Y_B
 
-        C = A.clone()
+        if next(self.cross_layer.parameters()).requires_grad == True and 'X_A_in_B' in batch['train'].keys():
+            # We want to find what the backend thinks about the in-prior known transformed version of A living in B domain.
+            # This way, we can try to find an invariant representation in the cross layer
+            # We are in training on the prior and can compute all of the above for this, it has the same pad as B
+            # FIXME: we will want to use the previous layer's output instead!
+            X_A_train_in_B = batch['train']['X_A_in_B']
+            X_A_test_in_B = batch['test']['X_A_in_B']
 
-        if 'X_B_in_A' in batch['train'].keys():
+            X_A_train_in_B_clean = torch.nan_to_num(X_A_train_in_B, nan=0.0).unsqueeze(-1)
+            X_A_test_in_B_clean = torch.nan_to_num(X_A_test_in_B, nan=0.0).unsqueeze(-1)
+
+            X_A_in_B = torch.cat([X_A_train_in_B_clean, X_A_test_in_B_clean], dim=0)
+
+            emb_X_A_in_B = self.x_encoder(X_A_in_B)
+
+            Y_A_train_in_B = batch['train']['Y_A_in_B']
+            Y_A_train_in_B_clean = torch.nan_to_num(Y_A_train_in_B, nan=0.0).unsqueeze(-1)
+            emb_Y_A_in_B = self.y_encoder(Y_A_train_in_B_clean)
+
+            A_in_B = emb_X_A_in_B.clone()
+            A_in_B[:single_eval_pos, :, :] += emb_Y_A_in_B
+
+            A = torch.cat([A, A_in_B], dim=1)  # parallel processing of the two.
+            pad_mask_A = torch.concat([pad_mask_A, pad_mask_A],
+                                      dim=0)  # double the pad mask for the concatenated version
+            # for cross-attn processing
+            X_A = torch.cat([X_A_clean, X_A_in_B], dim=1)  # for cross-attn processing
+            X_C = X_A.clone()
+
+        if next(self.cross_layer.parameters()).requires_grad == True and 'X_B_in_A' in batch['train'].keys():
+            # Same as above!
             # We are in training on the prior and can compute all of the above for this, it has the same pad as B
             X_B_train_in_A = batch['train']['X_B_in_A']
             X_B_test_in_A = batch['test']['X_B_in_A']
@@ -139,6 +170,10 @@ class TriHarmonicModel(nn.Module):
             B_in_A[:single_eval_pos, :, :] += emb_Y_B_in_A
 
             B = torch.cat([B, B_in_A], dim=1)  # parallel processing of the two.
+            # FIXME:pad_mask_B = torch.concat([pad_mask_B, pad_mask_B], dim=0)
+            X_B = torch.cat([X_B_clean, X_B_in_A], dim=1)
+
+        C = A.clone()
 
         # Pass through the Marginal PFN Layer
         A, B, C = self.pfn_layer(A, B, C, single_eval_pos, pad_mask_A)
@@ -148,20 +183,26 @@ class TriHarmonicModel(nn.Module):
         # ==========================================
         # fixme: this will prevent joint training, but be more efficient in warmup
         if self.use_cross_attn and next(self.pfn_layer.parameters()).requires_grad == False:
-            _, _, C = self.layer(
+            _, _, C = self.cross_layer(
                 A.detach(), B.detach(), C.detach(),
                 hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
                 sep=single_eval_pos,
-                raw_hp_A=X_A_clean,
-                raw_hp_B=X_B_clean,
-                raw_hp_C=X_A_clean,
+                raw_hp_A=X_A,
+                raw_hp_B=X_B,
+                raw_hp_C=X_C,
                 pad_mask_A=pad_mask_A,
                 pad_mask_B=None
             )
-
+        batch_size = A.shape[1]
         if 'X_B_in_A' in batch['train'].keys():
-            # drop the auxiliary that we attached to stream B
-            B = B[:, :A.shape[1], :]
+            # drop the auxiliary A in B that we attached to stream B
+            B = B[:, :batch_size, :]
+            # fixme: pad_mask_B = pad_mask_B[:, :batch_size] if pad_mask_B is not None else None
+
+        if 'X_A_in_B' in batch['train'].keys():
+            A = A[:, :batch_size, :]
+            C = C[:, :batch_size, :]
+            pad_mask_A = pad_mask_A[:batch_size]
 
         if self.use_post_attn:
             A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A)

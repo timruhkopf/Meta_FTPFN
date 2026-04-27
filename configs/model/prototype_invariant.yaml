@@ -1,0 +1,22 @@
+# @package _global_
+
+model:
+  frozen_version: "0.0.1"
+
+  model_class:
+    _target_: prototype.harmonic_restart.model.TriHarmonicModel
+    d_model: 128
+    nhead: 4
+    dropout: 0.1
+    num_bars: 200
+    use_freq_enc_x: True
+    use_cross_attn: True
+
+    cross_attn_layer:
+      _target_: prototype.harmonic_restart.invariant_layer.ManifoldCrossAttnLayer
+      d_model: 128
+      proj_depth: 2
+      dim_feedforward: 128
+      nhead: 4
+      use_stacked_self_attn: True
+
