@@ -183,7 +183,8 @@ class TriHarmonicModel(nn.Module):
         # ==========================================
         # fixme: this will prevent joint training, but be more efficient in warmup
         if self.use_cross_attn and next(self.pfn_layer.parameters()).requires_grad == False:
-            _, _, C = self.cross_layer(
+            # overwriting A, B with pass throughs, but purged of shadow batch, which is available during training
+            A, B, C = self.cross_layer(
                 A.detach(), B.detach(), C.detach(),
                 hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
                 sep=single_eval_pos,
@@ -193,6 +194,12 @@ class TriHarmonicModel(nn.Module):
                 pad_mask_A=pad_mask_A,
                 pad_mask_B=None
             )
+
+            # You still must manually truncate the pad_mask_A because it wasn't returned!
+            true_batch_size = A.shape[1]  # A is now safely 256
+            pad_mask_A = pad_mask_A[:true_batch_size, :]
+            # FIXME: what about mask_B
+
         batch_size = A.shape[1]
         if 'X_B_in_A' in batch['train'].keys():
             # drop the auxiliary A in B that we attached to stream B
@@ -205,7 +212,7 @@ class TriHarmonicModel(nn.Module):
             pad_mask_A = pad_mask_A[:batch_size]
 
         if self.use_post_attn:
-            A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A)
+            A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A) # fixme: mask_B padding!
 
         # Apply final norm
         out_A = self.final_norm(A)
