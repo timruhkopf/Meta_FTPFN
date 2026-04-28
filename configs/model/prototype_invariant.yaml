@@ -19,4 +19,5 @@ model:
       dim_feedforward: 128
       nhead: 4
       use_stacked_self_attn: True
+      update_C_train: True
 
