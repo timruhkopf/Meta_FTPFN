@@ -87,6 +87,17 @@ class TriHarmonicLoss(nn.Module):
             total_loss = loss_C + loss_guided_attn
 
         # --- Auxiliary Losses ---
+        ce_aux =  ForwardMetaContext.get('ce_aux_loss')
+        if ce_aux is not None:
+            total_loss +=  ce_aux
+            metrics["ATTN/CE-LOSS"] = ce_aux
+
+            metrics['ATTN/adapter_align_acc'] = ForwardMetaContext.get('adapter_align_acc')
+            metrics['ATTN/adapter_align_entropy']= ForwardMetaContext.get('adapter_align_entropy')
+            metrics['ATTN/adapter_main_entropy'] = ForwardMetaContext.get('adapter_main_entropy')
+            metrics['ATTN/adapter_align_top3_acc'] = ForwardMetaContext.get('adapter_align_top3_acc')
+
+
         aux = ForwardMetaContext.get('B_in_A_domain')
         if aux is not None:
             if 'kl_loss' in aux: total_loss += 1e-5 * aux['kl_loss']

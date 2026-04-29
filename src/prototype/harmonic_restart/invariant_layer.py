@@ -202,10 +202,24 @@ class ManifoldCrossAttnLayer(nn.Module):
                     """
                     ForwardMetaContext.set('adapter_align_acc', align_acc.item())
 
+
+                    # Get top 3 predictions
+                    """
+                    The reasoning is, that while the model will certaintly fail on a continuous grid with resampled coordinates
+                    to identify the exact match, smooth interpolation will still make it possible, that the correct one is in the 
+                    top3, despite n_A + n_B tokens
+                    """
+                    _, top3_preds = torch.topk(flat_scores[valid_mask], k=3, dim=-1)
+                    targets_expanded = flat_targets[valid_mask].unsqueeze(-1)
+
+                    # Check if the true target is IN the top 3
+                    top3_acc = (top3_preds == targets_expanded).any(dim=-1).float().mean()
+                    ForwardMetaContext.set('adapter_align_top3_acc', top3_acc.item())
+
                 # 2. Alignment Entropy (How blurry is the address book lookup?)
                 probs = F.softmax(scores, dim=-1)
-                log_probs = F.log_softmax(scores, dim=-1)
-                entropy = -(probs * log_probs).sum(dim=-1)  # (Batch, Seq_Q)
+                safe_probs = probs + 1e-9  # Prevent log(0)
+                entropy = -(probs * torch.log(safe_probs)).sum(dim=-1)  # (Batch, Seq_Q)
 
                 if 'mask_Q' in locals():
                     entropy = entropy.masked_fill(mask_Q, 0.0)

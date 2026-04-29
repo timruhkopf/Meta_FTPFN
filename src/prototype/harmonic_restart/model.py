@@ -64,7 +64,8 @@ class TriHarmonicModel(nn.Module):
                  use_post_attn=True, use_cross_attn=True):
         super().__init__()
         self.num_bars = num_bars
-        self.x_encoder = FourierEncoder(d_model) if use_freq_enc_x else nn.Linear(1, d_model)
+        # reducing sigma might smooth the high frequency detail in A and B?
+        self.x_encoder = FourierEncoder(d_model, sigma=0.25) if use_freq_enc_x else nn.Linear(1, d_model)
         self.y_encoder = nn.Linear(1, d_model)
 
         self.pfn_layer = PFNLayer(d_model, nhead=nhead, dropout=dropout)
@@ -81,6 +82,11 @@ class TriHarmonicModel(nn.Module):
 
         # Shared decoder
         self.decoder = nn.Linear(d_model, num_bars)
+
+    @property
+    def is_pretraining(self):
+        return not next(self.pfn_layer.parameters()).requires_grad == False
+
 
     def forward(self, batch):
         X_train_A, Y_train_A = batch['train']['X_A'], batch['train']['Y_A']
@@ -111,9 +117,6 @@ class TriHarmonicModel(nn.Module):
         emb_Y_A = self.y_encoder(Y_A_train_clean)
         emb_Y_B = self.y_encoder(Y_B_train_clean)
 
-        # ==========================================
-        # FIX: Inject Y into train positions without truncating the sequence
-        # ==========================================
         A = emb_X_A.clone()
         B = emb_X_B.clone()
 
@@ -182,7 +185,7 @@ class TriHarmonicModel(nn.Module):
         # FIX: Cleaned up kwargs to match PreNormTriStreamTransformerLayer signature
         # ==========================================
         # fixme: this will prevent joint training, but be more efficient in warmup
-        if self.use_cross_attn and next(self.pfn_layer.parameters()).requires_grad == False:
+        if self.use_cross_attn and not self.is_pretraining:
             # overwriting A, B with pass throughs, but purged of shadow batch, which is available during training
             A, B, C = self.cross_layer(
                 A.detach(), B.detach(), C.detach(),
