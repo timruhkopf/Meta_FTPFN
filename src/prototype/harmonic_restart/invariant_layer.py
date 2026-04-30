@@ -90,6 +90,7 @@ class ManifoldCrossAttnLayer(nn.Module):
             mask[sep:, sep:] = test_block
 
         return mask
+
     def forward(
             self,
             A, B, C,
@@ -189,18 +190,24 @@ class ManifoldCrossAttnLayer(nn.Module):
             # TELEMETRY BLOCK 1: INVARIANT ALIGNMENT HEALTH
             # =====================================================================
             with torch.no_grad():
-                # 1. Alignment Accuracy (Is the argmax actually hitting the target?)
+                # --- 1. TRAIN TOKEN ACCURACY (Existing Logic) ---
                 valid_mask = flat_targets != -100
                 if valid_mask.sum() > 0:
                     preds = torch.argmax(flat_scores[valid_mask], dim=-1)
-                    align_acc = (preds == flat_targets[valid_mask]).float().mean()
+                    train_align_acc = (preds == flat_targets[valid_mask]).float().mean()
+                    ForwardMetaContext.set('Telemetry/adapter_align_acc_train', train_align_acc.item())
+
+                    _, top3_preds = torch.topk(flat_scores[valid_mask], k=3, dim=-1)
+                    targets_expanded = flat_targets[valid_mask].unsqueeze(-1)
+                    top3_acc = (top3_preds == targets_expanded).any(dim=-1).float().mean()
+                    ForwardMetaContext.set('Telemetry/adapter_align_top3_acc_train', top3_acc.item())
                     """
                     adapter_align_acc (Top-1 Alignment Accuracy): Cross-Entropy loss can sometimes go down just because
                     the model makes the wrong classes slightly less probable, without actually flipping the argmax. 
                     This metric strictly tracks whether the diffeomorphism mapping is succeeding. You want to see this
                     climb from near 0% to a healthy plateau.
                     """
-                    ForwardMetaContext.set('adapter_align_acc', align_acc.item())
+
 
 
                     # Get top 3 predictions
@@ -214,7 +221,54 @@ class ManifoldCrossAttnLayer(nn.Module):
 
                     # Check if the true target is IN the top 3
                     top3_acc = (top3_preds == targets_expanded).any(dim=-1).float().mean()
-                    ForwardMetaContext.set('adapter_align_top3_acc', top3_acc.item())
+                    ForwardMetaContext.set('Telemetry/adapter_align_top3_acc', top3_acc.item())
+
+                # --- 2. TEST TOKEN ACCURACY (The Probe) ---
+                if seq_len > sep:
+                    # Extract the test tokens from the refined streams
+                    A_test_real = attn_A[sep:, :batch_size, :]
+                    B_test_in_A = attn_B[sep:, batch_size:, :]
+                    A_test_in_B = attn_A[sep:, batch_size:, :]
+                    B_test_real = attn_B[sep:, :batch_size, :]
+
+                    # Build context exactly like the train step
+                    Q_test_context = torch.cat([A_test_real, B_test_in_A], dim=0)
+                    K_test_context = torch.cat([A_test_in_B, B_test_real], dim=0)
+
+                    # Project into invariant space
+                    Q_test_aux = self.W_Q2(Q_test_context)
+                    K_test_aux = self.W_K2(K_test_context)
+
+                    # Transpose for BMM: (Seq, Batch, Dim) -> (Batch, Seq, Dim)
+                    Q_t = Q_test_aux.transpose(0, 1)
+                    K_t = K_test_aux.transpose(0, 1)
+
+                    # Calculate scores (No permutation needed!)
+                    test_scores = torch.bmm(Q_t, K_t.transpose(1, 2)) / (self.d_model ** 0.5)
+
+                    # Because we didn't permute, the target for index i is exactly index i
+                    test_seq_len = Q_t.shape[1]
+                    test_targets = torch.arange(test_seq_len, device=A.device).unsqueeze(0).expand(batch_size, -1)
+
+                    # Masking out padded test tokens
+                    mask_A_test_real = pad_mask_A[:batch_size, sep:]
+
+                    # B_in_A belongs to Domain B, so it is governed by pad_mask_B
+                    mask_B_test_in_A = pad_mask_B[batch_size:, sep:]
+
+                    mask_Q_test = torch.cat([mask_A_test_real, mask_B_test_in_A], dim=1)
+
+                    # Ignore padded tokens in accuracy calculation
+                    valid_test_mask = ~mask_Q_test
+                    if valid_test_mask.sum() > 0:
+                        test_preds = torch.argmax(test_scores[valid_test_mask], dim=-1)
+                        test_align_acc = (test_preds == test_targets[valid_test_mask]).float().mean()
+                        ForwardMetaContext.set('Telemetry/adapter_align_acc_test', test_align_acc.item())
+
+                        _, test_top3 = torch.topk(test_scores[valid_test_mask], k=3, dim=-1)
+                        test_targ_exp = test_targets[valid_test_mask].unsqueeze(-1)
+                        test_top3_acc = (test_top3 == test_targ_exp).any(dim=-1).float().mean()
+                        ForwardMetaContext.set('Telemetry/adapter_align_top3_acc_test', test_top3_acc.item())
 
                 # 2. Alignment Entropy (How blurry is the address book lookup?)
                 probs = F.softmax(scores, dim=-1)
@@ -233,7 +287,7 @@ class ManifoldCrossAttnLayer(nn.Module):
                 learning a sharp, confident invariant space, or if it is just loosely smearing probabilities across the 
                 sequence.
                 """
-                ForwardMetaContext.set('adapter_align_entropy', mean_entropy.item())
+                ForwardMetaContext.set('Telemetry/adapter_align_entropy', mean_entropy.item())
             # =====================================================================
 
             # --- STEP 2: Main Cross-Attention for Stream C (Latent Interpolation) ---
@@ -301,7 +355,7 @@ class ManifoldCrossAttnLayer(nn.Module):
                     $x_{test}$ is successfully doing Nearest-Neighbor lookups in the Address Book. If it is high, it 
                     means $x_{test}$ is interpolating its payload from a wide neighborhood of $B$ tokens.
                     """
-                    ForwardMetaContext.set('adapter_main_entropy', main_entropy.item())
+                    ForwardMetaContext.set('Telemetry/adapter_main_entropy', main_entropy.item())
             # =====================================================================
 
             # 7. Zero-Residual Injection into C

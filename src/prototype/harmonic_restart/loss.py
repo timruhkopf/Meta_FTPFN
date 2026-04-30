@@ -92,11 +92,7 @@ class TriHarmonicLoss(nn.Module):
             total_loss +=  ce_aux
             metrics["ATTN/CE-LOSS"] = ce_aux
 
-            metrics['ATTN/adapter_align_acc'] = ForwardMetaContext.get('adapter_align_acc')
-            metrics['ATTN/adapter_align_entropy']= ForwardMetaContext.get('adapter_align_entropy')
-            metrics['ATTN/adapter_main_entropy'] = ForwardMetaContext.get('adapter_main_entropy')
-            metrics['ATTN/adapter_align_top3_acc'] = ForwardMetaContext.get('adapter_align_top3_acc')
-
+            metrics.update({k:v for k,v in ForwardMetaContext._state.__dict__.items() if k.startswith('Telemetry/')})
 
         aux = ForwardMetaContext.get('B_in_A_domain')
         if aux is not None:
