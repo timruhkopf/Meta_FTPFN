@@ -86,6 +86,8 @@ class TriHarmonicLoss(nn.Module):
         else:
             total_loss = loss_C + loss_guided_attn
 
+        metrics["nll/Total"] = total_loss.item()
+
         # --- Auxiliary Losses ---
         ce_aux =  ForwardMetaContext.get('ce_aux_loss')
         if ce_aux is not None:
@@ -128,7 +130,7 @@ class TriHarmonicLoss(nn.Module):
         loss_A_unreduced = self.criterion_backend(logits_A, Y_test_A)
         diff_unreduced = loss_C_unreduced - loss_A_unreduced
 
-        metrics["nll/Total"] = total_loss.item()
+
         metrics["nll/C-A_all"] = diff_unreduced.mean().item()
 
         if (~is_unrelated).any():
