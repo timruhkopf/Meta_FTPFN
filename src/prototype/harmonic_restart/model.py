@@ -120,6 +120,8 @@ class TriHarmonicModel(nn.Module):
         A = emb_X_A.clone()
         B = emb_X_B.clone()
 
+        batch_size = A.shape[1]
+
         A[:single_eval_pos, :, :] += emb_Y_A
         B[:single_eval_pos, :, :] += emb_Y_B
 
@@ -203,7 +205,6 @@ class TriHarmonicModel(nn.Module):
             pad_mask_A = pad_mask_A[:true_batch_size, :]
             # FIXME: what about mask_B
 
-        batch_size = A.shape[1]
         if 'X_B_in_A' in batch['train'].keys():
             # drop the auxiliary A in B that we attached to stream B
             B = B[:, :batch_size, :]
