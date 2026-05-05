@@ -44,6 +44,7 @@ class TriStreamTrainer(PPFNTrainer):
                 for param in self.model.cross_layer.parameters():
                     param.requires_grad = False
 
+                self.model.use_cross_attn = False # signal, that we want to sidestep the cross_attn_layer!
                 self.criterion.is_warmup = True
 
             elif self.global_step == transition_step:
@@ -57,5 +58,7 @@ class TriStreamTrainer(PPFNTrainer):
                 for param in self.model.cross_layer.parameters():
                     param.requires_grad = True
 
+                self.model.use_cross_attn = True
                 self.criterion.is_warmup = False
+
         return super()._train_step(step, batch, **fwd_kwargs)

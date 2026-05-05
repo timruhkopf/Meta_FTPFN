@@ -1,4 +1,5 @@
 plot_heat:
   _target_: prototype.harmonic_restart.heatmap_callback.HeatmapCallback
   plot_every: 2000
+  start_plotting_epoch: 2000
   plot_dir: ${hydra:run.dir}/heatmaps/
