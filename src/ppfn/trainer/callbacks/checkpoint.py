@@ -35,6 +35,7 @@ class CheckpointCallback(AbstractCallback):
         min_save_interval: int = 600, # New: Minimum seconds between disk saves
         frequency: int = 1, # Check every N epochs
         min_save_epoch: int = 10, # New: Don't save to disk until after this epoch
+        save_step=None,
         **kwargs,
     ):
         """
@@ -45,12 +46,14 @@ class CheckpointCallback(AbstractCallback):
             name (str): Base name for saved checkpoint files.
             resume_from (str | Path, optional): Path to a checkpoint to resume from.
             read_only (bool): If True, disables saving checkpoints.
+            save_step: a special epoch, where we definetly want to checkpoint (e.g. when we want to freeze a backend model)
         """
         super().__init__(**kwargs)
         self.save_dir = Path(save_dir)
         self.resume_path = Path(resume_from) if resume_from else None
         self.read_only = read_only
         self.frequency = frequency
+        self.save_step = save_step if save_step is not None else -999
 
         if isinstance(monitor, str):
             monitor = [monitor]
@@ -123,7 +126,7 @@ class CheckpointCallback(AbstractCallback):
 
     def log_on_epoch_end(self, epoch: int, eon:int, metrics: Dict[str, Any]):
         """Decides if we should save, then triggers background task."""
-        if epoch % self.frequency == 0:
+        if epoch % self.frequency == 0 or epoch == self.save_step:
             # 1. Calculate Score
             current_scores = [
                 metrics.get(m) for m in self.monitor if metrics.get(m) is not None
@@ -137,7 +140,7 @@ class CheckpointCallback(AbstractCallback):
                 self.mode == "max" and current_score > self.best_score
             )
 
-            if is_best:
+            if is_best or epoch == self.save_step:
                 self.best_score = current_score
                 self._pending_snapshot = self._prepare_snapshot(epoch, eon, metrics)
                 self._needs_saving = True  # Always mark as dirty if it's the new best
