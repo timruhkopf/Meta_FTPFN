@@ -102,6 +102,11 @@ Ulysses:
 sudo chown -R $USER $HOME/PycharmProjects/Meta_FTPFN/mlruns
 uv run mlflow ui --backend-store-uri file:///$HOME/PycharmProjects/Meta_FTPFN/mlruns --port 5010 --host 0.0.0.0
 
+# known issue. terminated jobs might still float a ghost worker. make sure no mlflow process is running that is interesting,
+# then kill using 
+pkill -f mlflow
+
+
 source .venv/bin/activate
 mlflow ui --backend-store-uri sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db --port 5010 --host 0.0.0.0
 ```
@@ -158,3 +163,19 @@ python src/train.py experiment=prototype trainer.epochs=100 dataset.n_A=10
 ```
 Hydra runs it as a single job. Your MLflow callback logic will hit the else block (because it's not a multirun/sweep),
 skip the parent-creation phase, and just log a standard, flat MLflow run.
+
+
+
+# Ulysses Tmux 
+
+```bash
+sudo chown -R ruhkopf /home/ruhkopf/PycharmProjects/Meta_FTPFN/
+tmux new-session -d -s pfn_train "bash -c 'set -a; source /home/ruhkopf/PycharmProjects/Meta_FTPFN/.env; set +a; /home/ruhkopf/PycharmProjects/Meta_FTPFN/.venv/bin/python /home/ruhkopf/PycharmProjects/Meta_FTPFN/src/train.py experiment=prototype model=prototype_invariant trainer.steps=10 trainer.epochs=100000 dataset.dataset_class.warp=True dataset.dataset_class.scale=False dataset.dataset_class.batch_size=128 dataset.dataset_class.share_unrelated=0. dataset.dataset_class.n_A=10 trainer.trainer_class.warmup_epochs=1000 callbacks.plot_heat.plot_every=300 run_name=tmux_x_test-query-training optimizer.lr=0.001; exec bash'"
+
+
+tmux kill-session -t pfn_train
+
+# or all sessions
+tmux kill-server
+
+```
