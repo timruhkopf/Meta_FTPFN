@@ -12,6 +12,7 @@ import warnings
 from typing import Dict, List
 from tqdm import tqdm
 import signal
+import math
 
 import torch
 import torch.nn as nn
@@ -97,7 +98,7 @@ class PPFNTrainer:
         self.config = None  # Placeholder, we pass this from outside if needed
 
         # Mixed precision & gradient settings
-        self.scaler = amp.GradScaler(device=self.device) if use_amp else None
+        self.scaler = amp.GradScaler(device=self.device, enabled=(device == "cuda")) if self.use_amp else None
         self.grad_clip = grad_clip
         self.aggregate_k_gradients = aggregate_k_gradients
 
@@ -107,7 +108,7 @@ class PPFNTrainer:
         self.best_loss = float("inf")
 
         self.description_template = description_template or (
-            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {train/lr:.8f}"
+            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {train/lr:.8f} | nll/C-A_related: {nll/C-A_related:.3}"
         )
 
         self.callback_handler.on_event("on_trainer_init")
@@ -285,14 +286,14 @@ class PPFNTrainer:
             logger.warning("Epoch finished with 0 batches processed.")
 
         epoch_metrics["time"] = time.time() - epoch_start
-        self.scheduler.step()
+
 
         return epoch_metrics
 
     def _train_step(self, step, batch: Batch, **fwd_kwargs) -> Dict[str, float]:
         device_type = self.device.type if hasattr(self, "device") else "cuda"
         # Consider: dtype=torch.bfloat16: and not use the gard scaler at all?
-        with amp.autocast(device_type="cuda", enabled=self.use_amp):
+        with amp.autocast(device_type="cuda", enabled=(self.device.type == "cuda" and self.use_amp)):
             output = self.model(batch, **fwd_kwargs)
 
         # loss calculation outside of autocast for stable training
@@ -329,6 +330,7 @@ class PPFNTrainer:
                 self.optimizer.step()
 
             self.optimizer.zero_grad()
+            self.scheduler.step()
 
         step_metrics.update(
             {
@@ -336,6 +338,12 @@ class PPFNTrainer:
                 "train/lr": self.scheduler.get_last_lr()[0],
             }
         )
+
+        if any(math.isnan(v) for v in step_metrics.values() if isinstance(v, (int, float))):
+            # Handle the error (e.g., logging a warning or skipping the log)
+            print(step_metrics)
+            print("Warning: NaN detected in step_metrics")
+
         if self.verbose and 'single_eval_pos' in fwd_kwargs.keys():
             step_metrics.update({"train/single_eval_pos": fwd_kwargs['single_eval_pos']})
 

@@ -8,7 +8,7 @@ model:
     d_model: 128
     nhead: 4
     dropout: 0.1
-    num_bars: 200
+    num_bars: 250
     use_freq_enc_x: True
     use_cross_attn: True
 
@@ -19,5 +19,5 @@ model:
       dim_feedforward: 128
       nhead: 4
       use_stacked_self_attn: True
-      update_C_train: True
+      update_C_train: False
 

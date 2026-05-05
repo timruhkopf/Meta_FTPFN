@@ -2,6 +2,6 @@
 _target_: ppfn.trainer.scheduler.get_cosine_schedule_with_warmup
 _partial_: true
 warmup_epochs: 20
-max_epochs: ${trainer.epochs}
+max_epochs: ${mul:${trainer.epochs}, ${trainer.steps}}
 eta_min: 2e-6
 start_factor: 0.0001
