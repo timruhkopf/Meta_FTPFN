@@ -133,7 +133,8 @@ class TriHarmonicModel(nn.Module):
         X_train_B, Y_train_B = batch['train']['X_B'], batch['train']['Y_B']
         X_test_A = batch['test']['X_A']
         X_test_B = batch['test']['X_B']
-
+        pad_mask_A = batch['train']['padding_mask_A']
+        pad_mask_B = batch['train']['padding_mask_B']
         single_eval_pos = batch['train']['X_B'].shape[0]
 
         # Concat train and test X
@@ -141,22 +142,22 @@ class TriHarmonicModel(nn.Module):
         X_A = torch.cat([X_train_A, X_test_A], dim=0)
         X_B = torch.cat([X_train_B, X_test_B], dim=0)
 
-        pad_mask_A = torch.isnan(X_A).transpose(0, 1)
-        pad_mask_B = torch.isnan(X_B).transpose(0, 1)
-
-        # Clean NaNs
-        X_A = torch.nan_to_num(X_A, nan=0.0).unsqueeze(-1)
-        X_B = torch.nan_to_num(X_B, nan=0.0).unsqueeze(-1)
-        Y_A_train = torch.nan_to_num(Y_train_A, nan=0.0).unsqueeze(-1)
-        Y_B_train = torch.nan_to_num(Y_train_B, nan=0.0).unsqueeze(-1)
-
-        # FIXME: use ADAIN here?
+        # pad_mask_A = torch.isnan(X_A).transpose(0, 1)
+        # pad_mask_B = torch.isnan(X_B).transpose(0, 1)
+        #
+        # # Clean NaNs
+        # X_A = torch.nan_to_num(X_A, nan=0.0).unsqueeze(-1)
+        # X_B = torch.nan_to_num(X_B, nan=0.0).unsqueeze(-1)
+        # Y_A_train = torch.nan_to_num(Y_train_A, nan=0.0).unsqueeze(-1)
+        # Y_B_train = torch.nan_to_num(Y_train_B, nan=0.0).unsqueeze(-1)
+        #
+        # # FIXME: use ADAIN here?
 
         # Encode
         emb_X_A = self.x_encoder(X_A)
         emb_X_B = self.x_encoder(X_B)
-        emb_Y_A = self.y_encoder(Y_A_train)
-        emb_Y_B = self.y_encoder(Y_B_train)
+        emb_Y_A = self.y_encoder(Y_train_A)
+        emb_Y_B = self.y_encoder(Y_train_B)
 
         A = emb_X_A.clone()
         B = emb_X_B.clone()
@@ -191,7 +192,7 @@ class TriHarmonicModel(nn.Module):
         C = A.clone() # this must be after the potential edit on A in the above branch!
 
         # Pass through the Marginal PFN Layer
-        A, B, C = self.pfn_layer(A, B, C, single_eval_pos, pad_mask_A)
+        A, B, C = self.pfn_layer(A, B, C, single_eval_pos, pad_mask_A, pad_mask_B)
 
         # ==========================================
         # FIX: Cleaned up kwargs to match PreNormTriStreamTransformerLayer signature
@@ -209,7 +210,7 @@ class TriHarmonicModel(nn.Module):
                 raw_hp_B=X_B,
                 raw_hp_C=X_C,
                 pad_mask_A=pad_mask_A,
-                pad_mask_B=None
+                pad_mask_B=pad_mask_B
             )
 
             # You still must manually truncate the pad_mask_A because it wasn't returned!
@@ -220,14 +221,14 @@ class TriHarmonicModel(nn.Module):
             if 'X_B_in_A' in batch['train'].keys():
                 # drop the auxiliary A in B that we attached to stream B
                 B = B[:, :batch_size, :]
-                # fixme: pad_mask_B = pad_mask_B[:, :batch_size] if pad_mask_B is not None else None
+                pad_mask_B = pad_mask_B[:, :batch_size]
 
                 A = A[:, :batch_size, :]
                 C = C[:, :batch_size, :]
                 pad_mask_A = pad_mask_A[:batch_size]
 
         if self.use_post_attn:
-            A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A)  # fixme: mask_B padding!
+            A, B, C = self.pfn_layer2(A, B, C, single_eval_pos, pad_mask_A, pad_mask_B)
 
         # Apply final norm
         out_A = self.final_norm(A)

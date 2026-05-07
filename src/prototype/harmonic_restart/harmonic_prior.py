@@ -4,10 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-class BaseHarmonicsStream(IterableDataset):
+
+
+class InfiniteHarmonicsStream(IterableDataset):
     """
-    Abstract Base Class for Hidden Harmonic Mixture.
-    Handles blueprints, transforms, and evaluations. Subclasses define X-coordinate sampling.
+    The "Hidden Harmonic Mixture" Prior with Negative Transfer Injection.
+    Refactored to match the Tri-Stream Pipeline expectations.
     """
 
     def __init__(self, batch_size=32, n_A=10, n_B=50, n_test=200, x_range=(-5, 5),
@@ -21,19 +23,22 @@ class BaseHarmonicsStream(IterableDataset):
         self.num_components = num_components
         self.noise_std = noise_std
         self.share_unrelated = share_unrelated
+
         self.scale = scale
         self.shift = shift
         self.warp = warp
 
     @staticmethod
-    def apply_spatial_warp(X, w_amp, w_freq, w_phase):
+    def _apply_spatial_warp(X, w_amp, w_freq, w_phase):
+        """Applies mild non-linear spatial warping to coordinates."""
         w_amp_ext = w_amp.unsqueeze(0)
         w_freq_ext = w_freq.unsqueeze(0)
         w_phase_ext = w_phase.unsqueeze(0)
         return w_amp_ext * torch.sin(2 * torch.pi * w_freq_ext * X + w_phase_ext)
 
     @staticmethod
-    def eval_function(X, amps, freqs, phases):
+    def _eval_function(X, amps, freqs, phases):
+        """Evaluates the sum of sinusoids based on explicit parameters."""
         X_ext = X.unsqueeze(0)
         a_ext = amps.unsqueeze(1)
         f_ext = freqs.unsqueeze(1)
@@ -41,97 +46,131 @@ class BaseHarmonicsStream(IterableDataset):
         terms = a_ext * torch.sin(2 * torch.pi * f_ext * X_ext + p_ext)
         return terms.sum(dim=0)
 
-    def _sample_blueprints(self):
-        B, K = self.batch_size, self.num_components
+    def _generate_blueprints(self):
+        """Generates the base sinusoidal parameters for Tasks A and B."""
+        B = self.batch_size
+        K = self.num_components
+
+        # Task A Blueprint
         amps_A = torch.empty(K, B).uniform_(0.5, 2.0)
         freqs_A = torch.empty(K, B).uniform_(0.1, 0.5)
         phases_A = torch.empty(K, B).uniform_(0, 2 * torch.pi)
 
+        # Task B Blueprint (Clone A, then modify unrelated traps)
         amps_B, freqs_B, phases_B = amps_A.clone(), freqs_A.clone(), phases_A.clone()
-        is_unrelated = torch.zeros(B, dtype=torch.bool)
 
         num_unrelated = int(B * self.share_unrelated)
+        is_unrelated = torch.zeros(B, dtype=torch.bool)
+
         if num_unrelated > 0:
+            is_unrelated[-num_unrelated:] = True
             amps_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0.5, 2.0)
             freqs_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0.1, 0.5)
             phases_B[:, -num_unrelated:] = torch.empty(K, num_unrelated).uniform_(0, 2 * torch.pi)
-            is_unrelated[-num_unrelated:] = True
 
-        return (amps_A, freqs_A, phases_A), (amps_B, freqs_B, phases_B), is_unrelated
+        params_A = (amps_A, freqs_A, phases_A)
+        params_B = (amps_B, freqs_B, phases_B)
 
-    def _sample_transforms(self):
+        return params_A, params_B, is_unrelated
+
+    def _generate_transformations(self):
+        """Generates affine and spatial warping transformations."""
         B = self.batch_size
-        v_shift_A = torch.empty(B).uniform_(-2.0, 2.0) if self.shift else torch.zeros(B)
-        h_shift_A = torch.empty(B).uniform_(-1.5, 1.5) if self.shift else torch.zeros(B)
+
+        # Affine Shifts
+        if self.shift:
+            v_shift_A = torch.empty(B).uniform_(-2.0, 2.0)
+            h_shift_A = torch.empty(B).uniform_(-1.5, 1.5)
+        else:
+            v_shift_A, h_shift_A = torch.zeros(B), torch.zeros(B)
+
+        # Scale
         scale_A = torch.empty(B).uniform_(0.3, 1.3) if self.scale else torch.ones(B)
 
-        warp_amp_A = torch.empty(B).uniform_(0.0, 0.7) if self.warp else torch.zeros(B)
-        warp_freq_A = torch.empty(B).uniform_(0.0, 0.2) if self.warp else torch.zeros(B)
-        warp_phase_A = torch.empty(B).uniform_(0, 2 * torch.pi) if self.warp else torch.zeros(B)
+        # Spatial Warp
+        if self.warp:
+            warp_amp_A = torch.empty(B).uniform_(0.0, 0.7)
+            warp_freq_A = torch.empty(B).uniform_(0.0, 0.2)
+            warp_phase_A = torch.empty(B).uniform_(0, 2 * torch.pi)
+        else:
+            warp_amp_A, warp_freq_A, warp_phase_A = torch.zeros(B), torch.zeros(B), torch.zeros(B)
 
-        return scale_A, v_shift_A, h_shift_A, warp_amp_A, warp_freq_A, warp_phase_A
+        shifts = (v_shift_A, h_shift_A)
+        warps = (warp_amp_A, warp_freq_A, warp_phase_A)
+
+        return shifts, scale_A, warps
 
     def _sample_x_coordinates(self):
-        """MUST BE IMPLEMENTED BY SUBCLASS."""
-        raise NotImplementedError
+        """Samples X coordinates for Train and Test sets."""
+        B = self.batch_size
+        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
+        X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, self.max_x), dim=0)
+
+        # FIX: Removed .unsqueeze(1) here to match the shape of the train set (Seq, Batch)
+        X_test_B = torch.empty(self.n_test, B).uniform_(self.min_x, self.max_x)
+        X_test_A = torch.empty(self.n_test, B).uniform_(self.min_x, self.max_x)
+
+        return X_train_A, X_test_A, X_train_B, X_test_B
+
+    def _pad_task_a(self, X_train_A, Y_train_A):
+        """Pads Task A to match Task B's sequence length."""
+        B = self.batch_size
+        pad_size = self.n_B - self.n_A
+
+        if pad_size > 0:
+            # Note: Changed from 0. to float('nan') so the isnan check below actually works
+            pad = torch.full((pad_size, B), float('nan'))
+            X_train_A_padded = torch.cat([X_train_A, pad], dim=0)
+            Y_train_A_padded = torch.cat([Y_train_A, pad], dim=0)
+        else:
+            X_train_A_padded = X_train_A
+            Y_train_A_padded = Y_train_A
+
+        padding_mask_A = torch.isnan(X_train_A_padded).transpose(1, 0)
+
+        # Replace NaNs with 0.0 after mask creation to prevent gradient issues
+        X_train_A_padded = torch.nan_to_num(X_train_A_padded, nan=0.0)
+        Y_train_A_padded = torch.nan_to_num(Y_train_A_padded, nan=0.0)
+
+        return X_train_A_padded, Y_train_A_padded, padding_mask_A
 
     def _sample_batch(self):
-        # 1. Get Base Parameters
-        (amps_A, freqs_A, phases_A), (amps_B, freqs_B, phases_B), is_unrelated = self._sample_blueprints()
-        scale_A, v_shift_A, h_shift_A, warp_amp_A, warp_freq_A, warp_phase_A = self._sample_transforms()
+        """Main orchestrator for sampling a batch."""
+        # 1. & 2. Generate Parameters
+        params_A, params_B, is_unrelated = self._generate_blueprints()
+        shifts, scale_A, warps = self._generate_transformations()
 
-        # 2. Get Spatial Coordinates (Handled by Subclass)
-        X_train_A, X_train_B, X_test_A, X_test_B = self._sample_x_coordinates()
+        # Unpack params
+        amps_A, freqs_A, phases_A = params_A
+        amps_B, freqs_B, phases_B = params_B
+        v_shift_A, h_shift_A = shifts
+        warp_amp_A, warp_freq_A, warp_phase_A = warps
 
-        # 3. Evaluate B
-        Y_train_B = self.eval_function(X_train_B, amps_B, freqs_B, phases_B) + torch.randn_like(
-            X_train_B) * self.noise_std
-        Y_test_B = self.eval_function(X_test_B, amps_B, freqs_B, phases_B)
+        # 3. Sample X coordinates
+        X_train_A, X_test_A, X_train_B, X_test_B = self._sample_x_coordinates()
 
-        # 4. Evaluate B in A's Domain (Warped)
-        X_train_B_in_A_domain = X_train_B - h_shift_A + self.apply_spatial_warp(
-            X_train_B, warp_amp_A, warp_freq_A, warp_phase_A)
-        X_test_B_in_A_domain = X_test_B - h_shift_A + self.apply_spatial_warp(
-            X_test_B, warp_amp_A, warp_freq_A, warp_phase_A)
+        # 4. Evaluate Standard Task B
+        Y_train_B = self._eval_function(X_train_B, *params_B) + torch.randn_like(X_train_B) * self.noise_std
+        Y_test_B = self._eval_function(X_test_B, *params_B)
 
-        # [CORRECTION]: Added scale_A to match A's true domain scaling
-        Y_train_B_in_A_domain = scale_A * self.eval_function(X_train_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
-        Y_test_B_in_A_domain = scale_A * self.eval_function(X_test_B_in_A_domain, amps_A, freqs_A, phases_A) + v_shift_A
+        # 5. Apply spatial warping and shift to X coordinates in Domain A
+        X_train_B_in_A = X_train_B - h_shift_A + self._apply_spatial_warp(X_train_B, *warps)
+        X_test_B_in_A = X_test_B - h_shift_A + self._apply_spatial_warp(X_test_B, *warps)
+        X_train_A_warped = X_train_A - h_shift_A + self._apply_spatial_warp(X_train_A, *warps)
+        X_test_A_warped = X_test_A - h_shift_A + self._apply_spatial_warp(X_test_A, *warps)
 
-        # 5. Evaluate A
-        X_train_A_warped = X_train_A - h_shift_A + self.apply_spatial_warp(
-            X_train_A, warp_amp_A, warp_freq_A, warp_phase_A)
-        X_test_A_warped = X_test_A - h_shift_A + self.apply_spatial_warp(
-            X_test_A, warp_amp_A, warp_freq_A, warp_phase_A)
+        # 6. Evaluate Transformed Targets
+        Y_train_B_in_A = self._eval_function(X_train_B_in_A, *params_A) + v_shift_A
+        Y_test_B_in_A = self._eval_function(X_test_B_in_A, *params_A) + v_shift_A
 
-        Y_train_A_clean = scale_A * self.eval_function(X_train_A_warped, amps_A, freqs_A, phases_A) + v_shift_A
+        Y_train_A_clean = scale_A * self._eval_function(X_train_A_warped, *params_A) + v_shift_A
         Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
-        Y_test_A = scale_A * self.eval_function(X_test_A_warped, amps_A, freqs_A, phases_A) + v_shift_A
+        Y_test_A = scale_A * self._eval_function(X_test_A_warped, *params_A) + v_shift_A
 
-        # --- NEW: Evaluate A in B's Domain (Canonical) ---
-        # A's observed coordinates map to their warped counterparts in B's base space.
-        X_train_A_in_B_domain = X_train_A_warped
-        X_test_A_in_B_domain = X_test_A_warped
+        # 7. Pad Task A to match Task B shapes
+        X_train_A_pad, Y_train_A_pad, padding_mask_A = self._pad_task_a(X_train_A, Y_train_A)
 
-        # We evaluate these canonical coordinates using B's clean blueprint
-        Y_train_A_in_B_domain = self.eval_function(X_train_A_in_B_domain, amps_B, freqs_B, phases_B)
-        Y_test_A_in_B_domain = self.eval_function(X_test_A_in_B_domain, amps_B, freqs_B, phases_B)
-
-        # 6. Pad A (and A_in_B) to match n_B
-        pad_size = self.n_B - self.n_A
-        if pad_size > 0:
-            nan_pad = torch.full((pad_size, self.batch_size), float('nan'), device=X_train_A.device)
-
-            X_train_A_padded = torch.cat([X_train_A, nan_pad], dim=0)
-            Y_train_A_padded = torch.cat([Y_train_A, nan_pad], dim=0)
-
-            # Pad the new A_in_B variables
-            X_train_A_in_B_padded = torch.cat([X_train_A_in_B_domain, nan_pad], dim=0)
-            Y_train_A_in_B_padded = torch.cat([Y_train_A_in_B_domain, nan_pad], dim=0)
-        else:
-            X_train_A_padded, Y_train_A_padded = X_train_A, Y_train_A
-            X_train_A_in_B_padded, Y_train_A_in_B_padded = X_train_A_in_B_domain, Y_train_A_in_B_domain
-
+        # 8. Compile and return dictionary
         return {
             'params': {
                 'amps_A': amps_A, 'freqs_A': freqs_A, 'phases_A': phases_A,
@@ -141,16 +180,16 @@ class BaseHarmonicsStream(IterableDataset):
                 'is_unrelated': is_unrelated
             },
             'train': {
-                'X_B': X_train_B, 'Y_B': Y_train_B,
-                'X_A': X_train_A_padded, 'Y_A': Y_train_A_padded,
-                'X_B_in_A': X_train_B_in_A_domain, 'Y_B_in_A': Y_train_B_in_A_domain,
-                'X_A_in_B': X_train_A_in_B_padded, 'Y_A_in_B': Y_train_A_in_B_padded, # Added
+                'X_B': X_train_B.unsqueeze(-1), 'Y_B': Y_train_B.unsqueeze(-1),
+                'X_A': X_train_A_pad.unsqueeze(-1), 'Y_A': Y_train_A_pad.unsqueeze(-1),
+                'X_B_in_A': X_train_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_train_B_in_A.unsqueeze(-1),
+                'padding_mask_A': padding_mask_A,
+                'padding_mask_B': torch.zeros_like(padding_mask_A),
             },
             'test': {
-                'X_B': X_test_B, 'Y_B': Y_test_B,
-                'X_A': X_test_A, 'Y_A': Y_test_A,
-                'X_B_in_A': X_test_B_in_A_domain, 'Y_B_in_A': Y_test_B_in_A_domain,
-                'X_A_in_B': X_test_A_in_B_domain, 'Y_A_in_B': Y_test_A_in_B_domain,   # Added
+                'X_B': X_test_B.unsqueeze(-1), 'Y_B': Y_test_B,
+                'X_A': X_test_A.unsqueeze(-1), 'Y_A': Y_test_A,
+                'X_B_in_A': X_test_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_test_B_in_A.unsqueeze(-1),
             }
         }
 
@@ -159,55 +198,27 @@ class BaseHarmonicsStream(IterableDataset):
             yield self._sample_batch()
 
 
-class GlobalSparseHarmonicsStream(BaseHarmonicsStream):
-    """Case 1: A is observed over the FULL domain, but is highly sparse."""
-
-    def _sample_x_coordinates(self):
-        B = self.batch_size
-
-        # Both A and B are sampled uniformly across the entire [min_x, max_x]
-        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
-        X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, self.max_x), dim=0)
-
-        # Test sets always span the full domain
-        X_test_B = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
-        X_test_A = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
-
-        return X_train_A, X_train_B, X_test_A, X_test_B
-
-
-class SubdomainHarmonicsStream(BaseHarmonicsStream):
-    """Case 2: A is only observed in a specific subdomain (e.g., the first 50%)."""
-
-    def __init__(self, subdomain_ratio=0.5, **kwargs):
-        super().__init__(**kwargs)
-        self.subdomain_ratio = subdomain_ratio
-
-    def _sample_x_coordinates(self):
-        B = self.batch_size
-        split_x = self.min_x + (self.max_x - self.min_x) * self.subdomain_ratio
-
-        # B is sampled across the FULL domain
-        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
-
-        # A is constrained ONLY to the subdomain [min_x, split_x]
-        X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, split_x), dim=0)
-
-        # Test sets always span the full domain (so we can measure extrapolation)
-        X_test_B = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
-        X_test_A = torch.linspace(self.min_x, self.max_x, self.n_test).unsqueeze(1).expand(self.n_test, B)
-
-        return X_train_A, X_train_B, X_test_A, X_test_B
-
-
-class HarmonicsVisualizer:
-    """Handles all plotting and visualization for the Harmonics Streams."""
+class HeatmapVisualizer:
+    # (Assuming this sits inside a class based on your @staticmethod decorator)
 
     @staticmethod
-    def save_heatmaps(fig, batch_data, borders, save_path, model=None, logits_A=None, logits_B=None, logits_C=None,
-                      x_range=(-5, 5), plot=False):
+    def _to_np(val):
+        """Safely converts a PyTorch tensor to a Numpy array."""
+        return val.detach().cpu().numpy() if torch.is_tensor(val) else val
 
-        # 1. Dynamic Logit Computation (if model is passed)
+    @staticmethod
+    def _get_param(p_dict, key, batch_idx, default=0.0):
+        """Safely extracts a parameter from the batch dictionary, defaulting if missing."""
+        if key in p_dict:
+            val = p_dict[key]
+            if len(val.shape) > 1:  # Handle 2D arrays like amps/freqs [K, B]
+                return HeatmapVisualizer._to_np(val[:, batch_idx])
+            return HeatmapVisualizer._to_np(val[batch_idx])  # Handle 1D arrays [B]
+        return default
+
+    @staticmethod
+    def _compute_logits(model, batch_data, logits_A, logits_B, logits_C):
+        """Runs model inference if a model is provided and logits are missing."""
         if model is not None:
             was_training = model.training
             model.eval()
@@ -215,173 +226,177 @@ class HarmonicsVisualizer:
                 logits_A, logits_B, logits_C = model(batch_data)
             if was_training:
                 model.train()
+        return logits_A, logits_B, logits_C
 
+    @staticmethod
+    def _get_binned_percentiles(probs_np, borders_np, percentiles=(0.025, 0.5, 0.975)):
+        """Calculates continuous percentiles via CDF interpolation between bin edges."""
+        cdf = np.cumsum(probs_np, axis=-1)
+        # Pad with 0.0 to align exactly with the N+1 borders array
+        cdf = np.concatenate([np.zeros((cdf.shape[0], 1)), cdf], axis=-1)
+        results = {pct: np.zeros(probs_np.shape[0]) for pct in percentiles}
+
+        for i in range(probs_np.shape[0]):
+            for pct in percentiles:
+                idx = np.searchsorted(cdf[i], pct)
+                if idx == 0:
+                    results[pct][i] = borders_np[0]
+                elif idx >= len(borders_np):
+                    results[pct][i] = borders_np[-1]
+                else:
+                    p_low, p_high = cdf[i, idx - 1], cdf[i, idx]
+                    b_low, b_high = borders_np[idx - 1], borders_np[idx]
+                    if p_high > p_low:
+                        fraction = (pct - p_low) / (p_high - p_low)
+                        results[pct][i] = b_low + fraction * (b_high - b_low)
+                    else:
+                        results[pct][i] = b_low
+        return results
+
+    @staticmethod
+    def _build_ground_truth_curve(X, p_dict, batch_idx, stream_type='A'):
+        """Reconstructs true harmonic lines with spatial/phase warps based on stream type."""
+        amps = HeatmapVisualizer._get_param(p_dict, f'amps_{stream_type}', batch_idx)
+        freqs = HeatmapVisualizer._get_param(p_dict, f'freqs_{stream_type}', batch_idx)
+        phases = HeatmapVisualizer._get_param(p_dict, f'phases_{stream_type}', batch_idx)
+
+        # Default transformations to 0/1 for Stream B, pull actuals for Stream A
+        scale = HeatmapVisualizer._get_param(p_dict, f'scale_{stream_type}', batch_idx,
+                                             default=1.0) if stream_type == 'A' else 1.0
+        h_shift = HeatmapVisualizer._get_param(p_dict, f'h_shift_{stream_type}', batch_idx,
+                                               default=0.0) if stream_type == 'A' else 0.0
+        v_shift = HeatmapVisualizer._get_param(p_dict, f'v_shift_{stream_type}', batch_idx,
+                                               default=0.0) if stream_type == 'A' else 0.0
+
+        w_amp = HeatmapVisualizer._get_param(p_dict, 'warp_amp_A', batch_idx) if stream_type == 'A' else 0.0
+        w_freq = HeatmapVisualizer._get_param(p_dict, 'warp_freq_A', batch_idx) if stream_type == 'A' else 0.0
+        w_phase = HeatmapVisualizer._get_param(p_dict, 'warp_phase_A', batch_idx) if stream_type == 'A' else 0.0
+
+        p_w_amp = HeatmapVisualizer._get_param(p_dict, 'p_warp_amp', batch_idx) if stream_type == 'A' else 0.0
+        p_w_freq = HeatmapVisualizer._get_param(p_dict, 'p_warp_freq', batch_idx) if stream_type == 'A' else 0.0
+        p_w_phase = HeatmapVisualizer._get_param(p_dict, 'p_warp_phase', batch_idx) if stream_type == 'A' else 0.0
+
+        # Apply Global Shift
+        X_warped = X - h_shift
+
+        # 1. Spatial Sinusoidal Wobble
+        if w_amp > 0: X_warped += w_amp * np.sin(2 * np.pi * w_freq * X + w_phase)
+        # 2. Phase Warp
+        if p_w_amp > 0: X_warped += p_w_amp * np.sin(2 * np.pi * p_w_freq * X + p_w_phase)
+
+        # Evaluate harmonic function
+        terms = amps[:, None] * np.sin(2 * np.pi * freqs[:, None] * X_warped[None, :] + phases[:, None])
+        return scale * np.sum(terms, axis=0) + v_shift
+
+    @staticmethod
+    def _plot_single_axis(ax, stream_name, batch_idx, batch_data, logits, y_dense_A, y_dense_B,
+                          x_dense, borders_np, centers, is_trap):
+        """Handles plotting the heatmap, lines, and scatter points for a single subplot."""
+        if is_trap:
+            ax.set_facecolor('#fffafa')
+
+        # EXACT MATCH GUARANTEE: Stream A and C both pull from dataset 'A'
+        data_key = 'A' if stream_name in ['A', 'C'] else 'B'
+        is_ac_stream = stream_name in ['A', 'C']
+
+        # 1. Plot Heatmap & Percentiles (if logits exist)
+        # 1. Plot Heatmap & Percentiles (if logits exist)
+        if logits is not None:
+            # Get X and flatten the trailing (1,) dimension to make it strictly 1D
+            X_test_np = HeatmapVisualizer._to_np(batch_data['test'][f'X_{data_key}'][:, batch_idx]).flatten()
+            probs = torch.softmax(logits[:, batch_idx, :], dim=-1).detach().cpu().numpy()
+
+            # CRITICAL: pcolormesh requires sorted X coordinates.
+            # Since test points are uniformly sampled, we must sort them for visualization.
+            sort_idx = np.argsort(X_test_np)
+            X_test_np = X_test_np[sort_idx]
+            probs = probs[sort_idx]
+
+            # Get smooth interpolated percentiles
+            percentiles = HeatmapVisualizer._get_binned_percentiles(probs, borders_np)
+
+            # Plot Smooth Heatmap
+            ax.pcolormesh(X_test_np, centers, probs.T, cmap='viridis', shading='nearest', alpha=0.9, rasterized=True)
+            ax.plot(X_test_np, percentiles[0.5], color='orange', linestyle='-', linewidth=1.0, zorder=10)
+            ax.plot(X_test_np, percentiles[0.025], color='orange', linestyle=':', linewidth=1.0, zorder=10)
+            ax.plot(X_test_np, percentiles[0.975], color='orange', linestyle=':', linewidth=1.0, zorder=10)
+
+        # 2. Plot Ground Truth Lines
+        true_y = y_dense_A if is_ac_stream else y_dense_B
+        line_color, line_style, line_alpha = ('white', '-', 0.9) if is_ac_stream else ('red', '--', 0.5)
+        ax.plot(x_dense, true_y, color=line_color, linestyle=line_style, linewidth=1.0, alpha=line_alpha, zorder=5)
+
+        # 3. Scatter Training Points
+        X_train = HeatmapVisualizer._to_np(batch_data['train'][f'X_{data_key}'][:, batch_idx])
+        Y_train = HeatmapVisualizer._to_np(batch_data['train'][f'Y_{data_key}'][:, batch_idx])
+
+        pad_mask = HeatmapVisualizer._to_np(batch_data['train'][f'padding_mask_{data_key}'][batch_idx])
+        valid = ~pad_mask.astype(bool)
+
+        if is_ac_stream:
+            ax.scatter(X_train[valid], Y_train[valid], c='white', s=50, edgecolors='black', linewidth=.5, zorder=20)
+        else:
+            ax.scatter(X_train[valid], Y_train[valid], c='red', s=40, marker='x', alpha=0.8, zorder=20)
+
+        ax.set_ylim(borders_np[0] - 1.5, borders_np[-1] + 1.5)
+        ax.grid(False)
+
+    @classmethod
+    def save_heatmaps(cls, fig, batch_data, borders, save_path, model=None, logits_A=None, logits_B=None, logits_C=None,
+                      x_range=(-5, 5), plot=False):
+        """Main orchestrator for building and saving the heatmap grid."""
+
+        # 1. Setup Data & Logits
+        logits_A, logits_B, logits_C = cls._compute_logits(model, batch_data, logits_A, logits_B, logits_C)
         min_x, max_x = x_range
         p = batch_data['params']
 
-        def to_np(val):
-            return val.detach().cpu().numpy() if torch.is_tensor(val) else val
-
-        # --- Helper for Smooth Percentiles ---
-        def get_binned_percentiles(probs_np, borders_np, percentiles=[0.025, 0.5, 0.975]):
-            """Calculates continuous percentiles via CDF interpolation between bin edges."""
-            cdf = np.cumsum(probs_np, axis=-1)
-            # Pad with 0.0 to align exactly with the N+1 borders array
-            cdf = np.concatenate([np.zeros((cdf.shape[0], 1)), cdf], axis=-1)
-            results = {pct: np.zeros(probs_np.shape[0]) for pct in percentiles}
-
-            for i in range(probs_np.shape[0]):
-                for pct in percentiles:
-                    idx = np.searchsorted(cdf[i], pct)
-                    if idx == 0:
-                        results[pct][i] = borders_np[0]
-                    elif idx >= len(borders_np):
-                        results[pct][i] = borders_np[-1]
-                    else:
-                        p_low, p_high = cdf[i, idx - 1], cdf[i, idx]
-                        b_low, b_high = borders_np[idx - 1], borders_np[idx]
-                        if p_high > p_low:
-                            fraction = (pct - p_low) / (p_high - p_low)
-                            results[pct][i] = b_low + fraction * (b_high - b_low)
-                        else:
-                            results[pct][i] = b_low
-            return results
-
-        # 2. Safely flatten to numpy boolean array
-        is_unrelated_flat = to_np(p['is_unrelated']).astype(bool).flatten()
+        # 2. Resolve Columns (Related vs Unrelated)
+        is_unrelated_flat = cls._to_np(p['is_unrelated']).astype(bool).flatten()
         related_indices = np.where(~is_unrelated_flat)[0]
         unrelated_indices = np.where(is_unrelated_flat)[0]
 
-        # 3. Enforce Column 0 = Related, Column 1 = Unrelated
-        idx_list = [0, 0]
-        if len(related_indices) > 0:
-            idx_list[0] = related_indices[0]
-        if len(unrelated_indices) > 0:
-            idx_list[1] = unrelated_indices[0]
-        else:
-            if len(related_indices) > 1:
-                idx_list[1] = related_indices[1]  # Fallback
+        idx_list = [
+            related_indices[0] if len(related_indices) > 0 else 0,
+            unrelated_indices[0] if len(unrelated_indices) > 0 else (
+                related_indices[1] if len(related_indices) > 1 else 0)
+        ]
 
+        # 3. Initialize Plot
         axes = fig.subplots(3, 2, sharex=True, sharey=True, gridspec_kw={'hspace': 0.25, 'wspace': 0.1})
-        borders_np = to_np(borders)
+        borders_np = cls._to_np(borders)
         centers = (borders_np[:-1] + borders_np[1:]) / 2.0
         x_dense = np.linspace(min_x, max_x, 1000)
 
+        # 4. Iterate over Columns and Rows
         for col_idx, batch_idx in enumerate(idx_list):
             is_trap = is_unrelated_flat[batch_idx]
-            col_title = "RELATED CONTEXT" if not is_trap else "UNRELATED TRAP"
 
-            # Reconstruct true lines with spatial/phase warps
-            def build_func(X, amps, freqs, phases, scale=1.0, h_shift=0.0, v_shift=0.0,
-                           w_amp=0.0, w_freq=0.0, w_phase=0.0,
-                           p_w_amp=0.0, p_w_freq=0.0, p_w_phase=0.0):
+            # Pre-calculate ground truth curves for this column
+            y_dense_A = cls._build_ground_truth_curve(x_dense, p, batch_idx, stream_type='A')
+            y_dense_B = cls._build_ground_truth_curve(x_dense, p, batch_idx, stream_type='B')
 
-                # Apply both Global Shift and Local Non-Linear Warps
-                X_warped = X - h_shift
-
-                # 1. Spatial Sinusoidal Wobble (if active)
-                if w_amp > 0:
-                    X_warped += w_amp * np.sin(2 * np.pi * w_freq * X + w_phase)
-
-                # 2. Phase Warp (if active)
-                if p_w_amp > 0:
-                    X_warped += p_w_amp * np.sin(2 * np.pi * p_w_freq * X + p_w_phase)
-
-                # Evaluate harmonic function at the warped coordinates
-                terms = amps[:, None] * np.sin(2 * np.pi * freqs[:, None] * X_warped[None, :] + phases[:, None])
-                return scale * np.sum(terms, axis=0) + v_shift
-
-            # Safely extract warp parameters (default to 0.0 if not present in older batches)
-            def get_param(key, default=0.0):
-                return to_np(p[key][batch_idx]) if key in p else default
-
-            w_amp = get_param('warp_amp_A')
-            w_freq = get_param('warp_freq_A')
-            w_phase = get_param('warp_phase_A')
-
-            p_w_amp = get_param('p_warp_amp')
-            p_w_freq = get_param('p_warp_freq')
-            p_w_phase = get_param('p_warp_phase')
-
-            y_dense_A = build_func(
-                x_dense,
-                to_np(p['amps_A'][:, batch_idx]),
-                to_np(p['freqs_A'][:, batch_idx]),
-                to_np(p['phases_A'][:, batch_idx]),
-                scale=to_np(p['scale_A'][batch_idx]),
-                h_shift=to_np(p['h_shift_A'][batch_idx]),
-                v_shift=to_np(p['v_shift_A'][batch_idx]),
-                w_amp=w_amp, w_freq=w_freq, w_phase=w_phase,
-                p_w_amp=p_w_amp, p_w_freq=p_w_freq, p_w_phase=p_w_phase
-            )
-
-            # Stream B evaluates its own blueprint unwarped
-            y_dense_B = build_func(
-                x_dense,
-                to_np(p['amps_B'][:, batch_idx]),
-                to_np(p['freqs_B'][:, batch_idx]),
-                to_np(p['phases_B'][:, batch_idx])
-            )
-
-            # 4. Iterate through Rows (Streams)
             for row_idx, stream_name in enumerate(['A', 'B', 'C']):
                 ax = axes[row_idx, col_idx]
-
-                # EXACT MATCH GUARANTEE: Stream A and C both pull from dataset 'A'
-                data_key = 'A' if stream_name in ['A', 'C'] else 'B'
-
-                if is_trap:
-                    ax.set_facecolor('#fffafa')
-
                 curr_logits = {'A': logits_A, 'B': logits_B, 'C': logits_C}[stream_name]
-                X_test_np = to_np(batch_data['test'][f'X_{data_key}'][:, batch_idx])
 
-                if curr_logits is not None:
-                    probs = torch.softmax(curr_logits[:, batch_idx, :], dim=-1).detach().cpu().numpy()
+                # Delegate plotting logic to helper
+                cls._plot_single_axis(
+                    ax, stream_name, batch_idx, batch_data, curr_logits,
+                    y_dense_A, y_dense_B, x_dense, borders_np, centers, is_trap
+                )
 
-                    # Get smooth interpolated percentiles
-                    percentiles = get_binned_percentiles(probs, borders_np, percentiles=[0.025, 0.5, 0.975])
-
-                    # Plot Smooth Heatmap
-                    ax.pcolormesh(X_test_np, centers, probs.T, cmap='viridis', shading='nearest', alpha=0.9,
-                                  rasterized=True)
-
-                    # Plot Median and Smooth Confidence Intervals
-                    ax.plot(X_test_np, percentiles[0.5], color='orange', linestyle='-', linewidth=1., zorder=10)
-                    ax.plot(X_test_np, percentiles[0.025], color='orange', linestyle=':', linewidth=1, zorder=10)
-                    ax.plot(X_test_np, percentiles[0.975], color='orange', linestyle=':', linewidth=1, zorder=10)
-
-                # Plot Ground Truth Lines (A & C share the same true function)
-                true_y = y_dense_A if stream_name in ['A', 'C'] else y_dense_B
-                line_color = 'white' if stream_name in ['A', 'C'] else 'red'
-                line_style = '-' if stream_name in ['A', 'C'] else '--'
-                line_alpha = 0.9 if stream_name in ['A', 'C'] else 0.5
-                ax.plot(x_dense, true_y, color=line_color, linestyle=line_style, linewidth=1.0, alpha=line_alpha,
-                        zorder=5)
-
-                # Scatter Training Points
-                X_train = to_np(batch_data['train'][f'X_{data_key}'][:, batch_idx])
-                Y_train = to_np(batch_data['train'][f'Y_{data_key}'][:, batch_idx])
-                valid = ~np.isnan(X_train)
-
-                if stream_name in ['A', 'C']:
-                    ax.scatter(X_train[valid], Y_train[valid], c='white', s=50, edgecolors='black', linewidth=.5,
-                               zorder=20)
-                else:
-                    ax.scatter(X_train[valid], Y_train[valid], c='red', s=40, marker='x', alpha=0.8, zorder=20)
-
-                # Labels and Aesthetics
+                # Aesthetics
                 if row_idx == 0:
-                    ax.set_title(col_title, fontweight='bold', fontsize=11, pad=10)
+                    ax.set_title("UNRELATED TRAP" if is_trap else "RELATED CONTEXT", fontweight='bold', fontsize=11,
+                                 pad=10)
                 if col_idx == 0:
                     ax.set_ylabel(f"Stream {stream_name}", fontsize=10, fontweight='bold')
-
-                ax.set_ylim(borders_np[0] - 1.5, borders_np[-1] + 1.5)
-                ax.grid(False)
 
         axes[2, 0].set_xlabel("x-coordinate")
         axes[2, 1].set_xlabel("x-coordinate")
 
+        # 5. Finalize
         plt.tight_layout()
         if plot:
             plt.show()
@@ -390,15 +405,10 @@ class HarmonicsVisualizer:
             plt.close(fig)
 
 
-
 if __name__ == '__main__':
-
     # 1. Setup Dataset with enough batch size to guarantee a Trap (10 * 0.2 = 2 traps)
-    # Using the new Extrapolation subclass where A is only observed on the left half
-    dataset = GlobalSparseHarmonicsStream(
-        batch_size=10, n_A=10, n_B=50, n_test=200,
-        num_components=4, noise_std=0.05, share_unrelated=0.2,
-    )
+    dataset = InfiniteHarmonicsStream(batch_size=10, n_A=10, n_B=50, n_test=200,
+                                      num_components=4, noise_std=0.05, share_unrelated=0.2)
     batch_data = next(iter(dataset))
 
     # 2. Setup Bins
@@ -442,9 +452,7 @@ if __name__ == '__main__':
 
     # 4. Plot
     fig = plt.figure(figsize=(12, 14))
-
-    # Updated to use the separated Visualizer class
-    HarmonicsVisualizer.save_heatmaps(
+    InfiniteHarmonicsStream.save_heatmaps(
         fig=fig,
         batch_data=batch_data,
         borders=borders,

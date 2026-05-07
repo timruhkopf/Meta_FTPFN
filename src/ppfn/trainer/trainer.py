@@ -108,7 +108,7 @@ class PPFNTrainer:
         self.best_loss = float("inf")
 
         self.description_template = description_template or (
-            "Epoch {epoch:3d} | Time: {time:6.2f}s | LR: {train/lr:.8f} | nll/C-A_related: {nll/C-A_related:.3}"
+            "Epoch {epoch:3d} | Time: {time:3.2f}s | LR: {train/lr:.5f} | nll/A: {nll/A:.3}, nll/B: {nll/B:.3}, nll/C: {nll/C:.3} | nll/C-A_related: {nll/C-A_related:.3}"
         )
 
         self.callback_handler.on_event("on_trainer_init")

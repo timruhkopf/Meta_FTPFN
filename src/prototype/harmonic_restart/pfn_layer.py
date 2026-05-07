@@ -44,8 +44,8 @@ class PFNLayer(nn.Module):
             B: Tensor,
             C: Tensor,
             single_eval_pos: int,
-            pad_mask_A: Optional[Tensor] = None,
-            pad_mask_B: Optional[Tensor] = None
+            pad_mask_A: Optional[Tensor] = None, # train part only!
+            pad_mask_B: Optional[Tensor] = None  # train part only!
     ):
         # Store original batch size to split them back apart later
         # Assumes A, B, and C all have the exact same shape: (Time, Batch, D)
@@ -57,23 +57,11 @@ class PFNLayer(nn.Module):
         # Stack along the Batch dimension (dim=1) -> Shape: (Time, 3 * Batch, D)
         combined = torch.cat([A, B, C], dim=1)
 
-        # Handle padding masks (Shape: (Batch, Time))
-        if pad_mask_A is not None or pad_mask_B is not None:
-            device = combined.device
-            # If one mask is provided but the other isn't, default the missing one to False
-            if pad_mask_A is None:
-                pad_mask_A = torch.zeros((B_size, T), dtype=torch.bool, device=device)
-            if pad_mask_B is None:
-                pad_mask_B = torch.zeros((B.shape[1], T), dtype=torch.bool, device=device)
-
-            # C uses the exact same padding mask as A
-            combined_mask = torch.cat([pad_mask_A, pad_mask_B, pad_mask_A], dim=0)
-        else:
-            combined_mask = None
         # ==========================================
         # 2. SHARED SELF-ATTENTION (Pre-Norm)
         # ==========================================
         normed_combined = self.norm1(combined)
+        combined_mask = torch.cat([pad_mask_A, pad_mask_B, pad_mask_A], dim=0)
 
         # One massive attention call
         src2_combined = self._apply_self_attention(

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import mlflow
 
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
-from prototype.harmonic_restart.harmonic_prior import HarmonicsVisualizer
+from prototype.harmonic_restart.harmonic_prior import HeatmapVisualizer
 
 
 class HeatmapCallback(AbstractCallback):  # Assuming you inherit from your AbstractCallback
@@ -27,14 +27,15 @@ class HeatmapCallback(AbstractCallback):  # Assuming you inherit from your Abstr
 
 
             # Updated to use the separated Visualizer class
-            HarmonicsVisualizer.save_heatmaps(
+            HeatmapVisualizer.save_heatmaps(
                 fig=fig,
                 batch_data=batch,
                 borders=self.trainer.criterion.criterion_backend.borders,
                 save_path=plot_path,
-                logits_A=logits_A,
-                logits_B=logits_B,
-                logits_C=logits_C,
+                model=self.trainer.model,
+                # logits_A=logits_A,
+                # logits_B=logits_B,
+                # logits_C=logits_C,
                 plot=False
             )
 
