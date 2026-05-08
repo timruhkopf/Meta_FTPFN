@@ -149,13 +149,28 @@ class InfiniteHarmonicsStream(IterableDataset):
         # 3. Sample X coordinates
         X_train_A, X_test_A, X_train_B, X_test_B = self._sample_x_coordinates()
 
-        # 4. Evaluate Standard Task B
+        # 4. Evaluate Standard Task B (Domain B is the unwarped baseline)
         Y_train_B = self._eval_function(X_train_B, *params_B) + torch.randn_like(X_train_B) * self.noise_std
         Y_test_B = self._eval_function(X_test_B, *params_B)
 
-        # 5. Apply spatial warping and shift to X coordinates in Domain A
+        # ==========================================
+        # CROSS-DOMAIN EVALUATIONS
+        # ==========================================
+        # 5a. B mapped into A's Domain (Shifted & Warped -> Evaluated on A)
         X_train_B_in_A = X_train_B - h_shift_A + self._apply_spatial_warp(X_train_B, *warps)
         X_test_B_in_A = X_test_B - h_shift_A + self._apply_spatial_warp(X_test_B, *warps)
+
+        Y_train_B_in_A = self._eval_function(X_train_B_in_A, *params_A) + v_shift_A
+        Y_test_B_in_A = self._eval_function(X_test_B_in_A, *params_A) + v_shift_A
+
+        # 5b. A mapped into B's Domain (Unwarped raw coords -> Evaluated on B)
+        X_train_A_in_B = X_train_A
+        X_test_A_in_B = X_test_A
+
+        Y_train_A_in_B = self._eval_function(X_train_A_in_B, *params_B) + torch.randn_like(X_train_A) * self.noise_std
+        Y_test_A_in_B = self._eval_function(X_test_A_in_B, *params_B)
+
+        # 6. Standard Task A (Shifted & Warped -> Evaluated on A)
         X_train_A_warped = X_train_A - h_shift_A + self._apply_spatial_warp(X_train_A, *warps)
         X_test_A_warped = X_test_A - h_shift_A + self._apply_spatial_warp(X_test_A, *warps)
 
@@ -167,8 +182,18 @@ class InfiniteHarmonicsStream(IterableDataset):
         Y_train_A = Y_train_A_clean + torch.randn_like(X_train_A) * self.noise_std
         Y_test_A = scale_A * self._eval_function(X_test_A_warped, *params_A) + v_shift_A
 
-        # 7. Pad Task A to match Task B shapes
+        # 7. Pad Task A (and its B-domain mapped version) to match Task B shapes
         X_train_A_pad, Y_train_A_pad, padding_mask_A = self._pad_task_a(X_train_A, Y_train_A)
+
+        # We also need to pad X_train_A_in_B and Y_train_A_in_B so they fit in the batched tensor
+        X_train_A_in_B_pad, Y_train_A_in_B_pad, _ = self._pad_task_a(X_train_A_in_B, Y_train_A_in_B)
+
+        padding_mask_A = torch.cat([
+            padding_mask_A, torch.zeros((self.batch_size, self.n_B + self.n_test - padding_mask_A.shape[1]), dtype=torch.bool)
+             ], dim=-1
+        )
+        padding_mask_B = torch.zeros_like(padding_mask_A)
+
 
         # 8. Compile and return dictionary
         return {
@@ -182,14 +207,21 @@ class InfiniteHarmonicsStream(IterableDataset):
             'train': {
                 'X_B': X_train_B.unsqueeze(-1), 'Y_B': Y_train_B.unsqueeze(-1),
                 'X_A': X_train_A_pad.unsqueeze(-1), 'Y_A': Y_train_A_pad.unsqueeze(-1),
+
+                # Cross-domain training points
                 'X_B_in_A': X_train_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_train_B_in_A.unsqueeze(-1),
+                'X_A_in_B': X_train_A_in_B_pad.unsqueeze(-1), 'Y_A_in_B': Y_train_A_in_B_pad.unsqueeze(-1),
+
                 'padding_mask_A': padding_mask_A,
-                'padding_mask_B': torch.zeros_like(padding_mask_A),
+                'padding_mask_B': padding_mask_B,
             },
             'test': {
                 'X_B': X_test_B.unsqueeze(-1), 'Y_B': Y_test_B,
                 'X_A': X_test_A.unsqueeze(-1), 'Y_A': Y_test_A,
-                'X_B_in_A': X_test_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_test_B_in_A.unsqueeze(-1),
+
+                # Cross-domain testing points
+                'X_B_in_A': X_test_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_test_B_in_A,
+                'X_A_in_B': X_test_A_in_B.unsqueeze(-1), 'Y_A_in_B': Y_test_A_in_B,
             }
         }
 
@@ -327,10 +359,17 @@ class HeatmapVisualizer:
         ax.plot(x_dense, true_y, color=line_color, linestyle=line_style, linewidth=1.0, alpha=line_alpha, zorder=5)
 
         # 3. Scatter Training Points
-        X_train = HeatmapVisualizer._to_np(batch_data['train'][f'X_{data_key}'][:, batch_idx])
-        Y_train = HeatmapVisualizer._to_np(batch_data['train'][f'Y_{data_key}'][:, batch_idx])
+        X_train = HeatmapVisualizer._to_np(batch_data['train'][f'X_{data_key}'][:, batch_idx]).flatten()
+        Y_train = HeatmapVisualizer._to_np(batch_data['train'][f'Y_{data_key}'][:, batch_idx]).flatten()
 
-        pad_mask = HeatmapVisualizer._to_np(batch_data['train'][f'padding_mask_{data_key}'][batch_idx])
+        pad_mask_np = HeatmapVisualizer._to_np(batch_data['train'][f'padding_mask_{data_key}'])
+        sep = batch_data['train']['X_B'].shape[0]
+        # Bulletproof alignment: Force the mask to yield a vector exactly the length of X_train
+        if pad_mask_np.shape[0] == len(X_train) and pad_mask_np.shape[1] != len(X_train):
+            pad_mask = pad_mask_np[:sep, batch_idx]  # Mask is [Seq, Batch]
+        else:
+            pad_mask = pad_mask_np[batch_idx, :sep]  # Mask is [Batch, Seq] (Standard dataloader behavior)
+
         valid = ~pad_mask.astype(bool)
 
         if is_ac_stream:

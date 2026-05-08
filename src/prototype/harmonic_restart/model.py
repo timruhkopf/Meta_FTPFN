@@ -103,15 +103,15 @@ class TriHarmonicModel(nn.Module):
         y_key = f"Y_{suffix}"
 
         # 2. Extract and format X features
-        x_train = torch.nan_to_num(batch['train'][x_key], nan=0.0).unsqueeze(-1)
-        x_test = torch.nan_to_num(batch['test'][x_key], nan=0.0).unsqueeze(-1)
+        x_train = torch.nan_to_num(batch['train'][x_key], nan=0.0)
+        x_test = torch.nan_to_num(batch['test'][x_key], nan=0.0)
         x_concat = torch.cat([x_train, x_test], dim=0)
 
         # 3. Encode X
         emb_x = self.x_encoder(x_concat)
 
         # 4. Extract, format, and encode Y features
-        y_train = torch.nan_to_num(batch['train'][y_key], nan=0.0).unsqueeze(-1)
+        y_train = torch.nan_to_num(batch['train'][y_key], nan=0.0)
         emb_y = self.y_encoder(y_train)
 
         # 5. Combine embeddings
@@ -125,10 +125,13 @@ class TriHarmonicModel(nn.Module):
         # Double the pad mask for the concatenated version
         if base_pad_mask is not None:
             out_pad_mask = torch.cat([base_pad_mask, base_pad_mask], dim=0)
+        else:
+            out_pad_mask = None
 
         return out_emb, out_pad_mask, out_X
 
     def forward(self, batch):
+        #FIXME: make these arguments!
         X_train_A, Y_train_A = batch['train']['X_A'], batch['train']['Y_A']
         X_train_B, Y_train_B = batch['train']['X_B'], batch['train']['Y_B']
         X_test_A = batch['test']['X_A']
@@ -142,15 +145,6 @@ class TriHarmonicModel(nn.Module):
         X_A = torch.cat([X_train_A, X_test_A], dim=0)
         X_B = torch.cat([X_train_B, X_test_B], dim=0)
 
-        # pad_mask_A = torch.isnan(X_A).transpose(0, 1)
-        # pad_mask_B = torch.isnan(X_B).transpose(0, 1)
-        #
-        # # Clean NaNs
-        # X_A = torch.nan_to_num(X_A, nan=0.0).unsqueeze(-1)
-        # X_B = torch.nan_to_num(X_B, nan=0.0).unsqueeze(-1)
-        # Y_A_train = torch.nan_to_num(Y_train_A, nan=0.0).unsqueeze(-1)
-        # Y_B_train = torch.nan_to_num(Y_train_B, nan=0.0).unsqueeze(-1)
-        #
         # # FIXME: use ADAIN here?
 
         # Encode
@@ -204,7 +198,8 @@ class TriHarmonicModel(nn.Module):
                 # A.detach(), B.detach(), C.detach(),
                 # hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
                 A, B, C,
-                hp_A=emb_X_A, hp_B=emb_X_B, hp_C=emb_X_A,  # C gets the same positional info as A since it's the "anchor"
+                # FIXME: these are not in appropriate size!
+                # hp_A=emb_X_A, hp_B=emb_X_B, hp_C=emb_X_A,  # C gets the same positional info as A since it's the "anchor"
                 sep=single_eval_pos,
                 raw_hp_A=X_A,
                 raw_hp_B=X_B,
@@ -221,7 +216,7 @@ class TriHarmonicModel(nn.Module):
             if 'X_B_in_A' in batch['train'].keys():
                 # drop the auxiliary A in B that we attached to stream B
                 B = B[:, :batch_size, :]
-                pad_mask_B = pad_mask_B[:, :batch_size]
+                pad_mask_B = pad_mask_B[:batch_size]
 
                 A = A[:, :batch_size, :]
                 C = C[:, :batch_size, :]

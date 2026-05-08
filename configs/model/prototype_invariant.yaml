@@ -18,6 +18,8 @@ model:
       proj_depth: 2
       dim_feedforward: 128
       nhead: 4
-      use_stacked_self_attn: True
       update_C_train: False
+      scale_factor: 0.25
+      use_stacked_self_attn: True
+      use_aux_loss: True
 
