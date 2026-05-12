@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import math
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
@@ -39,8 +39,9 @@ class ManifoldCrossAttnLayer(nn.Module):
             """
         super().__init__()
         self.d_model = d_model
-        # self.nhead=nhead
-        # self.head_dim = d_model // nhead
+        self.nhead=nhead
+        self.head_dim = d_model // nhead
+        self.log_tau = nn.Parameter(torch.ones(1) * math.log(1 / 0.07))
         self.scale_factor = scale_factor
         self.use_stacked_self_attn = use_stacked_self_attn
         self.use_aux_loss = use_aux_loss
@@ -85,7 +86,7 @@ class ManifoldCrossAttnLayer(nn.Module):
         self.pre_norm = True  # Standard PFN usually uses pre-norm
 
         # === PFN-Style Residual Block Components ===
-        # self.drop_prob = dropout
+        self.drop_prob = dropout
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -101,10 +102,10 @@ class ManifoldCrossAttnLayer(nn.Module):
         nn.init.zeros_(self.linear2.weight)
         nn.init.zeros_(self.linear2.bias)
 
-    def _build_projection(self, in_dim, hidden_dim, depth):
+    def _build_projection(self, in_dim, hidden_dim, depth,bias=False):
         if depth == 1:
             return nn.Sequential(
-                nn.Linear(in_dim, self.d_model),
+                nn.Linear(in_dim, self.d_model, bias=bias),  # NO BIAS
                 nn.LayerNorm(self.d_model)
             )
         layers = []
@@ -114,7 +115,9 @@ class ManifoldCrossAttnLayer(nn.Module):
             layers.append(nn.GELU())
             layers.append(nn.LayerNorm(hidden_dim))
             curr_dim = hidden_dim
-        layers.append(nn.Linear(curr_dim, self.d_model))
+
+        # NO BIAS on the final embedding projection
+        layers.append(nn.Linear(curr_dim, self.d_model, bias=bias))
         layers.append(nn.LayerNorm(self.d_model))
         return nn.Sequential(*layers)
 
@@ -181,20 +184,23 @@ class ManifoldCrossAttnLayer(nn.Module):
         Q_train_p = Q_train_aux[perm_Q_train].transpose(0, 1)  # [Batch, Seq, Dim]
         K_train_t = K_train_aux.transpose(0, 1)  # [Batch, Seq, Dim]
 
-        # this might crash with amp (float16)
-        # scores_train = torch.bmm(Q_train_p, K_train_t.transpose(1, 2)) / (self.d_model ** 0.5)
-        # 1. TRAIN BMM
-        scale = self.d_model ** self.scale_factor
-        Q_train_safe = Q_train_p / scale
-        K_train_safe = K_train_t / scale
-        scores_train = torch.bmm(Q_train_safe, K_train_safe.transpose(1, 2))
+        # 1. STRICT L2 NORMALIZATION (Destroys magnitude leaks)
+        Q_train_norm = F.normalize(Q_train_p, p=2, dim=-1)
+        K_train_norm = F.normalize(K_train_t, p=2, dim=-1)
+
+        # 2. TEMPERATURE SCALING (Clamped to 100 to prevent FP16 overflows)
+        tau = torch.exp(self.log_tau).clamp(max=100.0)
+
+        # 3. BOUNDED BMM: Max possible value is exactly tau (e.g., 100.0)
+        scores_train = torch.bmm(Q_train_norm, K_train_norm.transpose(1, 2)) * tau
+
         # Fill padded key columns with a large negative value
         scores_train = scores_train.masked_fill(pad_QK_mask, -1e4)
 
         aux_data.update({
             'scores_train': scores_train,
             'perm_Q_train': perm_Q_train,
-            'query_pad_mask': pad_QK[:, perm_Q_train],  # to pass it to the criterion
+            'query_pad_mask': pad_QK[:, perm_Q_train],
             'pad_mask_B_train': pad_mask_B[:batch_size, :sep]
         })
 
@@ -213,10 +219,11 @@ class ManifoldCrossAttnLayer(nn.Module):
         Q_test_p = Q_test_aux[perm_Q_test].transpose(0, 1)
         K_test_t = K_test_aux.transpose(0, 1)
 
-        # scores_test = torch.bmm(Q_test_p, K_test_t.transpose(1, 2)) / (self.d_model ** 0.5)
-        Q_test_safe = Q_test_p / scale
-        K_test_safe = K_test_t / scale
-        scores_test = torch.bmm(Q_test_safe, K_test_safe.transpose(1, 2))
+        # Apply exact same L2 Norm to Test routing
+        Q_test_norm = F.normalize(Q_test_p, p=2, dim=-1)
+        K_test_norm = F.normalize(K_test_t, p=2, dim=-1)
+
+        scores_test = torch.bmm(Q_test_norm, K_test_norm.transpose(1, 2)) * tau
         # no padding required!
 
         aux_data.update({
@@ -320,6 +327,13 @@ class ManifoldCrossAttnLayer(nn.Module):
             Q_final = self.W_Q2(attn_C[sep:, :batch_size, :])
             src = C[sep:, :batch_size, :]
 
+        # 1. L2 Normalize the main stream to match the aux_fwd prior!
+        Q_norm = F.normalize(Q_final, p=2, dim=-1)
+        K_norm = F.normalize(K_final, p=2, dim=-1)
+
+        # 2. Extract Temperature
+        tau = torch.exp(self.log_tau).clamp(max=100.0)
+
 
         # =====================================================================
         # 4. EXPLICIT L2 REGULARIZATION & TELEMETRY
@@ -329,40 +343,48 @@ class ManifoldCrossAttnLayer(nn.Module):
                 # Diagnostics
                 wq_max = max(p.abs().max() for p in self.W_Q2.parameters())
                 wk_max = max(p.abs().max() for p in self.W_K2.parameters())
+                ForwardMetaContext.set('Telemetry/attn_temperature', tau.item())
+                # Track magnitudes (These will now safely stay exactly at 1.0)
+                ForwardMetaContext.set('Telemetry/act_max_Q_norm', Q_norm.abs().max().item())
                 ForwardMetaContext.set('Telemetry/weight_max_W_Q2', wq_max.item())
                 ForwardMetaContext.set('Telemetry/weight_max_W_K2', wk_max.item())
                 ForwardMetaContext.set('Telemetry/act_max_Q_scaled', Q_final.abs().max().item())
                 ForwardMetaContext.set('Telemetry/act_max_K', K_final.abs().max().item())
 
+        b_sz = Q_norm.size(1)
+        seq_q = Q_norm.size(0)
+        seq_k = K_norm.size(0)
 
-        cross_out, cross_attn_weights = self.cross_attn(
-            query=Q_final,
-            key=K_final,
-            value=V_final,
-            key_padding_mask=pad_mask_mem,
-            need_weights=True
+        # SDPA automatically computes: (Q @ K.T) / sqrt(head_dim)
+        # We want: (Q_norm @ K_norm.T) * tau
+        # Therefore, we scale Q_norm by (tau * sqrt(head_dim)) before passing it in.
+        scale_correction = tau * (self.head_dim ** 0.5)
+        Q_scaled = Q_norm * scale_correction
+
+        # Reshape [Seq, Batch, d_model] -> [Batch, Seq, nhead, head_dim] -> [Batch, nhead, Seq, head_dim]
+        Q = Q_scaled.transpose(0, 1).view(b_sz, seq_q, self.nhead, self.head_dim).transpose(1, 2)
+        K = K_norm.transpose(0, 1).view(b_sz, seq_k, self.nhead, self.head_dim).transpose(1, 2)
+        V = V_final.transpose(0, 1).view(b_sz, seq_k, self.nhead, self.head_dim).transpose(1, 2)
+
+        # SDPA Mask: True for valid, False for padding
+        valid_mask = (~pad_mask_mem).unsqueeze(1).unsqueeze(2)
+
+        cross_out = F.scaled_dot_product_attention(
+            Q, K, V,
+            attn_mask=valid_mask,
+            dropout_p=self.drop_prob if self.training else 0.0
         )
 
-        # # 3. Reshape for Multi-Head: [Seq, Batch, d_model] -> [Batch, nhead, Seq, head_dim]
-        # b_sz = Q_final.size(1)
-        #
-        # Q = Q_final.transpose(0, 1).view(b_sz, -1, self.nhead, self.head_dim).transpose(1, 2)
-        # K = K_final.transpose(0, 1).view(b_sz, -1, self.nhead, self.head_dim).transpose(1, 2)
-        # V = V_final.transpose(0, 1).view(b_sz, -1, self.nhead, self.head_dim).transpose(1, 2)
-        #
-        # # 4. Safe, native attention (Cannot explode because Q and K are normalized)
-        # # Note: PyTorch SDPA expects mask as [Batch, nhead, Seq_Q, Seq_K]
-        # mask = pad_mask_mem.unsqueeze(1).unsqueeze(2).expand(-1, self.nhead, Q.size(2), -1)
-        # # Inside your Telemetry block:
-        #
-        # cross_out = F.scaled_dot_product_attention(
-        #     Q, K, V,
-        #     attn_mask=~mask,  # SDPA expects True for valid tokens, False for padding (opposite of standard PyTorch)
-        #     dropout_p=self.drop_prob if self.training else 0.0
+        cross_out = cross_out.transpose(1, 2).contiguous().view(b_sz, seq_q, self.d_model).transpose(0, 1)
+
+        # cross_out, cross_attn_weights = self.cross_attn(
+        #     query=Q_final,
+        #     key=K_final,
+        #     value=V_final,
+        #     key_padding_mask=pad_mask_mem,
+        #     need_weights=True
         # )
-        #
-        # # 5. Reshape back to [Seq, Batch, d_model]
-        # cross_out = cross_out.transpose(1, 2).contiguous().view(b_sz, -1, self.d_model).transpose(0, 1)
+
 
 
         # =====================================================================
@@ -430,6 +452,11 @@ class ManifoldCrossAttnLayer(nn.Module):
                 ForwardMetaContext.set('Telemetry/adapter_payload_ratio', payload_ratio)
                 ForwardMetaContext.set('Telemetry/adapter_cosine_drift', cos_sim)
                 # ridden ourselves of the "shadow-batch"
+
+        if any([torch.any(torch.isnan(t)) for t in (A, B, C)]):
+            import pdb
+            pdb.set_trace()
+
         return A[:, :batch_size, :], B[:, :batch_size, :], C_updated
 
 
