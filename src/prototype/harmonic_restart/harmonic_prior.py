@@ -103,11 +103,13 @@ class InfiniteHarmonicsStream(IterableDataset):
     def _sample_x_coordinates(self):
         """Samples X coordinates for Train and Test sets."""
         B = self.batch_size
-        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
+        # FIXME: B's domain is elongated here to ensure, we will always have a valid target for the
+        #  test point projection. In reality, this will not always be the case -- we may want to learn a tokenwise valve
+        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x -2, self.max_x+2), dim=0)
         X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, self.max_x), dim=0)
 
         # FIX: Removed .unsqueeze(1) here to match the shape of the train set (Seq, Batch)
-        X_test_B = torch.empty(self.n_test, B).uniform_(self.min_x, self.max_x)
+        X_test_B = torch.empty(self.n_test, B).uniform_(self.min_x-2, self.max_x+2)
         X_test_A = torch.empty(self.n_test, B).uniform_(self.min_x, self.max_x)
 
         return X_train_A, X_test_A, X_train_B, X_test_B
@@ -160,8 +162,8 @@ class InfiniteHarmonicsStream(IterableDataset):
         X_train_B_in_A = X_train_B - h_shift_A + self._apply_spatial_warp(X_train_B, *warps)
         X_test_B_in_A = X_test_B - h_shift_A + self._apply_spatial_warp(X_test_B, *warps)
 
-        Y_train_B_in_A = self._eval_function(X_train_B_in_A, *params_A) + v_shift_A
-        Y_test_B_in_A = self._eval_function(X_test_B_in_A, *params_A) + v_shift_A
+        # Y_train_B_in_A = self._eval_function(X_train_B_in_A, *params_A) + v_shift_A
+        # Y_test_B_in_A = self._eval_function(X_test_B_in_A, *params_A) + v_shift_A
 
         # 5b. A mapped into B's Domain (Unwarped raw coords -> Evaluated on B)
         X_train_A_in_B = X_train_A

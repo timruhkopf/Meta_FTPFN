@@ -2,6 +2,7 @@
 defaults:
   - /callbacks: # overwriting the default config's callbacks
       - mlflow
+      - clip
       - plot_1dheatmap
 
   - override /model: prototype

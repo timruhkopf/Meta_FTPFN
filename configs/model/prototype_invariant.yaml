@@ -18,8 +18,12 @@ model:
       proj_depth: 2
       dim_feedforward: 128
       nhead: 4
-      update_C_train: False
+      update_C_train: True
       scale_factor: 0.25
       use_stacked_self_attn: True
       use_aux_loss: True
+      aux_loss:
+        _target_: prototype.harmonic_restart.invariant_layer.ManifoldAlignmentCriterion
+        top_k: 3
+        loss_scale: 0.1
 

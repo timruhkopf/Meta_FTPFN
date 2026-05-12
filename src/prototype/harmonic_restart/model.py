@@ -197,7 +197,7 @@ class TriHarmonicModel(nn.Module):
             A, B, C = self.cross_layer(
                 # A.detach(), B.detach(), C.detach(),
                 # hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
-                A, B, C,
+                A.detach(), B.detach(), C.detach(),
                 # FIXME: these are not in appropriate size!
                 # hp_A=emb_X_A, hp_B=emb_X_B, hp_C=emb_X_A,  # C gets the same positional info as A since it's the "anchor"
                 sep=single_eval_pos,

@@ -299,6 +299,11 @@ class PPFNTrainer:
         # loss calculation outside of autocast for stable training
         loss, step_metrics = self.criterion(output, batch=batch, **fwd_kwargs)
 
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"CRITICAL: NaN loss detected at global step {self.global_step}.")
+            print("Halting before backward pass to preserve state.")
+            import pdb
+            pdb.set_trace()
         # Scale loss for gradient accumulation
         loss_scaled = loss / self.aggregate_k_gradients
 

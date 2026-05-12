@@ -14,10 +14,11 @@ class ManifoldCrossAttnLayer(nn.Module):
             dim_feedforward=128,
             use_stacked_self_attn=True,
             update_C_train=False,
-            test_target_k=3,
+            aux_loss=None,
             dropout=0.1,
             scale_factor=0.25,
-            use_aux_loss=True
+            use_aux_loss=True,
+
     ):
         """
         Latent Manifold Alignment Adapter for zero-shot task transfer in PFNs.
@@ -38,6 +39,8 @@ class ManifoldCrossAttnLayer(nn.Module):
             """
         super().__init__()
         self.d_model = d_model
+        # self.nhead=nhead
+        # self.head_dim = d_model // nhead
         self.scale_factor = scale_factor
         self.use_stacked_self_attn = use_stacked_self_attn
         self.use_aux_loss = use_aux_loss
@@ -77,11 +80,12 @@ class ManifoldCrossAttnLayer(nn.Module):
 
         self.gamma = 1.  # nn.Parameter(torch.zeros(1))
 
-        self.manifold_alignment_criterion = ManifoldAlignmentCriterion(test_target_k)
+        self.manifold_alignment_criterion = aux_loss
 
         self.pre_norm = True  # Standard PFN usually uses pre-norm
 
         # === PFN-Style Residual Block Components ===
+        # self.drop_prob = dropout
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -137,6 +141,13 @@ class ManifoldCrossAttnLayer(nn.Module):
             mask[sep:, sep:] = test_block
 
         return mask
+
+    def _process_stream(self, X, pad_mask, struct_mask):
+        """Ensures A, B, and C go through the exact same mathematical pipeline."""
+        attn, _ = self.stacked_attn(X, X, X, attn_mask=struct_mask, key_padding_mask=pad_mask)
+        res = self.stacked_norm1(X + attn)
+        out = self.stacked_norm2(res + self.stacked_ffn(res))
+        return out
 
     def aux_fwd(
             self,
@@ -214,7 +225,8 @@ class ManifoldCrossAttnLayer(nn.Module):
             'X_B_train': X_B_train,
         })
 
-        self.manifold_alignment_criterion(sep=sep, batch_size=batch_size, **aux_data)
+        if self.manifold_alignment_criterion is not None:
+            self.manifold_alignment_criterion(sep=sep, batch_size=batch_size, **aux_data)
 
     def forward(
             self,
@@ -264,26 +276,15 @@ class ManifoldCrossAttnLayer(nn.Module):
         # 1. DECOUPLED STACKED SELF-ATTENTION
         # =====================================================================
         if self.use_stacked_self_attn:
-            # Domain A Pass: Uses Structural Mask to keep x_test conditionally independent
             struct_mask = self._get_structural_mask(seq_len, sep, A.device)
-            attn_A, _ = self.stacked_attn(A, A, A, attn_mask=struct_mask, key_padding_mask=pad_mask_A)
-            A_res = self.stacked_norm1(A + attn_A)
-            attn_A = self.stacked_norm2(A_res + self.stacked_ffn(A_res))
+            attn_A = self._process_stream(A, pad_mask_A, struct_mask)
 
-            # Domain B Pass: Entirely separate
-            # CONSIDER: we might want to also have x_Btest looking for its k-nearest in A_train
-            #  to use the symmetry of the problem, but notice, that if n_A << n_B, this won't be
-            #  a dense signal, because many points in B will have the same mapping!
-            attn_B, _ = self.stacked_attn(
-                B, B, B,
-                attn_mask=struct_mask,
-                key_padding_mask=pad_mask_B if pad_mask_B.sum() > 0 else None
-            )
-            B_res = self.stacked_norm1(B + attn_B)
-            attn_B = self.stacked_norm2(B_res + self.stacked_ffn(B_res))
+            # Optional: if B uses the same structural mask
+            attn_B = self._process_stream(B, pad_mask_B if pad_mask_B.sum() > 0 else None, struct_mask)
 
+            attn_C = self._process_stream(C, pad_mask_A, struct_mask)  # Stream C is now safely processed!
         else:
-            attn_A, attn_B = A, B
+            attn_A, attn_B, attn_C = A, B, C
 
         # =====================================================================
         # 2. AUXILIARY DATA EXTRACTION (TRAINING ONLY)
@@ -301,94 +302,88 @@ class ManifoldCrossAttnLayer(nn.Module):
         # =====================================================================
         # STEP 3: INVARIANT CROSS-ATTENTION & PFN BLOCK (UPDATING 'C')
         # =====================================================================
+        pad_mask_mem = torch.cat([pad_mask_A[:batch_size, :sep], pad_mask_B[:batch_size, :sep]], dim=1)
+
         # 1. Build the Memory Bank (Keys and Values)
         K_A = self.W_K2(attn_A[:sep, :batch_size, :])
         K_B = self.W_K2(attn_B[:sep, :batch_size, :])
         K_final = torch.cat([K_A, K_B], dim=0)
 
         V_final = torch.cat([A[:sep, :batch_size, :], B[:sep, :batch_size, :]], dim=0)
-        pad_mask_mem = torch.cat([pad_mask_A[:batch_size, :sep], pad_mask_B[:batch_size, :sep]], dim=1)
 
-        # 2. Refine Stream C Queries (using the structural mask from earlier)
-        C_refined, _ = self.stacked_attn(C, C, C, attn_mask=struct_mask, key_padding_mask=pad_mask_A)
-
-        # TODO consider pre-norm here!
-
-        # 3. Dynamic Query Selection (Test Only vs. All)
         if self.update_C_train:
-            Q_final = self.W_Q2(C_refined[:, :batch_size, :])
+            # both train and test
+            Q_final = self.W_Q2(attn_C[:, :batch_size, :])
             src = C[:, :batch_size, :]
         else:
-            Q_final = self.W_Q2(C_refined[sep:, :batch_size, :])
+            # test only
+            Q_final = self.W_Q2(attn_C[sep:, :batch_size, :])
             src = C[sep:, :batch_size, :]
 
-        # 4. Execute Cross-Attention
+
+        # =====================================================================
+        # 4. EXPLICIT L2 REGULARIZATION & TELEMETRY
+        # =====================================================================
+        if self.training:
+            with torch.no_grad():
+                # Diagnostics
+                wq_max = max(p.abs().max() for p in self.W_Q2.parameters())
+                wk_max = max(p.abs().max() for p in self.W_K2.parameters())
+                ForwardMetaContext.set('Telemetry/weight_max_W_Q2', wq_max.item())
+                ForwardMetaContext.set('Telemetry/weight_max_W_K2', wk_max.item())
+                ForwardMetaContext.set('Telemetry/act_max_Q_scaled', Q_final.abs().max().item())
+                ForwardMetaContext.set('Telemetry/act_max_K', K_final.abs().max().item())
+
+
         cross_out, cross_attn_weights = self.cross_attn(
             query=Q_final,
             key=K_final,
             value=V_final,
-            key_padding_mask=pad_mask_mem
+            key_padding_mask=pad_mask_mem,
+            need_weights=True
         )
 
-        # =====================================================================
-        # 3. Safe Attention Mass Distribution (Ignoring Padding NaNs)
-        # =====================================================================
-        with torch.no_grad():
-            # attn_weights shape: [Batch, Seq_Q, Seq_K]
-            mass_A_per_query = cross_attn_weights[:, :, :sep].sum(dim=-1)
-            mass_B_per_query = cross_attn_weights[:, :, sep:].sum(dim=-1)
+        # # 3. Reshape for Multi-Head: [Seq, Batch, d_model] -> [Batch, nhead, Seq, head_dim]
+        # b_sz = Q_final.size(1)
+        #
+        # Q = Q_final.transpose(0, 1).view(b_sz, -1, self.nhead, self.head_dim).transpose(1, 2)
+        # K = K_final.transpose(0, 1).view(b_sz, -1, self.nhead, self.head_dim).transpose(1, 2)
+        # V = V_final.transpose(0, 1).view(b_sz, -1, self.nhead, self.head_dim).transpose(1, 2)
+        #
+        # # 4. Safe, native attention (Cannot explode because Q and K are normalized)
+        # # Note: PyTorch SDPA expects mask as [Batch, nhead, Seq_Q, Seq_K]
+        # mask = pad_mask_mem.unsqueeze(1).unsqueeze(2).expand(-1, self.nhead, Q.size(2), -1)
+        # # Inside your Telemetry block:
+        #
+        # cross_out = F.scaled_dot_product_attention(
+        #     Q, K, V,
+        #     attn_mask=~mask,  # SDPA expects True for valid tokens, False for padding (opposite of standard PyTorch)
+        #     dropout_p=self.drop_prob if self.training else 0.0
+        # )
+        #
+        # # 5. Reshape back to [Seq, Batch, d_model]
+        # cross_out = cross_out.transpose(1, 2).contiguous().view(b_sz, -1, self.d_model).transpose(0, 1)
 
-            # Create the valid query mask (Shape: [Batch, Seq_Q])
-            if self.update_C_train:
-                valid_query_mask = ~pad_mask_A[:batch_size, :]
-            else:
-                valid_query_mask = ~pad_mask_A[:batch_size, sep:]
 
-                # FIX: Only average across physically valid queries
-            if valid_query_mask.any():
-                safe_mass_A = mass_A_per_query[valid_query_mask].mean().item()
-                safe_mass_B = mass_B_per_query[valid_query_mask].mean().item()
-            else:
-                safe_mass_A, safe_mass_B = 0.0, 0.0
-
-            ForwardMetaContext.set('Telemetry/cross_attn_mass_to_A', safe_mass_A)
-            ForwardMetaContext.set('Telemetry/cross_attn_mass_to_B', safe_mass_B)
-
-            # Train-Only ratio
-            if self.update_C_train:
-                valid_train_mask = valid_query_mask[:, :sep]
-                if valid_train_mask.any():
-                    train_mass_A = mass_A_per_query[:, :sep][valid_train_mask].mean().item()
-                    train_mass_B = mass_B_per_query[:, :sep][valid_train_mask].mean().item()
-                    transfer_ratio = train_mass_B / (train_mass_A + 1e-9)
-                else:
-                    train_mass_A, train_mass_B, transfer_ratio = 0.0, 0.0, 0.0
-
-                ForwardMetaContext.set('Telemetry/cross_attn_mass_A_train', train_mass_A)
-                ForwardMetaContext.set('Telemetry/cross_attn_mass_B_train', train_mass_B)
-                ForwardMetaContext.set('Telemetry/transfer_ratio_train', transfer_ratio)
         # =====================================================================
         # 4. EXACT PFN RESIDUAL & FFN BLOCK
         # =====================================================================
-        # Apply the zero-initialized adapter gate
         src2 = self.gamma * cross_out
 
-        # First Residual
-        src = src + self.dropout1(src2)
-        if not self.pre_norm:
-            src = self.norm1(src)
-
-        # FFN Block
         if self.pre_norm:
+            # DIRECT INJECTION: Do not apply norm1 to the attention output!
+            src = src + self.dropout1(src2)
+
+            # Standard Pre-Norm for the FFN
             src_ = self.norm2(src)
+            src2 = self.linear2(self.dropout(self.activation(self.linear1(src_))))
+            src = src + self.dropout2(src2)
         else:
-            src_ = src
-
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src_))))
-
-        # Second Residual
-        src = src + self.dropout2(src2)
-        if not self.pre_norm:
+            # Standard Post-Norm (if you toggle the architecture)
+            src = src + self.dropout1(src2)
+            src = self.norm1(src)  # Norm applied to the accumulated stream
+            src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+            src = src + self.dropout2(src2)
             src = self.norm2(src)
 
         # =====================================================================
@@ -409,8 +404,10 @@ class ManifoldCrossAttnLayer(nn.Module):
                 injected_signal = self.dropout2(src2)
 
                 if self.update_C_train:
+                    valid_query_mask = ~pad_mask_A[:batch_size, :]
                     base_slice = C[:, :batch_size, :]
                 else:
+                    valid_query_mask = ~pad_mask_A[:batch_size, sep:]
                     base_slice = C[sep:, :batch_size, :]
 
                 # FIX: base_slice is [Seq, Batch, Dim]. valid_query_mask is [Batch, Seq].
@@ -451,9 +448,10 @@ class ManifoldAlignmentCriterion(nn.Module):
             geometric loss for test tokens. Defaults to 3.
     """
 
-    def __init__(self, top_k=3):
+    def __init__(self, top_k=1, loss_scale=0.1):
         super().__init__()
         self.k = top_k
+        self.loss_scale = loss_scale
 
     def _get_topk_soft_targets(self, query_coords, key_coords, key_pad_mask=None):
         """
@@ -568,7 +566,10 @@ class ManifoldAlignmentCriterion(nn.Module):
             test_top3_acc = (top3_preds_test.unsqueeze(2) == true_target_indices.unsqueeze(1)).any(dim=2).any(
                 dim=1).float().mean()
             ForwardMetaContext.set('Telemetry/adapter_align_top3_acc_test', test_top3_acc.item())
-        total_loss = loss_train + loss_test
-        ForwardMetaContext.set('ce_aux_loss', total_loss)
+
+        penalty = ForwardMetaContext.get('loss_adapter_reg', default=0.0)
+        total_loss = loss_train + loss_test + penalty
+
+        ForwardMetaContext.set('ce_aux_loss', total_loss * self.loss_scale)
 
         return total_loss
