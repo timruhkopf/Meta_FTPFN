@@ -11,12 +11,12 @@ class AlternatingTriStreamBlock(nn.Module):
     def __init__(self, d_model, nhead, dropout=0.1, cross_type='temporal_query'):
         super().__init__()
         # 1. Temporal (Sequence) Attention - Independent per stream
-        self.temporal_attn_A = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
-        self.temporal_attn_B = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.temporal_attn_AB = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        # self.temporal_attn_B = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.temporal_attn_C = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
 
-        self.norm_temp_A = nn.LayerNorm(d_model)
-        self.norm_temp_B = nn.LayerNorm(d_model)
+        self.norm_temp_AB = nn.LayerNorm(d_model)
+        # self.norm_temp_B = nn.LayerNorm(d_model)
         self.norm_temp_C = nn.LayerNorm(d_model)
 
         # 2. Feature (Stream) Attention - A/B paired
@@ -38,12 +38,12 @@ class AlternatingTriStreamBlock(nn.Module):
         self.norm_feat_C = nn.LayerNorm(d_model)
 
         # 3. Feed Forward Networks
-        self.ffn_A = self._build_ffn(d_model, dropout)
-        self.ffn_B = self._build_ffn(d_model, dropout)
+        self.ffn_AB = self._build_ffn(d_model, dropout)
+        # self.ffn_B = self._build_ffn(d_model, dropout)
         self.ffn_C = self._build_ffn(d_model, dropout)
 
-        self.norm_ffn_A = nn.LayerNorm(d_model)
-        self.norm_ffn_B = nn.LayerNorm(d_model)
+        self.norm_ffn_AB = nn.LayerNorm(d_model)
+        # self.norm_ffn_B = nn.LayerNorm(d_model)
         self.norm_ffn_C = nn.LayerNorm(d_model)
 
         self.query_prep_C = nn.Sequential(
@@ -70,15 +70,15 @@ class AlternatingTriStreamBlock(nn.Module):
         # STEP 1: TEMPORAL ATTENTION (Along Sequence Dim T)
         # ==========================================
         # Using Pre-Norm architecture
-        A_norm = self.norm_temp_A(A)
-        A_temp, _ = self.temporal_attn_A(
+        A_norm = self.norm_temp_AB(A)
+        A_temp, _ = self.temporal_attn_AB(
             A_norm, A_norm, A_norm,
             key_padding_mask=pad_mask_A, attn_mask=causal_mask
         )
         A = A + A_temp
 
-        B_norm = self.norm_temp_B(B)
-        B_temp, _ = self.temporal_attn_B(
+        B_norm = self.norm_temp_AB(B)
+        B_temp, _ = self.temporal_attn_AB(
             B_norm, B_norm, B_norm,
             key_padding_mask=pad_mask_B, attn_mask=causal_mask
         )
@@ -100,7 +100,7 @@ class AlternatingTriStreamBlock(nn.Module):
         B_kv = self.norm_feat_B(B).view(T * Batch, 1, D).transpose(0, 1)  # (1, T*Batch, D)
 
         # Stack A and B to form a Key/Value sequence of length 2
-        AB_kv = torch.cat([A_kv, B_kv], dim=0)  # (2, T*Batch, D)
+        AB_kv = torch.cat([A_kv, B_kv], dim=0).detach()  # (2, T*Batch, D)
 
         # # C is the Query
         if self.cross_type == 'direct':
@@ -130,8 +130,8 @@ class AlternatingTriStreamBlock(nn.Module):
             # from peeking at Test tokens in B, maintaining strict PFN rules.
             C_cross, _ = self.temporal_cross_attn_C(
                 query=C_cross_norm,
-                key=B_cross_norm,
-                value=B_cross_norm,
+                key=B_cross_norm.detach(),
+                value=B_cross_norm.detach(),
                 key_padding_mask=pad_mask_B,
                 attn_mask=causal_mask
             )
@@ -142,7 +142,7 @@ class AlternatingTriStreamBlock(nn.Module):
             # ==========================================
             A_kv = self.norm_feat_A(A).view(T * Batch, 1, D).transpose(0, 1)
             B_kv = self.norm_feat_B(B).view(T * Batch, 1, D).transpose(0, 1)
-            AB_kv = torch.cat([A_kv, B_kv], dim=0)  # Shape: (2, T*Batch, D)
+            AB_kv = torch.cat([A_kv, B_kv], dim=0).detach()  # Shape: (2, T*Batch, D)
 
             C_q = self.norm_feat_C(C).view(T * Batch, 1, D).transpose(0, 1)
 
@@ -156,8 +156,8 @@ class AlternatingTriStreamBlock(nn.Module):
         # ==========================================
         # STEP 3: FEED FORWARD
         # ==========================================
-        A = A + self.ffn_A(self.norm_ffn_A(A))
-        B = B + self.ffn_B(self.norm_ffn_B(B))
+        A = A + self.ffn_AB(self.norm_ffn_AB(A))
+        B = B + self.ffn_AB(self.norm_ffn_AB(B))
         C = C + self.ffn_C(self.norm_ffn_C(C))
 
         return A, B, C
