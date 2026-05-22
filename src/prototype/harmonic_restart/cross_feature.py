@@ -25,6 +25,7 @@ class AlternatingTriStreamBlock(nn.Module):
         # 2. Temporal Cross-Attention (C queries B over Sequence T)
         # ==========================================
         self.temporal_cross_attn_C = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        # self.temporal_cross_attn_C = CosineMultiheadAttention(d_model, nhead, dropout=dropout)
         self.norm_cross_C = nn.LayerNorm(d_model)
         self.norm_cross_B = nn.LayerNorm(d_model)
 
@@ -53,6 +54,11 @@ class AlternatingTriStreamBlock(nn.Module):
         )
 
         self.cross_type = cross_type
+
+        self.c_update_gate = nn.Sequential(
+            nn.Linear(d_model * 2, d_model),
+            nn.Sigmoid()
+        )
 
     def _build_ffn(self, d_model, dropout):
         return nn.Sequential(
@@ -108,6 +114,7 @@ class AlternatingTriStreamBlock(nn.Module):
 
             # Workbench C cross-attends to A and B simultaneously
             C_feat_out, _ = self.feature_attn_C(query=C_q, key=AB_kv, value=AB_kv)
+            C = C + C_feat_out.view(T, Batch, D)
 
         elif self.cross_type == 'prep':
             # C prepares a specialized query state before asking A and B
@@ -117,6 +124,7 @@ class AlternatingTriStreamBlock(nn.Module):
             C_q = C_query_state.view(T * Batch, 1, D).transpose(0, 1)
 
             C_feat_out, _ = self.feature_attn_C(query=C_q, key=AB_kv, value=AB_kv)
+            C = C + C_feat_out.view(T, Batch, D)
 
         elif self.cross_type == 'temporal_query':
             # ==========================================
@@ -128,13 +136,14 @@ class AlternatingTriStreamBlock(nn.Module):
 
             # causal_mask safely applies here too, preventing Test tokens in C
             # from peeking at Test tokens in B, maintaining strict PFN rules.
-            C_cross, _ = self.temporal_cross_attn_C(
-                query=C_cross_norm,
-                key=B_cross_norm.detach(),
-                value=B_cross_norm.detach(),
-                key_padding_mask=pad_mask_B,
-                attn_mask=causal_mask
-            )
+            with torch.cuda.amp.autocast( enabled=False):
+                C_cross, _ = self.temporal_cross_attn_C(
+                    query=C_cross_norm.float(),
+                    key=B_cross_norm.detach().float(),
+                    value=B_cross_norm.detach().float(),
+                    key_padding_mask=pad_mask_B,
+                    attn_mask=causal_mask.float() if causal_mask is not None else None
+                )
             C = C + C_cross
 
             # ==========================================
@@ -147,11 +156,19 @@ class AlternatingTriStreamBlock(nn.Module):
             C_q = self.norm_feat_C(C).view(T * Batch, 1, D).transpose(0, 1)
 
             # C resolves any final local alignments at time `t`
-            C_feat_out, _ = self.feature_attn_C(query=C_q, key=AB_kv, value=AB_kv)
+            with torch.cuda.amp.autocast( enabled=False):
+                C_feat_out, _ = self.feature_attn_C(query=C_q.float(), key=AB_kv.float(), value=AB_kv.float())
 
         # Residual update is ONLY applied to C.
         # A and B remain untouched by this step.
-        C = C + C_feat_out.view(T, Batch, D)
+        C_feat_out = C_feat_out.view(T, Batch, D)
+
+        # Calculate the gate using the current state (A) and the target features (B)
+        gate = self.c_update_gate(torch.cat([C, C_feat_out], dim=-1))
+
+        # THE FIX: Smooth Interpolation instead of Residual Addition
+        # If gate = 0, keep C's history. If gate = 1, fully overwrite with B's features.
+        C = (1.0 - gate) * C + gate * C_feat_out
 
         # ==========================================
         # STEP 3: FEED FORWARD
@@ -179,7 +196,8 @@ class MultiStageTriHarmonicModel(nn.Module):
         ])
 
         self.final_norm = nn.LayerNorm(d_model)
-        self.decoder = nn.Linear(d_model, num_bars)
+        self.decoder = nn.Linear(d_model, num_bars, bias=False) # false to avoid softmax drift and divergence.
+        # self.decoder_C = nn.Linear(d_model, num_bars, bias=False)  # false to avoid softmax drift and divergence.
 
     # ... [Keep your append_cross_domain_features method exactly as is] ...
 
@@ -239,6 +257,11 @@ class MultiStageTriHarmonicModel(nn.Module):
         logits_A = self.decoder(out_A[single_eval_pos:, :, :])
         logits_B = self.decoder(out_B[single_eval_pos:, :, :])
         logits_C = self.decoder(out_C[single_eval_pos:, :, :])
+
+        # This completely neutralizes the unconstrained bias drift
+        logits_A = logits_A - logits_A.mean(dim=-1, keepdim=True)
+        logits_B = logits_B - logits_B.mean(dim=-1, keepdim=True)
+        logits_C = logits_C - logits_C.mean(dim=-1, keepdim=True)
 
         return logits_A, logits_B, logits_C
 
