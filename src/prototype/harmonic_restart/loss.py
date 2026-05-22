@@ -94,7 +94,8 @@ class TriHarmonicLoss(nn.Module):
             total_loss +=  ce_aux
             metrics["ATTN/CE-LOSS"] = ce_aux
 
-            metrics.update({k:v for k,v in ForwardMetaContext._state.__dict__.items() if k.startswith('Telemetry/')})
+        # FIXME: move to trainer?
+        metrics.update({k:v for k,v in ForwardMetaContext._state.__dict__.items() if k.startswith('Telemetry/')})
 
         aux = ForwardMetaContext.get('B_in_A_domain')
         if aux is not None:
