@@ -10,39 +10,6 @@ from torch import Tensor
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 from prototype.harmonic_restart.pfn_layer import PFNLayer
 
-"""
-On Gating: "How do we ask for plausibility without overusing the data?"
-
-If you use Domain C's points to compute the warp, and then you evaluate the NLL on those exact same C points to decide if the warp was "plausible," you will always get a false positive. The network has already perfectly overfit those anchors.
-
-The Conceptual Solution: Evaluate the Transformation, Not the Data.
-You don't need to look at Domain C to know if the transfer is plausible; you need to look at the energy of the deformation field itself.
-
-Think of Domain B as a rubber sheet. To align it with a related Domain C, you might have to stretch it a little bit (low energy). To align it with an unrelated Domain C, you have to violently stretch, twist, and fold the sheet (high energy).
-
-Instead of asking, "Does this warped B fit C?", you ask, "How hard did the network have to work to warp B?"
-
-What is the magnitude of the predicted shift vector (mu)?
-
-How erratic are the attention weights in the align_attn?
-
-Does the shift vector change violently between adjacent tokens?
-
-If the transformation requires extreme, high-frequency changes, it is mathematically implausible, indicating negative transfer.
-"""
-
-"""
-reasons for mild nll improvement conditioning on unrelated contexts 
-1. spurious correlation
-2. The "Process of Elimination" (Your Second Point)Knowing what $A$ is not is mathematically valuable. If your model operates in a constrained space, and the unrelated context $B$ occupies a certain volume of that space, the model can confidently say, "Well, $A$ cannot be there." By eliminating a chunk of the probability mass, the remaining distribution is forced to squeeze into a smaller volume, artificially sharpening the confidence bounds.
-3. overfitting & miscalibration
-4. The Information Theory Trap: $H(A|B) \leq H(A)$In pure information theory, conditioning reduces entropy.
- The entropy of $A$ given $B$ can never be mathematically greater than the entropy of $A$ alone, on average.
- Many architectures (especially self-attention or conditional normalizations) are structurally biased to 
- behave this way. When you give the model an input $B$ to condition on, the network's internal representations
-  contract. It assumes that because it was given a condition, it must use it to reduce the hypothesis space. 
-  It tightens the bounds mechanically, unaware that $B$ is pure garbage.
-"""
 
 
 class FourierEncoder(nn.Module):
@@ -60,7 +27,53 @@ class FourierEncoder(nn.Module):
 
 
 class TriHarmonicModel(nn.Module):
-    def __init__(self, cross_attn_layer, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_freq_enc_x=True,
+    """
+        Tri-Stream Posterior Foundation Network (PFN) for Cross-Domain Alignment.
+
+        This model is designed to perform Bayesian inference across multiple related
+        functional streams. It learns to map a sparse, potentially distorted observation
+        stream (Domain A) against a dense, canonical prior stream (Domain B) in order
+        to improve predictive log-likelihoods on a target evaluation stream (Domain C).
+
+        Core Architectural Concepts:
+            1. Tri-Stream Marginal Processing: The network maintains three distinct
+               representational streams (A, B, and C). Initial layers process these
+               streams marginally, allowing the model to perform valid Bayesian inference
+               for each domain independently before attempting cross-domain alignment.
+
+            2. Cross-Domain Alignment (The "Translation" Objective): A dedicated
+               cross-attention layer allows Stream A to query Stream B. This enables
+               the model to resolve spatial distortions (e.g., affine shifts, spatial
+               warping) by copying relevant features from the canonical domain to
+               reduce the final negative log-likelihood (NLL) of Stream C.
+
+            3. Shadow Batches & Auxiliary Guidance: During training, the model ingests
+               synthetic cross-domain projections ('A_in_B' and 'B_in_A'). These "shadow
+               batches" are appended to the sequence dimension. They act as anchor
+               points to guide the cross-attention mechanism, allowing the calculation
+               of an auxiliary identity-matrix loss (similar to CLIP alignment) between
+               the distorted and canonical domains. To prevent data leakage during
+               inference, these shadow projections are truncated before final decoding.
+
+        Args:
+            cross_attn_layer (nn.Module): The module responsible for computing attention
+                between Stream A and Stream B (and their respective shadow batches).
+            d_model (int, optional): Dimensionality of the latent embeddings. Defaults to 64.
+            nhead (int, optional): Number of attention heads in the PFN layers. Defaults to 4.
+            dropout (float, optional): Dropout probability for the PFN layers. Defaults to 0.1.
+            num_bars (int, optional): Size of the output logit vector (e.g., discrete bins
+                for the target bar distribution). Defaults to 100.
+            use_freq_enc_x (bool, optional): If True, applies a Fourier Encoder to the X
+                coordinates to capture high-frequency details. Otherwise, uses a standard
+                linear projection. Defaults to True.
+            use_post_attn (bool, optional): If True, applies an additional marginal PFN layer
+                after the cross-attention step to refine the aligned representations.
+                Defaults to True.
+            use_cross_attn (bool, optional): If True, activates cross-domain alignment
+                and shadow batch processing. If False, the model acts as a baseline
+                independent PFN (useful for ablation/baseline NLL scoring). Defaults to True.
+        """
+    def __init__(self, cross_attn_layer, d_model=64, nhead=4, dropout=0.1, num_bars=100, use_freq_enc_x=False,
                  use_post_attn=True, use_cross_attn=True):
         super().__init__()
         self.num_bars = num_bars
@@ -69,7 +82,7 @@ class TriHarmonicModel(nn.Module):
         self.y_encoder = nn.Linear(1, d_model)
 
         self.pfn_layer = PFNLayer(d_model, nhead=nhead, dropout=dropout)
-        self.cross_layer = cross_attn_layer
+        self.cross_layers = cross_attn_layer
 
         self.use_cross_attn = use_cross_attn  # to allow baseline calculations for nll scores (once)
         self.use_post_attn = use_post_attn
@@ -161,7 +174,7 @@ class TriHarmonicModel(nn.Module):
         A[:single_eval_pos, :, :] += emb_Y_A
         B[:single_eval_pos, :, :] += emb_Y_B
 
-        if self.use_cross_attn: #
+        if self.use_cross_attn: # fixme: the keys will not exist during inference!
             # Process A_in_B and append to A
             A, pad_mask_A, X_A = self.append_cross_domain_features(
                 batch=batch,
@@ -194,7 +207,7 @@ class TriHarmonicModel(nn.Module):
         # fixme: this will prevent joint training, but be more efficient in warmup
         if self.use_cross_attn:
             # overwriting A, B with pass throughs, but purged of shadow batch, which is available during training
-            A, B, C = self.cross_layer(
+            A, B, C = self.cross_layers(
                 # A.detach(), B.detach(), C.detach(),
                 # hp_A=emb_X_A.detach(), hp_B=emb_X_B.detach(), hp_C=emb_X_A.detach(),
                 A.detach(), B.detach(), C.detach(),
@@ -235,5 +248,7 @@ class TriHarmonicModel(nn.Module):
         logits_B = self.decoder(out_B[single_eval_pos:, :, :])
         logits_C = self.decoder(out_C[single_eval_pos:, :, :])
 
-        # if self.training:
+        if any([torch.any(torch.isnan(t)) for t in (logits_A, logits_B, logits_C)]):
+            import pdb
+            pdb.set_trace()
         return logits_A, logits_B, logits_C
