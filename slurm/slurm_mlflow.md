@@ -170,8 +170,11 @@ skip the parent-creation phase, and just log a standard, flat MLflow run.
 
 ```bash
 sudo chown -R ruhkopf /home/ruhkopf/PycharmProjects/Meta_FTPFN/
-tmux new-session -d -s pfn_train "bash -c 'set -a; source /home/ruhkopf/PycharmProjects/Meta_FTPFN/.env; set +a; /home/ruhkopf/PycharmProjects/Meta_FTPFN/.venv/bin/python /home/ruhkopf/PycharmProjects/Meta_FTPFN/src/train.py experiment=prototype model=prototype_invariant trainer.steps=10 trainer.epochs=100000 dataset.dataset_class.warp=True dataset.dataset_class.scale=False dataset.dataset_class.batch_size=128 dataset.dataset_class.share_unrelated=0. dataset.dataset_class.n_A=10 trainer.trainer_class.warmup_epochs=1000 callbacks.plot_heat.plot_every=300 run_name=tmux_x_test-query-training optimizer.lr=0.001; exec bash'"
+tmux new-session -d -s pfn_train "bash -c 'set -a; source /home/ruhkopf/PycharmProjects/Meta_FTPFN/.env; set +a; /home/ruhkopf/PycharmProjects/Meta_FTPFN/.venv/bin/python /home/ruhkopf/PycharmProjects/Meta_FTPFN/src/train.py experiment=prototype model=prototype_invariant model.model_class._target_=prototype.harmonic_restart.cross_feature.MultiStageTriHarmonicModel ~model.model_class.cross_attn_layer experiment_name=feat_attn trainer.steps=10 trainer.epochs=20000 dataset.dataset_class.warp=False dataset.dataset_class.scale=False dataset.dataset_class.shift=True dataset.dataset_class.batch_size=128 dataset.dataset_class.share_unrelated=0. dataset.dataset_class.n_A=10 trainer.trainer_class.warmup_epochs=500 trainer.trainer_class.train_jointly=True callbacks.plot_heat.plot_every=500 callbacks.plot_heat.start_plotting_epoch=500  optimizer.lr=0.0003 scheduler=onecylcelr trainer.trainer_class.use_amp=True trainer.trainer_class.verbose=True run_name=tmux_stacked_feat_attn; exec bash'"
 
+
+tmux ls 
+tmux attach-session -t pfn_train
 
 tmux kill-session -t pfn_train
 

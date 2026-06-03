@@ -11,7 +11,7 @@ class AlternatingTriStreamBlock(nn.Module):
     Temporal Attention (seq) -> Feature Attention (cross-stream) -> FFN
     """
 
-    def __init__(self, d_model, nhead, dropout=0.1, cross_type='temporal_query'):
+    def __init__(self, d_model, nhead, dropout=0.1, cross_type='temporal_query', use_gate=True):
         super().__init__()
         # 1. Temporal (Sequence) Attention - Independent per stream
         self.temporal_attn_AB = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
@@ -58,11 +58,13 @@ class AlternatingTriStreamBlock(nn.Module):
 
         self.cross_type = cross_type
 
-        self.c_update_gate = nn.Sequential(
-            nn.LayerNorm(d_model * 2), # idea was that the gate might be cause for logit expl.
-            nn.Linear(d_model * 2, d_model),
-            nn.Sigmoid()
-        )
+        self.use_gate = use_gate
+        if self.use_gate:
+            self.c_update_gate = nn.Sequential(
+                nn.LayerNorm(d_model * 2), # idea was that the gate might be cause for logit expl.
+                nn.Linear(d_model * 2, d_model),
+                nn.Sigmoid()
+            )
 
     def _build_ffn(self, d_model, dropout):
         return nn.Sequential(
@@ -73,34 +75,26 @@ class AlternatingTriStreamBlock(nn.Module):
             nn.Dropout(dropout)
         )
 
-    def forward(self, A, B, C, sep, pad_mask_A=None, pad_mask_B=None, causal_mask=None):
-        T, Batch, D = A.shape
+    @staticmethod
+    def sliced_attention(query_seq, sep_idx, attn_module, pad_mask):
+        sliced_pad_mask = pad_mask[:, :sep_idx] if pad_mask is not None else None
+        # Train -> Train
+        out_left, _ = attn_module(
+            query_seq[:sep_idx], query_seq[:sep_idx], query_seq[:sep_idx],
+            key_padding_mask=sliced_pad_mask
+        )
+        # Test -> Train (Test tokens strictly query Train tokens)
+        out_right, _ = attn_module(
+            query_seq[sep_idx:], query_seq[:sep_idx], query_seq[:sep_idx],
+            key_padding_mask=sliced_pad_mask
+        )
+        return torch.cat([out_left, out_right], dim=0)
 
-        # ==========================================
-        # STEP 1: TEMPORAL ATTENTION (Along Sequence Dim T)
-        # ==========================================
-        # # Using Pre-Norm architecture
-        # A_norm = self.norm_temp_AB(A)
-        # A_temp, _ = self.temporal_attn_AB(
-        #     A_norm, A_norm, A_norm,
-        #     key_padding_mask=pad_mask_A, attn_mask=causal_mask
-        # )
-        # A = A + A_temp
-        #
-        # B_norm = self.norm_temp_AB(B)
-        # B_temp, _ = self.temporal_attn_AB(
-        #     B_norm, B_norm, B_norm,
-        #     key_padding_mask=pad_mask_B, attn_mask=causal_mask
-        # )
-        # B = B + B_temp
-        #
-        # C_norm = self.norm_temp_C(C)
-        # # C follows A's padding mask as it's initialized with A
-        # C_temp, _ = self.temporal_attn_C(
-        #     C_norm, C_norm, C_norm,
-        #     key_padding_mask=pad_mask_A, attn_mask=causal_mask
-        # )
-        # C = C + C_temp
+    def forward(self, A, B, C, sep, pad_mask_A=None, pad_mask_B=None, causal_mask=None):
+        # FIXME: having moved the pfn marginal into this cross_layer, the trainer in the warm_up phase
+        #  will be unable to learn anything, other than using the encoder and decoder linears!
+
+        T, Batch, D = A.shape
 
         A_norm = self.norm_temp_AB(A)
         B_norm = self.norm_temp_AB(B)
@@ -108,29 +102,14 @@ class AlternatingTriStreamBlock(nn.Module):
 
         # Using the following code avoids passing the causal mask, which in turn has internal changes for MHA
         # as consequence, causing more efficient and precise attn.
-        def sliced_attention(query_seq, sep_idx, attn_module, pad_mask):
-
-            sliced_pad_mask = pad_mask[:, :sep_idx] if pad_mask is not None else None
-            # Train -> Train
-            out_left, _ = attn_module(
-                query_seq[:sep_idx], query_seq[:sep_idx], query_seq[:sep_idx],
-                key_padding_mask=sliced_pad_mask
-            )
-            # Test -> Train (Test tokens strictly query Train tokens)
-            out_right, _ = attn_module(
-                query_seq[sep_idx:], query_seq[:sep_idx], query_seq[:sep_idx],
-                key_padding_mask=sliced_pad_mask
-            )
-            return torch.cat([out_left, out_right], dim=0)
-
         # Process A, B, and C using the FlashAttention-safe slicing method
-        A_temp = sliced_attention(A_norm, sep, self.temporal_attn_AB, pad_mask_A)
+        A_temp = self.sliced_attention(A_norm, sep, self.temporal_attn_AB, pad_mask_A)
         A = A + A_temp
 
-        B_temp = sliced_attention(B_norm, sep, self.temporal_attn_AB, pad_mask_B)
+        B_temp = self.sliced_attention(B_norm, sep, self.temporal_attn_AB, pad_mask_B)
         B = B + B_temp
 
-        C_temp = sliced_attention(C_norm, sep, self.temporal_attn_C, pad_mask_A)
+        C_temp = self.sliced_attention(C_norm, sep, self.temporal_attn_C, pad_mask_A)
         C = C + C_temp
 
         # ==========================================
@@ -173,6 +152,7 @@ class AlternatingTriStreamBlock(nn.Module):
             # from peeking at Test tokens in B, maintaining strict PFN rules.
             # if False:
             # FIXME: what if we also here didn't use the mask, but two fwds with train test split
+            # TODO: when deactivating fp16, we need to cast q, k, v and the mask to float()!
             with torch.cuda.amp.autocast(enabled=False):
                 C_cross, _ = self.temporal_cross_attn_C(
                     query=C_cross_norm.float(),
@@ -194,23 +174,25 @@ class AlternatingTriStreamBlock(nn.Module):
             C_q = self.norm_feat_C(C).view(T * Batch, 1, D).transpose(0, 1)
 
             # C resolves any final local alignments at time `t`
-            # with torch.cuda.amp.autocast(enabled=False):
-            C_feat_out, _ = self.feature_attn_C(query=C_q.float(), key=AB_kv.float(), value=AB_kv.float())
+            with torch.cuda.amp.autocast(enabled=False):
+                C_feat_out, _ = self.feature_attn_C(query=C_q.float(), key=AB_kv.float(), value=AB_kv.float())
 
         # Residual update is ONLY applied to C.
         # A and B remain untouched by this step.
         C_feat_out = C_feat_out.view(T, Batch, D)
 
-        # Calculate the gate using the current state (A) and the target features (B)
-        gate = self.c_update_gate(torch.cat([C, C_feat_out], dim=-1))
+        if self.use_gate:
+            # Calculate the gate using the current state (A) and the target features (B)
+            gate = self.c_update_gate(torch.cat([C, C_feat_out], dim=-1))
 
-        if self.training:
-            ForwardMetaContext.set(**{"Telemetry/last_layer_gate_mean": gate.mean().item(), })
+            if self.training:
+                ForwardMetaContext.set(**{"Telemetry/last_layer_gate_mean": gate.mean().item(), })
 
-        # THE FIX: Smooth Interpolation instead of Residual Addition
-        # If gate = 0, keep C's history. If gate = 1, fully overwrite with B's features.
-        C = (1.0 - gate) * C + gate * C_feat_out
-        # C = C + C_feat_out
+            # THE FIX: Smooth Interpolation instead of Residual Addition
+            # If gate = 0, keep C's history. If gate = 1, fully overwrite with B's features.
+            C = (1.0 - gate) * C + gate * C_feat_out
+        else:
+            C = C + C_feat_out
 
         # ==========================================
         # STEP 3: FEED FORWARD
@@ -232,7 +214,7 @@ class MultiStageTriHarmonicModel(nn.Module):
         self.use_cross_attn = use_cross_attn
 
         # Multi-Stage Alternating Pipeline
-        self.layers = nn.ModuleList([
+        self.cross_layers = nn.ModuleList([
             AlternatingTriStreamBlock(d_model, nhead, dropout)
             for _ in range(num_layers)
         ])
@@ -278,6 +260,7 @@ class MultiStageTriHarmonicModel(nn.Module):
 
         X_C = X_A.clone()
         C = A.detach().clone()
+        # C = emb_X_A.detach().clone()
 
         # Optional: Implement PFN evaluation masking here if you don't want
         # train items looking at test items, or test items looking at test items.
@@ -285,7 +268,7 @@ class MultiStageTriHarmonicModel(nn.Module):
         # structural_mask = self._get_structural_mask(seq_len, single_eval_pos, A.device)
 
         # Forward pass through alternating blocks
-        for layer in self.layers:
+        for layer in self.cross_layers:
             A, B, C = layer(A, B, C, single_eval_pos, pad_mask_A, pad_mask_B, causal_mask=None)
                             # causal_mask=structural_mask)
 
@@ -334,11 +317,6 @@ class MultiStageTriHarmonicModel(nn.Module):
 
                 }
             )
-
-        # This completely neutralizes the unconstrained bias drift
-        logits_A = logits_A - logits_A.mean(dim=-1, keepdim=True)
-        logits_B = logits_B - logits_B.mean(dim=-1, keepdim=True)
-        logits_C = logits_C - logits_C.mean(dim=-1, keepdim=True)
 
         return logits_A.float(), logits_B.float(), logits_C.float()
 

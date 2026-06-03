@@ -41,7 +41,7 @@ class TriStreamTrainer(PPFNTrainer):
 
             if self.global_step == 0:
                 logger.info("Phase 1: Freezing Adapter C for warmup phase.")
-                for param in self.model.cross_layer.parameters():
+                for param in self.model.cross_layers.parameters():
                     param.requires_grad = False
 
                 self.model.use_cross_attn = False # signal, that we want to sidestep the cross_attn_layer!
@@ -55,7 +55,7 @@ class TriStreamTrainer(PPFNTrainer):
                     param.requires_grad = False
 
                 # ...then explicitly unfreeze the layer you want to train
-                for param in self.model.cross_layer.parameters():
+                for param in self.model.cross_layers.parameters():
                     param.requires_grad = True
 
                 self.model.use_cross_attn = True

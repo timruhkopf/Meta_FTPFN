@@ -5,6 +5,7 @@ import math
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 
 
+
 class ManifoldCrossAttnLayer(nn.Module):
     def __init__(
             self,
@@ -84,6 +85,8 @@ class ManifoldCrossAttnLayer(nn.Module):
         self.manifold_alignment_criterion = aux_loss
 
         self.pre_norm = True  # Standard PFN usually uses pre-norm
+
+        self.post_op = 'resid'
 
         # === PFN-Style Residual Block Components ===
         self.drop_prob = dropout
@@ -316,6 +319,7 @@ class ManifoldCrossAttnLayer(nn.Module):
         K_B = self.W_K2(attn_B[:sep, :batch_size, :])
         K_final = torch.cat([K_A, K_B], dim=0)
 
+        # Value bank is the pristine, untouched marginal embeddings
         V_final = torch.cat([A[:sep, :batch_size, :], B[:sep, :batch_size, :]], dim=0)
 
         if self.update_C_train:
@@ -327,16 +331,16 @@ class ManifoldCrossAttnLayer(nn.Module):
             Q_final = self.W_Q2(attn_C[sep:, :batch_size, :])
             src = C[sep:, :batch_size, :]
 
-        # 1. L2 Normalize the main stream to match the aux_fwd prior!
+        # 2. L2 Normalize the main stream to match the aux_fwd prior!
         Q_norm = F.normalize(Q_final, p=2, dim=-1)
         K_norm = F.normalize(K_final, p=2, dim=-1)
 
-        # 2. Extract Temperature
+        # 3. Extract Temperature (Initialized to 0.07, hitting clamp max 100)
         tau = torch.exp(self.log_tau).clamp(max=100.0)
 
 
         # =====================================================================
-        # 4. EXPLICIT L2 REGULARIZATION & TELEMETRY
+        # 5. TELEMETRY
         # =====================================================================
         if self.training:
             with torch.no_grad():
@@ -390,23 +394,91 @@ class ManifoldCrossAttnLayer(nn.Module):
         # =====================================================================
         # 4. EXACT PFN RESIDUAL & FFN BLOCK
         # =====================================================================
-        src2 = self.gamma * cross_out
+        if self.post_op == 'copy_only':
+            # =====================================================================
+            # 6. MANIFOLD RECONSTRUCTION (Replacing the Residual)
+            # =====================================================================
+            # Instead of src = src + gamma * cross_out, we replace the query
+            # features with the retrieved memory features.
 
-        if self.pre_norm:
-            # DIRECT INJECTION: Do not apply norm1 to the attention output!
-            src = src + self.dropout1(src2)
+            # We still keep the gamma scaling to allow the model to gate the
+            # influence of the adapter during training.
+            src_reconstructed = self.gamma * cross_out
 
-            # Standard Pre-Norm for the FFN
-            src_ = self.norm2(src)
-            src2 = self.linear2(self.dropout(self.activation(self.linear1(src_))))
-            src = src + self.dropout2(src2)
+            if self.pre_norm:
+                # We skip the addition: src = src + dropout(src2)
+                # and instead proceed directly to the FFN with the retrieved signal.
+                src = self.dropout1(src_reconstructed)
+
+                # Standard Pre-Norm for the FFN logic
+                src_ = self.norm2(src)
+                ffn_out = self.linear2(self.dropout(self.activation(self.linear1(src_))))
+
+                # Here, we can keep the internal residual of the FFN
+                # to maintain stability in the MLP weights.
+                src = src + self.dropout2(ffn_out)
+            else:
+                # Post-norm variant
+                src = self.dropout1(src_reconstructed)
+                src = self.norm1(src)
+                ffn_out = self.linear2(self.dropout(self.activation(self.linear1(src))))
+                src = self.norm2(src + self.dropout2(ffn_out))
+
+        elif self.post_op == 'resid':
+            src2 = self.gamma * cross_out
+
+            if self.pre_norm:
+                # DIRECT INJECTION: Do not apply norm1 to the attention output!
+                src = src + self.dropout1(src2)
+
+                # Standard Pre-Norm for the FFN
+                src_ = self.norm2(src)
+                src2 = self.linear2(self.dropout(self.activation(self.linear1(src_))))
+                src = src + self.dropout2(src2)
+            else:
+                # Standard Post-Norm (if you toggle the architecture)
+                src = src + self.dropout1(src2)
+                src = self.norm1(src)  # Norm applied to the accumulated stream
+                src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+                src = src + self.dropout2(src2)
+                src = self.norm2(src)
+
+            # =====================================================================
+            # TELEMETRY: ACTIVE REJECTION DETECTION
+            # =====================================================================
+            if self.training:
+                with torch.no_grad():
+                    injected_signal = self.dropout2(src2)
+
+                    if self.update_C_train:
+                        valid_query_mask = ~pad_mask_A[:batch_size, :]
+                        base_slice = C[:, :batch_size, :]
+                    else:
+                        valid_query_mask = ~pad_mask_A[:batch_size, sep:]
+                        base_slice = C[sep:, :batch_size, :]
+
+                    # FIX: base_slice is [Seq, Batch, Dim]. valid_query_mask is [Batch, Seq].
+                    # We must transpose the mask so it aligns with the norm reduction!
+                    valid_mask_seq_first = valid_query_mask.transpose(0, 1)
+
+                    if valid_mask_seq_first.any():
+                        # 1. Payload Magnitude Ratio (Calculated safely on non-padded embeddings)
+                        base_magnitude = torch.norm(base_slice, dim=-1)[valid_mask_seq_first].mean()
+                        injection_magnitude = torch.norm(injected_signal, dim=-1)[valid_mask_seq_first].mean()
+
+                        payload_ratio = (injection_magnitude / (base_magnitude + 1e-9)).item()
+
+                        # 2. Cosine Drift (Ignore padded 0.0 vectors preventing false orthogonals)
+                        cos_sim = F.cosine_similarity(base_slice, src, dim=-1)[valid_mask_seq_first].mean().item()
+                    else:
+                        payload_ratio = 0.0
+                        cos_sim = 0.0
+
+                    ForwardMetaContext.set('Telemetry/adapter_payload_ratio', payload_ratio)
+                    ForwardMetaContext.set('Telemetry/adapter_cosine_drift', cos_sim)
+                    # ridden ourselves of the "shadow-batch"
         else:
-            # Standard Post-Norm (if you toggle the architecture)
-            src = src + self.dropout1(src2)
-            src = self.norm1(src)  # Norm applied to the accumulated stream
-            src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-            src = src + self.dropout2(src2)
-            src = self.norm2(src)
+            raise ValueError()
 
         # =====================================================================
         # 5. SEQUENCE SPLICING
@@ -418,40 +490,6 @@ class ManifoldCrossAttnLayer(nn.Module):
             C_train_original = C[:sep, :batch_size, :]
             C_updated = torch.cat([C_train_original, src], dim=0)
 
-        # =====================================================================
-        # TELEMETRY: ACTIVE REJECTION DETECTION
-        # =====================================================================
-        if self.training:
-            with torch.no_grad():
-                injected_signal = self.dropout2(src2)
-
-                if self.update_C_train:
-                    valid_query_mask = ~pad_mask_A[:batch_size, :]
-                    base_slice = C[:, :batch_size, :]
-                else:
-                    valid_query_mask = ~pad_mask_A[:batch_size, sep:]
-                    base_slice = C[sep:, :batch_size, :]
-
-                # FIX: base_slice is [Seq, Batch, Dim]. valid_query_mask is [Batch, Seq].
-                # We must transpose the mask so it aligns with the norm reduction!
-                valid_mask_seq_first = valid_query_mask.transpose(0, 1)
-
-                if valid_mask_seq_first.any():
-                    # 1. Payload Magnitude Ratio (Calculated safely on non-padded embeddings)
-                    base_magnitude = torch.norm(base_slice, dim=-1)[valid_mask_seq_first].mean()
-                    injection_magnitude = torch.norm(injected_signal, dim=-1)[valid_mask_seq_first].mean()
-
-                    payload_ratio = (injection_magnitude / (base_magnitude + 1e-9)).item()
-
-                    # 2. Cosine Drift (Ignore padded 0.0 vectors preventing false orthogonals)
-                    cos_sim = F.cosine_similarity(base_slice, src, dim=-1)[valid_mask_seq_first].mean().item()
-                else:
-                    payload_ratio = 0.0
-                    cos_sim = 0.0
-
-                ForwardMetaContext.set('Telemetry/adapter_payload_ratio', payload_ratio)
-                ForwardMetaContext.set('Telemetry/adapter_cosine_drift', cos_sim)
-                # ridden ourselves of the "shadow-batch"
 
         if any([torch.any(torch.isnan(t)) for t in (A, B, C)]):
             import pdb
@@ -502,6 +540,74 @@ class ManifoldAlignmentCriterion(nn.Module):
         # Create Soft Target Probabilities
         targets = torch.zeros_like(dist_matrix)
         targets.scatter_(-1, top_k_indices, 1.0 / self.k)
+
+        return targets
+
+    def _get_gaussian_soft_targets(self, query_coords, key_coords, key_pad_mask=None, sigma=0.5):
+        """
+        Calculates exact geometric soft-targets using a Gaussian kernel over Euclidean distance.
+        """
+        q_c = query_coords.transpose(0, 1)
+        k_c = key_coords.transpose(0, 1)
+
+        # Pairwise L2 Distance
+        dist_matrix = torch.cdist(q_c, k_c, p=2)  # [Batch, Seq_Q, Seq_K]
+
+        # Convert distances to unnormalized Gaussian weights
+        # Using dist_matrix**2 gives the squared Euclidean distance
+        weights = torch.exp(-(dist_matrix ** 2) / (2 * sigma ** 2))
+
+        if key_pad_mask is not None:
+            # key_pad_mask shape: [Batch, Seq_K] -> [Batch, 1, Seq_K]
+            mask_K = key_pad_mask.unsqueeze(1)
+            weights = weights.masked_fill(mask_K, 0.0)
+
+        # Normalize across the Key dimension to create a valid probability distribution
+        targets = weights / (weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        return targets
+
+    def _get_adaptive_gaussian_targets(self, query_coords, key_coords, key_pad_mask=None, ):
+        """
+        Calculates exact geometric soft-targets using an Adaptive Gaussian kernel.
+        The variance (sigma) dynamically scales based on local sampling density.
+
+        Args:
+            k (int): Determines which nearest neighbor dictates the local sigma.
+                     k=2 or k=3 usually provides the best density estimation.
+        """
+        q_c = query_coords.transpose(0, 1)
+        k_c = key_coords.transpose(0, 1)
+
+        # 1. Pairwise L2 Distance
+        dist_matrix = torch.cdist(q_c, k_c, p=2)  # [Batch, Seq_Q, Seq_K]
+
+        if key_pad_mask is not None:
+            mask_K = key_pad_mask.unsqueeze(1)
+            # Push padded keys infinitely far away
+            dist_matrix = dist_matrix.masked_fill(mask_K, float('inf'))
+
+        # 2. Dynamically calculate local density (Adaptive Sigma)
+        # Get the distances to the top-k nearest neighbors.
+        # We use negative dist_matrix because topk returns the largest values.
+        knn_dists, _ = torch.topk(-dist_matrix, k=self.k, dim=-1)
+
+        # Extract the distance to the k-th neighbor (the last element in the k dimension)
+        # knn_dists is negative, so we negate it back to positive.
+        # Shape becomes [Batch, Seq_Q, 1] to broadcast correctly across the Key dimension.
+        sigma_local = -knn_dists[:, :, -1:]
+
+        # Clamp to prevent division by zero in case of perfectly overlapping coordinates
+        sigma_local = sigma_local.clamp(min=1e-5)
+
+        # 3. Apply Gaussian with the token-specific dynamic sigma
+        weights = torch.exp(-(dist_matrix ** 2) / (2 * sigma_local ** 2))
+
+        if key_pad_mask is not None:
+            weights = weights.masked_fill(mask_K, 0.0)
+
+        # 4. Normalize across the Key dimension to create valid probability distributions
+        targets = weights / (weights.sum(dim=-1, keepdim=True) + 1e-9)
 
         return targets
 
@@ -560,10 +666,20 @@ class ManifoldAlignmentCriterion(nn.Module):
         # 2. TEST TOKENS: Top-k Continuous Geometric Loss
         # =========================================================
         # Retrieve exact geometric soft targets (Now immune to origin traps)
-        targets_test = self._get_topk_soft_targets(
+        # targets_test = self._get_topk_soft_targets(
+        #     X_A_in_B_test, X_B_train,
+        #     key_pad_mask=pad_mask_B_train
+        # )
+
+        targets_test = self._get_gaussian_soft_targets(
             X_A_in_B_test, X_B_train,
             key_pad_mask=pad_mask_B_train
         )
+
+        # targets_test = self._get_adaptive_gaussian_targets(
+        #     X_A_in_B_test, X_B_train,
+        #     key_pad_mask=pad_mask_B_train
+        # )
         if pad_mask_B_train is not None: # usually not used in pre-training!
             mask_K = pad_mask_B_train.unsqueeze(1)
             scores_test = scores_test.masked_fill(mask_K, -1e4)  # AMP Safe
