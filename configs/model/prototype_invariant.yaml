@@ -27,3 +27,18 @@ model:
         top_k: 3
         loss_scale: 0.1
 
+
+trainer:
+  trainer_class:
+    criterion:
+      _target_: prototype.harmonic_restart.loss.TriHarmonicLoss
+      share_unrelated: ${dataset.dataset_class.share_unrelated}
+      use_attn_bonus: False
+      criterion:
+        _target_: pfns4hpo.bar_distribution.FullSupportBarDistribution
+        smoothing: 0.05
+        borders:
+          _target_: torch.linspace
+          start: -7
+          end: 7
+          steps: ${add:${model.model_class.num_bars}, 1}

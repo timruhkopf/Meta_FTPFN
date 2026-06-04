@@ -2,6 +2,7 @@ import logging
 
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 from ppfn.trainer import PPFNTrainer
+from prototype.meta_jepa_v2.loss import  update_ema_dict_modules
 
 logger = logging.getLogger(__name__)
 
@@ -28,39 +29,44 @@ class TriStreamTrainer(PPFNTrainer):
                     batch[k1][k2] = batch[k1][k2].to(self.device)
         return batch, {}
 
+    def _set_active_parameters(self, active_param_ids: set[int]):
+        """
+        Elegant freezing utility. Disables gradients for all parameters in the model
+        EXCEPT those whose memory addresses are explicitly in the active_param_ids set.
+        """
+        for param in self.model.parameters():
+            # id(param) returns an int. We check if that int is in our set of active ints.
+            param.requires_grad = id(param) in active_param_ids
+
     def _train_step(self, step, batch, **fwd_kwargs) -> dict[str, float]:
         # 1. Clear global context
         ForwardMetaContext.clear()
 
-        # 2. Dynamic Freezing Logic
+        # 2. Dynamic Freezing Logic (Stays the same, but using the cleaner .warmup_parameters_ids)
         if not self.train_jointly:
-
-            # Calculate the exact step where warmup ends
-            # (Assuming self.steps is 'steps_per_epoch')
             transition_step = self.warmup_epochs * self.steps
-
             if self.global_step == 0:
-                logger.info("Phase 1: Freezing Adapter C for warmup phase.")
-                if hasattr(self.model, 'cross_layers'):
-                    for param in self.model.cross_layers.parameters():
-                        param.requires_grad = False
-
-                    self.model.use_cross_attn = False # signal, that we want to sidestep the cross_attn_layer!
                 self.criterion.is_warmup = True
-
+                self.model.lambda_jepa = 0.0
+                self._set_active_parameters(self.model.warmup_parameters_ids)
             elif self.global_step == transition_step:
-                logger.info("Phase 2: Warmup complete. Freezing marginal backend; unlocking Adapter C.")
-
-                # Cleaner PyTorch idiom: Freeze everything first...
-                for param in self.model.parameters():
-                    param.requires_grad = False
-
-                # ...then explicitly unfreeze the layer you want to train
-                if hasattr(self.model, 'cross_layers'):
-                    for param in self.model.cross_layers.parameters():
-                        param.requires_grad = True
-
-                    self.model.use_cross_attn = True
                 self.criterion.is_warmup = False
+                self.model.lambda_jepa = 1.0
+                self._set_active_parameters(self.model.post_warmup_parameters_ids)
 
-        return super()._train_step(step, batch, **fwd_kwargs)
+        # 3. Standard Forward / Backward / Optimizer Step
+        out = super()._train_step(step, batch, **fwd_kwargs)
+
+        # 4. Refactored EMA Updates
+        if self.train_jointly or self.criterion.is_warmup:
+            # We iterate through the student modules and map them to the teacher
+            for key in self.model.student:
+                # We skip embedding_norm if you want to handle it separately or
+                # keep it in the loop if you want it tracked via EMA
+                update_ema_dict_modules(
+                    student_module=self.model.student[key],
+                    teacher_module=self.model.teacher[key],
+                    momentum=0.996
+                )
+
+        return out
