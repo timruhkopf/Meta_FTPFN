@@ -1,0 +1,32 @@
+# @package _global_
+
+model:
+  frozen_version: "0.0.1"
+
+
+  model_class:
+    _target_: prototype.meta_jepa_v2.model.MetaJEPAPFN
+    x_dim: 1 # FIXME: padd to a fixed upper dim in the dataset!
+    y_dim: 1
+    embed_dim: 128 # dmodel
+    num_heads: 4
+    enc_layers: 4
+    pred_layers: 2
+    pfn_layers: 4
+    num_bars: 250
+
+
+trainer:
+  trainer_class:
+    criterion:
+      _target_: prototype.meta_jepa_v2.loss.TriJepaNLLLoss
+      share_unrelated: ${dataset.dataset_class.share_unrelated}
+
+      criterion:
+        _target_: pfns4hpo.bar_distribution.FullSupportBarDistribution
+        smoothing: 0.05
+        borders:
+          _target_: torch.linspace
+          start: -7
+          end: 7
+          steps: ${add:${model.model_class.num_bars}, 1}
