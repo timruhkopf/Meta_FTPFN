@@ -5,13 +5,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import copy
 
-from tabpfn.architectures.tabpfn_v2_5 import TabPFNV2p5, TabPFNBlock
-from tabpfn.architectures.kv_cache import KVCache
+from tabpfn.architectures.tabpfn_v2_5 import TabPFNV2p5, TabPFNBlock, _batched_scaled_dot_product_attention, \
+    AlongColumnAttention
+from tabpfn.architectures.kv_cache import KVCache, KVCacheEntry
 
 from typing_extensions import override
 
 from pfns4hpo.bar_distribution import BarDistribution
 from typing import TYPE_CHECKING, Any, Literal, cast
+
 
 class TabPFNV2p5Config:
     """Configuration for the single-file TabPFN v2.5 architecture."""
@@ -35,7 +37,6 @@ class TabPFNV2p5Config:
 
     encoder_mlp_hidden_dim: int = 128
     """Hidden dimension for the MLP embedder."""
-
 
 
 @dataclasses.dataclass
@@ -66,7 +67,7 @@ class TabPFNV2p5Cache(KVCache):
     train_shape: tuple[int, int] = (0, 0)
 
     @override
-    def to(self, device: torch.device | str) :
+    def to(self, device: torch.device | str):
         """Move all cached tensors to the given device. Returns a new cache."""
         return TabPFNV2p5Cache(
             kv=self._kv_to(device),
@@ -79,6 +80,7 @@ class TabPFNV2p5Cache(KVCache):
             ),
             train_shape=self.train_shape,
         )
+
 
 class TabPFN_Predictor(nn.Module):
     def __init__(self, emsize, nhead, dim_feedforward):
@@ -97,41 +99,153 @@ class TabPFN_Predictor(nn.Module):
         out, _ = self.block(z, single_eval_pos=0, save_peak_memory_factor=None)
         return self.norm(out)
 
+
+# MONKEY PATCH ------------------------------------------------------
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import tabpfn.architectures.tabpfn_v2_5 as tabpfn_module
+from tabpfn.architectures.tabpfn_v2_5 import AlongColumnAttention, KVCacheEntry
+# Ensure you import your dot product function:
+from tabpfn.architectures.tabpfn_v2_5 import _batched_scaled_dot_product_attention
+
+
+# =====================================================================
+# 1. DEFINE THE PATCH FUNCTIONS
+# =====================================================================
+
+def inject_predictor_weights(attention_layer: AlongColumnAttention):
+    """Dynamically adds non-shared Predictor weights to an existing layer instance."""
+    # Read properties directly from the base linear layer to avoid shape guesswork
+    embedding_size = attention_layer.q_projection.in_features
+    out_features = attention_layer.q_projection.out_features
+    device = attention_layer.q_projection.weight.device
+    dtype = attention_layer.q_projection.weight.dtype
+
+    # Attach new, completely distinct linear projections
+    attention_layer.q_projection_test = nn.Linear(embedding_size, out_features, bias=False, device=device, dtype=dtype)
+    attention_layer.k_projection_test = nn.Linear(embedding_size, out_features, bias=False, device=device, dtype=dtype)
+    attention_layer.v_projection_test = nn.Linear(embedding_size, out_features, bias=False, device=device, dtype=dtype)
+    attention_layer.out_projection_test = nn.Linear(out_features, embedding_size, bias=False, device=device,
+                                                    dtype=dtype)
+
+    # Initialize them exactly like standard PFN attention
+    torch.nn.init.xavier_uniform_(attention_layer.q_projection_test.weight)
+    torch.nn.init.xavier_uniform_(attention_layer.k_projection_test.weight)
+    torch.nn.init.xavier_uniform_(attention_layer.v_projection_test.weight)
+    torch.nn.init.zeros_(attention_layer.out_projection_test.weight)
+
+
+def patched_column_forward(self, x_BcRE: torch.Tensor, single_eval_pos: int | None = None, *, cached_kv=None,
+                           return_kv: bool = False):
+    """The replacement forward pass that splits the computational graph."""
+    Bc, R, _ = x_BcRE.shape
+    N = R if single_eval_pos is None else single_eval_pos
+
+    # Path A: Inference Mode using Cache (All rows are test queries)
+    if cached_kv is not None:
+        q_BcRHD_test = self.q_projection_test(x_BcRE).view(Bc, R, -1, self.head_dim)
+        k_Bc1 = cached_kv.key
+        v_Bc1 = cached_kv.value
+
+        if k_Bc1.dtype != q_BcRHD_test.dtype:
+            k_Bc1 = k_Bc1.to(q_BcRHD_test.dtype)
+            v_Bc1 = v_Bc1.to(q_BcRHD_test.dtype)
+
+        output_BcSHD = _batched_scaled_dot_product_attention(q_BcRHD_test, k_Bc1, v_Bc1)
+        output_BcSF = output_BcSHD.reshape(Bc, R, self.head_dim * self.num_heads)
+        return self.out_projection_test(output_BcSF), None
+
+    # Path B: Standard Training Pass (Asymmetric Graph)
+    x_train = x_BcRE[:, :N]
+
+    # --- ENCODER PATH (Train rows self-attend via Base Weights) ---
+    q_BcNHD_train = self.q_projection(x_train).view(Bc, N, -1, self.head_dim)
+    k_BcNHD_train = self.k_projection(x_train).view(Bc, N, -1, self.head_dim)
+    v_BcNHD_train = self.v_projection(x_train).view(Bc, N, -1, self.head_dim)
+
+    out_train_BcNHD = _batched_scaled_dot_product_attention(q_BcNHD_train, k_BcNHD_train, v_BcNHD_train)
+    out_train_BcNF = out_train_BcNHD.reshape(Bc, N, self.head_dim * self.num_heads)
+    out_train_final = self.out_projection(out_train_BcNF)
+
+    if single_eval_pos == R:
+        return out_train_final, None
+
+    # --- PREDICTOR PATH (Test rows cross-attend via Non-Shared Predictor Weights) ---
+    x_test = x_BcRE[:, N:]
+    q_BcMHD_test = self.q_projection_test(x_test).view(Bc, R - N, -1, self.head_dim)
+
+    # Predictor projects context tokens through its isolated weights
+    k_BcNHD_test = self.k_projection_test(x_train).view(Bc, N, -1, self.head_dim)
+    v_BcNHD_test = self.v_projection_test(x_train).view(Bc, N, -1, self.head_dim)
+
+    out_test_BcMHD = _batched_scaled_dot_product_attention(
+        q_BcMHD_test,
+        k_BcNHD_test[:, :, :1],  # Maintain Multi-Query Attention
+        v_BcNHD_test[:, :, :1]
+    )
+    out_test_BcMF = out_test_BcMHD.reshape(Bc, R - N, self.head_dim * self.num_heads)
+    out_test_final = self.out_projection_test(out_test_BcMF)
+
+    # Merge outputs back into the row sequence dimension
+    output_final = torch.cat([out_train_final, out_test_final], dim=1)
+
+    kv_entry = None
+    if return_kv:
+        kv_entry = KVCacheEntry(
+            key=k_BcNHD_test[:, :, :1].contiguous().detach(),
+            value=v_BcNHD_test[:, :, :1].contiguous().detach(),
+        )
+
+    return output_final, kv_entry
+
+
+# -------------------------------------------------------------------
+
 class TabPFN_JEPA_with_Probe(nn.Module):
-    def __init__(self, base_config, num_bars: int, projector_dim: int = 512):
+    def __init__(self, base_config, num_bars: int, weight_shared_predictor=False):
         super().__init__()
         self.ema_decay = 0.996
+        self.weight_shared_predictor = weight_shared_predictor
+
+
+        # FIXME: This is a global class overwrite and should not be placed inside an init, but on the module level!
+        if not weight_shared_predictor:
+            # Overwrite the class method directly. Every instance ever made will now run this.
+            AlongColumnAttention.forward = patched_column_forward
 
         # 1. Backbones (Assume TabPFNV2p5 is defined as in your codebase)
         self.student = TabPFNV2p5(config=base_config, task_type="regression", n_out=1)
+
+        if not weight_shared_predictor:
+            # 2. Inject the custom Predictor weights into the Student's blocks
+            for module in self.student.modules():
+                if isinstance(module, AlongColumnAttention):
+                    inject_predictor_weights(module)
+
         self.teacher = copy.deepcopy(self.student)
         for p in self.teacher.parameters(): p.requires_grad = False
 
-        # 2. JEPA Projectors
+        # 3. The Predictor
+        # This breaks the symmetry and prevents dimensional collapse:
+        # If we share the weights in the PFN, this becomes strictly necessary
         emsize = base_config.emsize
-        self.student_projector = nn.Sequential(
-            nn.Linear(emsize, projector_dim), nn.LayerNorm(projector_dim), nn.GELU(),
-            nn.Linear(projector_dim, projector_dim)
-        )
-        self.teacher_projector = copy.deepcopy(self.student_projector)
-        for p in self.teacher_projector.parameters(): p.requires_grad = False
-
-        """
-        Because the PFN shares the same MHA for both train and test, the teacher EMA has access to these 
-        weights and can trivially collapse, simply because there is no distinct predictor anymore 
-        """
-        # 3. The Predictor (STUDENT ONLY - NO EMA)
-        # This breaks the symmetry and prevents dimensional collapse
-        self.student_predictor =         nn.Sequential(
-            nn.Linear(projector_dim, projector_dim),
-            nn.LayerNorm(projector_dim),
-            nn.GELU(),
-            nn.Linear(projector_dim, projector_dim)
-        )
+        if weight_shared_predictor:
+            """
+            Because the PFN shares the same MHA for both train and test, the teacher EMA has access to these 
+            weights and can trivially collapse, simply because there is no distinct predictor anymore.
+            We might get around this, if we undo the parameter sharing for the MHA between train and test in the column
+            """
+            self.student_predictor = nn.Sequential(
+                nn.Linear(emsize, emsize),
+                nn.LayerNorm(emsize),
+                nn.GELU(),
+                nn.Linear(emsize, emsize)
+            )
 
         # 3. The Downstream Probe (Maps JEPA latents to BarDistribution bins)
-        self.probe = nn.Linear(projector_dim, num_bars)
-        self.probe_raw = nn.Linear(base_config.emsize, num_bars)
+        self.probe = nn.Linear(emsize, num_bars)
+        self.probe_raw = nn.Linear(emsize, num_bars)
 
     @torch.no_grad()
     def update_ema(self, current_step: int, total_steps: int, base_ema: float = 0.996):
@@ -140,12 +254,11 @@ class TabPFN_JEPA_with_Probe(nn.Module):
 
         for s_p, t_p in zip(self.student.parameters(), self.teacher.parameters()):
             t_p.data.mul_(current_ema).add_(s_p.data, alpha=1 - current_ema)
-        for s_p, t_p in zip(self.student_projector.parameters(), self.teacher_projector.parameters()):
-            t_p.data.mul_(current_ema).add_(s_p.data, alpha=1 - current_ema)
 
     def forward(self, x_train, y_train, x_test, y_test):
-        # --- TEACHER PATH (Global Context) ---
-        with torch.no_grad():
+
+        @torch.no_grad()
+        def teacher_fwd(x_train, x_test, y_train, y_test):
             x_full = torch.cat([x_train, x_test], dim=0)
             y_full = torch.cat([y_train, y_test], dim=0)
 
@@ -154,29 +267,46 @@ class TabPFN_JEPA_with_Probe(nn.Module):
             t_out = self.teacher(x_full, y_full, only_return_standard_out=False)
 
             # Extract the teacher's latent targets for the test rows
-            t_latents = t_out["train_embeddings"][x_train.shape[0]:]
-            s_y = self.teacher_projector(t_latents)
-            s_y = F.layer_norm(s_y, (s_y.size(-1),))
+            y = t_out["train_embeddings"]
 
-        # --- STUDENT PATH (Context-Restricted) ---
-        s_out = self.student(x_full, y_train, only_return_standard_out=False)
-        s_test_latents = s_out["test_embeddings"]
+            y = F.layer_norm(y, (y.size(-1),))
+            y_test_hat = y[x_train.shape[0]:] # just return the test section
 
-        # Project, THEN Predict
-        z = self.student_projector(s_test_latents)
-        s_y_hat = self.student_predictor(z)
+            return y_test_hat
 
-        # --- JEPA LOSS (Latent Space) ---
-        jepa_loss = F.smooth_l1_loss(s_y_hat, s_y)
 
-        # --- DETACHED PROBE ---
+        def student_fwd(x_train, x_test, y_train):
+            x_full = torch.cat([x_train, x_test], dim=0)
+
+            s_out = self.student(x_full, y_train, only_return_standard_out=False)
+
+            if self.weight_shared_predictor:
+                raise NotImplementedError('predictor is not self & cross attending yet!')
+                # Notice: this is basically only the output of the train-related MHA, which
+                # corresponds to the "student" part of the PFN
+                s_train = s_out["train_embeddings"]
+                # FIXME: basically, the student needs to be a smaller TABPFN instance here!
+                # If the predictor is vertically decoupled:
+                y_test_hat = self.student_predictor(s_train, x_test)
+            else:
+                # if the predictor is vertically integrated with the student:
+                y_test_hat = s_out["test_embeddings"]
+
+            return y_test_hat
+
+        s_y_test_hat = student_fwd(x_train, x_test, y_train)
+        # --- DETACHED PROBE --- "Downstream Task": in PFN: predict the
         # Detach so the NLL objective doesn't pollute the self-supervised manifold
-        logits = self.probe(s_y_hat.detach())
-        # logits = self.probe(s_out["test_embeddings"].detach())
-        # fixme, this is just checking if the predictor removes info interesting to nll
-        logits = self.probe_raw(s_out["test_embeddings"].detach())
+        # this is just checking if the predictor removes info interesting to nll
+        logits = self.probe_raw(s_y_test_hat.detach())
 
-        return jepa_loss, logits
+        if self.training:
+            t_y_test_hat = teacher_fwd(x_train, x_test, y_train, y_test)
+            jepa_loss = F.smooth_l1_loss(s_y_test_hat, t_y_test_hat)
+            return jepa_loss, logits
+        else:
+            return logits
+
 
 if __name__ == '__main__':
     import torch
@@ -233,8 +363,6 @@ if __name__ == '__main__':
                 nn.init.constant_(m.weight, 1.0)
 
         # Apply to projectors
-        model.student_projector.apply(init_jepa_weights)
-        model.teacher_projector.apply(init_jepa_weights)
         model.probe.apply(init_jepa_weights)
 
         # 1. Separate parameters for Weight Decay
@@ -368,5 +496,6 @@ if __name__ == '__main__':
             if step % 50 == 0:
                 print(f"Step {step} | Baseline NLL: {loss.item():.4f}")
 
-    # train_baseline_pfn(steps=10000)
-    train_jepa_pfn(steps=10000)
+
+    # train_baseline_pfn(steps=10_000)
+    train_jepa_pfn(steps=30_000)
