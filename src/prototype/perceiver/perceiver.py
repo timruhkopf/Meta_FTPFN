@@ -1,10 +1,7 @@
-import torch
-from tabpfn.architectures.interface import Architecture
+
 from tabpfn.architectures.shared.column_embeddings import load_column_embeddings
 from tabpfn.preprocessing.torch import TorchStandardScaler
-from torch import nn
 
-from typing import TYPE_CHECKING, Any, Literal, cast
 from typing_extensions import override
 
 from tabpfn.architectures.kv_cache import KVCacheEntry
@@ -18,13 +15,20 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
-from typing import Any, Mapping, Literal, cast
+
+from typing import Literal, cast
 
 from pfns4hpo.bar_distribution import BarDistribution
 from prototype.harmonic_restart import InfiniteHarmonicsStream
 
+"""
+Contender Paper: 
+https://openreview.net/pdf?id=Ge3wbgb2Vi
+
+They will suffer with multi-fidelity tasks due to quadratic scaling
+
+we can also go for in context domain alignment!
+"""
 
 # --- Updated Batched SDPA to support attn_mask ---
 def _batched_scaled_dot_product_attention(
@@ -108,12 +112,17 @@ class PerceiverDomainTransfer(nn.Module):
         # Handle Padding Mask for A
         attn_mask = None
         if padding_mask_A is not None:
-            # padding_mask_A is (B, R_A) where True is padding. Expand to match attention heads.
-            # SDPA additive mask expects float('-inf') for masked out elements.
             mask = torch.zeros_like(padding_mask_A, dtype=q_BcHNK.dtype)
             mask.masked_fill_(padding_mask_A, float('-inf'))
-            # Shape needed: (B*C, num_heads, num_latents, R_A)
-            attn_mask = mask.unsqueeze(1).unsqueeze(1).repeat(C, num_heads, self.num_latents, 1)
+
+            # 1. Add the feature dimension C
+            mask = mask.unsqueeze(1)  # Shape: (B_batch, 1, R_A)
+
+            # 2. Expand across C and flatten to match A_flat_BcRE's memory layout
+            mask_Bc = mask.expand(B_batch, C, R_A).reshape(B_batch * C, R_A)
+
+            # 3. Expand for heads and latents
+            attn_mask = mask_Bc.view(B_batch * C, 1, 1, R_A).expand(-1, num_heads, self.num_latents, -1)
 
         A_bottleneck_BcKHD = _batched_scaled_dot_product_attention(q_BcHNK, k_BcRNK, v_BcRNK, attn_mask=attn_mask)
         A_bottleneck_BcKF = A_bottleneck_BcKHD.reshape(B_batch * C, self.num_latents, num_heads * head_dim)
@@ -295,6 +304,31 @@ class TabPFNV2p5(TabPFNV2p5_super):  # Assuming Architecture base class is defin
             num_thinking_rows=config.num_thinking_rows,
             embedding_size=config.emsize,
         )
+        if config.num_thinking_rows > 0:
+            raise NotImplementedError('There may be a hidden index error')
+            """
+            # In the code: 
+            A_train = x_BRCE[:, :n_train_A]
+            B_train = x_BRCE[:, n_train_A: single_eval_pos]
+            
+            # If thinking rows are present, A_train will accidentally ingest the thinking rows, truncating the actual A_train data and shifting B_train completely out of alignment.
+
+            # The untested Fix:
+            # Account for the thinking rows offset when slicing.
+            # In TabPFNBlock.forward
+            if n_train_A is not None and cached_kv is None:
+                # Safely calculate where the actual training data starts
+                start_idx = x_BRCE.shape[1] - single_eval_pos # Or pass num_thinking_rows explicitly
+                
+                A_train = x_BRCE[:, start_idx : start_idx + n_train_A]
+                B_train = x_BRCE[:, start_idx + n_train_A : single_eval_pos]
+                A_test  = x_BRCE[:, single_eval_pos:]
+                
+                B_translated = self.perceiver_domain_transfer(A_train, B_train, padding_mask_A)
+                # ...
+                x_BRCE = torch.cat([x_BRCE[:, :start_idx], A_train, B_train_updated, A_test], dim=1)
+            """
+
         self.blocks = nn.ModuleList(
             TabPFNBlock(
                 emsize=config.emsize,
@@ -406,7 +440,9 @@ if __name__ == '__main__':
     from torch.amp import autocast, GradScaler
     from torch.optim.lr_scheduler import CosineAnnealingLR
 
-
+    # TODO: integrate mlflow, run baseline marginal models (TABPFN with different amount of training data!)
+    # TODO: split the file
+    # TODO: integrate with trainer and callbacks!
     def train_domain_transfer_pfn(
             model: TabPFNV2p5,
             dataloader: InfiniteHarmonicsStream,
@@ -463,6 +499,12 @@ if __name__ == '__main__':
                     # Extract Z_target dynamically without a full forward pass
                     if aux_weight > 0.0:
                         with torch.no_grad():
+                            raise NotImplementedError(
+                                'Auxiliary loss should not look at the embedding layer!'
+                                ' instead it should look at the PFN\'s final output!'
+                                'But to do this, we would need to pass X & Y for B_in_A as training set without test set!'
+                            )
+
                             Z_target = model.embed_target(X_B_in_A, Y_B_in_A).detach()
                             # Z_target shape: (Batch, R_B, C, E)
 
@@ -508,8 +550,6 @@ if __name__ == '__main__':
         return model
 
 
-    import torch
-    import numpy as np
 
     # 1. Device Selection
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -523,7 +563,7 @@ if __name__ == '__main__':
         n_B=50,
         n_test=200,
         x_range=(-5, 5),
-        num_components=2, # todo ablate complexity
+        num_components=4, # todo ablate complexity
         noise_std=0.05,
         share_unrelated=0.0,
         scale=True,
@@ -561,22 +601,30 @@ if __name__ == '__main__':
     # TabPFN approaches regression by predicting probabilities across continuous bins.
     # We map the typical output range of your harmonics prior into discrete buckets.
     min_y, max_y = -15.0, 15.0
+    borders = torch.linspace(min_y, max_y, steps=num_bars + 1, device=device)
 
     nll_criterion = BarDistribution(
-        borders=torch.linspace(min_y, max_y, steps=num_bars + 1, device=device),
+        borders=borders,
         smoothing=0.01,
         ignore_nan_targets=True
     )
 
     # 6. Kick off Training
     # Adjust epochs and steps_per_epoch based on your computational budget
-    trained_model = train_domain_transfer_pfn(
+    model = train_domain_transfer_pfn(
         model=model,
         dataloader=prior_stream,
         nll_criterion=nll_criterion,
         epochs=1000,
         steps_per_epoch=100,
         lr=1e-4,
-        aux_weight=0.5, # fixme: add weight here to encourage similar representations
+        aux_weight=0.0, # fixme: add weight here to encourage similar representations
         device=device
     )
+
+    # visualize -------------------------------------
+    from prototype.harmonic_restart.harmonic_prior import HeatmapVisualizer
+    import matplotlib.pyplot as plt
+    # TODO model_marginals will be TabPFN trained without perceiver & feature cross-attn
+    # 1. Put both models in eval mode
+    # model_margi
