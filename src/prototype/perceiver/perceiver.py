@@ -624,7 +624,41 @@ if __name__ == '__main__':
 
     # visualize -------------------------------------
     from prototype.harmonic_restart.harmonic_prior import HeatmapVisualizer
-    import matplotlib.pyplot as plt
-    # TODO model_marginals will be TabPFN trained without perceiver & feature cross-attn
-    # 1. Put both models in eval mode
-    # model_margi
+
+    with torch.no_grad():
+        # Get a batch
+        batch_data = next(prior_stream.__iter__())
+
+        # Extract tensors and move to the model's device
+        device = next(model.parameters()).device
+
+        X_A = batch_data['train']['X_A'].to(device)
+        Y_A = batch_data['train']['Y_A'].to(device)
+        X_B = batch_data['train']['X_B'].to(device)
+        Y_B = batch_data['train']['Y_B'].to(device)
+
+        X_test = batch_data['test']['X_A'].to(device)
+        pad_mask_A = batch_data['train'].get('padding_mask_A', None)
+        if pad_mask_A is not None:
+            pad_mask_A = pad_mask_A.to(device)
+
+        n_train_A = X_A.shape[0]
+
+        # TabPFN expects Train (A + B) then Test (A) stacked along the sequence dimension
+        X_input = torch.cat([X_A, X_B, X_test], dim=0)
+        Y_train = torch.cat([Y_A, Y_B], dim=0).squeeze(-1)  # Squeeze feature dim for targets
+
+        # 1. Run the marginal model (if you uncomment it later)
+        # out_marginals = model_marginals(x=..., y=...)
+        logits_A, logits_B = None, None
+
+        # 2. Run the perceiver model for Stream C
+        out_perceiver = model(
+            x=X_input,
+            y=Y_train,
+            n_train_A=n_train_A,
+            padding_mask_A=pad_mask_A
+        )
+
+        # TabPFNV2p5 returns a dict containing "standard" and "b_translated"
+        logits_C = out_perceiver['standard']
