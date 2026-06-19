@@ -161,6 +161,8 @@ class TabPFNBlock(nn.Module):
             num_latents: int = 1,  # <--- NEW for Perceiver
             device: torch.device | str | None = None,
             dtype: torch.dtype | str | None = None,
+            use_task_emb_valve: bool = True,  # <--- NEW for optional task embedding valve
+            num_recursion: int = 2,  # <--- NEW for recursive alignment steps
     ) -> None:
         super().__init__()
         device_and_dtype = {"device": device, "dtype": dtype}
@@ -171,10 +173,28 @@ class TabPFNBlock(nn.Module):
         )
 
         # --- NEW: Domain Transfer Block ---
+        self.alignment_num_recursion = num_recursion
         self.perceiver_domain_transfer = PerceiverDomainTransfer(
             embedding_size=emsize, num_heads=nhead, head_dim=emsize // nhead, num_latents=num_latents,
             **device_and_dtype,
         )
+
+        # To avoid contaminating the Query too early, when the domains A and B aren't aligned yet, we
+        # allow the model to opt out and have A_test only attend to A
+        # FIXME: rather than a static valve, that is allowing the model to opt out over the depth,
+        #  we could also try a dynamic valve based on the perceiver alignment; i.e. computing both A's and B's
+        #  feature vector space, then take those embeddings and use their angle as task embedding added to B's
+        #  representations. alternatively, we can use [log(n_A), log(n_B), entropy_attn_weights in feature cross attn]
+        #  and pass it through an MLP to obtain the two vectors E_A, E_B that are being added to [A_train, A_test(!)]
+        #  and B_train. The idea is, that
+        #  with this we measure in-context what the alignment quality is to not contaminate the rowwise-cross attn
+        #  from A_test to A_train and B_test
+        self.use_task_emb_valve = use_task_emb_valve
+        if self.use_task_emb_valve:
+            self.task_emb_A = nn.Parameter(torch.zeros(1, 1, 1, emsize, **device_and_dtype))
+            self.task_emb_B = nn.Parameter(torch.zeros(1, 1, 1, emsize, **device_and_dtype))
+            torch.nn.init.normal_(self.task_emb_A, std=0.02)
+            torch.nn.init.normal_(self.task_emb_B, std=0.02)
 
         self.per_column_attention_between_cells = AlongColumnAttention(
             embedding_size=emsize, num_heads=nhead, head_dim=emsize // nhead, **device_and_dtype,
@@ -222,12 +242,27 @@ class TabPFNBlock(nn.Module):
             B_train = x_BRCE[:, n_train_A: single_eval_pos]
             A_test = x_BRCE[:, single_eval_pos:]
 
-            B_translated = self.perceiver_domain_transfer(A_train, B_train, padding_mask_A)
+            # B_translated = self.perceiver_domain_transfer(A_train, B_train, padding_mask_A)
+            # TODO instead of recursion, we can also instantiate one single PerceiverDomainTransfer object and
+            #  share it for all PFN blocks, this way we have the "universal Transformer" approach with tied weights
+            #  acting like an ODE solver.
+            for step in range(self.alignment_num_recursion):
+                # FIXME: recursion is currently wasteful, because A_train's feature space is not updated, but recalculated
+                B_translated = self.perceiver_domain_transfer(A_train, B_train, padding_mask_A)
+                # The crucial residual connection:
+                B_train = B_train + B_translated
 
-            B_train = B_train + B_translated
+
             B_train = chunked_evaluate_maybe_inplace(
                 self.layernorm_domain, B_train, save_peak_memory_factor, residual=False, batch_dims=3
             )
+
+            # This allows A_test to zero-out its attention to B_train via the dot product
+            if self.use_task_emb_valve:
+                A_train = A_train + self.task_emb_A
+                A_test = A_test + self.task_emb_A
+                B_train = B_train + self.task_emb_B
+
             x_BRCE = torch.cat([A_train, B_train, A_test], dim=1)
 
         # -- 3. Row Cross-Attention
@@ -440,6 +475,88 @@ if __name__ == '__main__':
     from torch.amp import autocast, GradScaler
     from torch.optim.lr_scheduler import CosineAnnealingLR
 
+
+    from tqdm import tqdm
+    from typing import Literal
+
+
+    def train_baseline_pfn(
+            model,  # Should be the base TabPFNV2p5_super
+            dataloader,
+            nll_criterion,
+            epochs: int = 100,
+            steps_per_epoch: int = 500,
+            lr: float = 1e-4,
+
+            device: str = 'cuda'
+    ):
+        """
+        Trains the baseline TabPFN model to establish NLL bounds.
+        """
+        model.to(device)
+        nll_criterion.to(device)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        scheduler = CosineAnnealingLR(optimizer, T_max=epochs * steps_per_epoch, eta_min=1e-6)
+        scaler = GradScaler('cuda' if torch.cuda.is_available() else 'cpu')
+
+        model.train()
+        pbar = tqdm(range(epochs), desc=f"Baseline PFN")
+
+        for epoch in pbar:
+            epoch_loss = 0.0
+
+            batch_iter = iter(dataloader)
+
+            for step in range(steps_per_epoch):
+                optimizer.zero_grad(set_to_none=True)
+                batch = next(batch_iter)
+
+                # 1. Extract Target Task A and Test points
+                X_A = batch['train']['X_A'].to(device)  # (n_A, Batch, C)
+                Y_A = batch['train']['Y_A'].to(device)  # (n_A, Batch, 1)
+
+                X_test = batch['test']['X_A'].to(device)  # (n_test, Batch, C)
+                Y_test = batch['test']['Y_A'].to(device)  # (n_test, Batch, 1)
+
+                X_train = X_A
+                Y_train = Y_A.squeeze(-1)
+
+
+                # TabPFN expects Train points followed by Test points
+                X_input = torch.cat([X_train, X_test], dim=0)
+
+                with torch.amp.autocast('cuda' if torch.cuda.is_available() else 'cpu'):
+
+                    # 3. Main Forward Pass (Standard TabPFN signature)
+                    # Note: The original TabPFN does not take n_train_A or padding masks,
+                    # and directly returns the standard predictions (or a tuple depending on your exact super class wrapper).
+                    out = model(x=X_input, y=Y_train)
+
+                    # Handle output based on whether the superclass returns a dict or raw tensor
+                    logits = out["standard"] if isinstance(out, dict) else out
+
+                    # 4. Compute NLL (Must be FP32 for numerical stability)
+                    # Ensure we only calculate loss on the test set predictions
+                    loss_nll = nll_criterion(logits.float(), Y_test.squeeze(-1).float()).mean()
+
+                # 5. Backward and Optimize
+                scaler.scale(loss_nll).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+
+                epoch_loss += loss_nll.item()
+
+            pbar.set_description(
+                f"Epoch {epoch} | NLL: {epoch_loss / steps_per_epoch:.3f}"
+            )
+
+        return model
+
     # TODO: integrate mlflow, run baseline marginal models (TABPFN with different amount of training data!)
     # TODO: split the file
     # TODO: integrate with trainer and callbacks!
@@ -498,15 +615,27 @@ if __name__ == '__main__':
                 with torch.amp.autocast('cuda' if torch.cuda.is_available() else 'cpu'):
                     # Extract Z_target dynamically without a full forward pass
                     if aux_weight > 0.0:
+                        recursions = model.blocks[0].alignment_num_recursion
+                        # sidestep the cross domain block, since we only have one task in the fwd.
+                        for block in model.blocks:
+                            block.alignment_num_recursion = 0
                         with torch.no_grad():
                             raise NotImplementedError(
                                 'Auxiliary loss should not look at the embedding layer!'
-                                ' instead it should look at the PFN\'s final output!'
+                                'instead it should look at the PFN\'s final output!'
                                 'But to do this, we would need to pass X & Y for B_in_A as training set without test set!'
                             )
 
-                            Z_target = model.embed_target(X_B_in_A, Y_B_in_A).detach()
-                            # Z_target shape: (Batch, R_B, C, E)
+                            # todo "train only" mode without test
+                            Z_target = model(
+                                x=X_B_in_A,
+                                y=Y_B_in_A,
+                                n_train_A=X_B_in_A.shape[0],
+                                padding_mask_A=None
+                            )['standard'].detach()
+
+                        for block in model.blocks:
+                            block.alignment_num_recursion = recursions
 
                     # 3. Main Forward Pass
                     out = model(
@@ -557,10 +686,11 @@ if __name__ == '__main__':
 
     # 2. Instantiate the "Hidden Harmonic Mixture" Prior
     # We sample 10 points for target A, and 50 points for source B.
+    n_A, n_B = 10, 50
     prior_stream = InfiniteHarmonicsStream(
         batch_size=32,
-        n_A=10,
-        n_B=50,
+        n_A=n_A,
+        n_B=n_B,
         n_test=200,
         x_range=(-5, 5),
         num_components=4, # todo ablate complexity
@@ -619,6 +749,72 @@ if __name__ == '__main__':
         steps_per_epoch=100,
         lr=1e-4,
         aux_weight=0.0, # fixme: add weight here to encourage similar representations
+        device=device
+    )
+
+    # Baseline training -------------------------------------------------------
+    # (1) NLL lower bound: the full model with complete information n_A + n_B trained directly
+    # in the domain of A (no domain transfer necessary).
+    baseline = TabPFNV2p5(
+        config=config,
+        task_type="regression",
+        n_out=num_bars,
+        feature_positional_embedding="subspace",  # FIXME?
+        device=device
+    )
+    prior_stream = InfiniteHarmonicsStream(
+        batch_size=32,
+        n_A=n_A + n_B,
+        n_B=n_A + n_B, # will be ignored anyways
+        n_test=200,
+        x_range=(-5, 5),
+        num_components=4,  # todo ablate complexity
+        noise_std=0.05,
+        share_unrelated=0.0,
+        scale=True,
+        shift=True,
+        warp=True
+    )
+    baseline = train_baseline_pfn(
+        baseline,
+        dataloader=prior_stream,
+        nll_criterion=nll_criterion,
+        epochs=1000,
+        steps_per_epoch=100,
+        lr=1e-4,
+        device=device
+    )
+
+    # (2) NLL "upper bound" that we need to undercut: the unconditional model A ------------------
+    # Stratify this baseline over different n_A from n_A to n_A+n_B to see how much information
+    # we were able to extract from this single related task B!
+    baseline = TabPFNV2p5(
+        config=config,
+        task_type="regression",
+        n_out=num_bars,
+        feature_positional_embedding="subspace",  # FIXME?
+        device=device
+    )
+    prior_stream = InfiniteHarmonicsStream(
+        batch_size=32,
+        n_A=n_A,
+        n_B=n_A + n_B,  # will be ignored anyways
+        n_test=200,
+        x_range=(-5, 5),
+        num_components=4,  # todo ablate complexity
+        noise_std=0.05,
+        share_unrelated=0.0,
+        scale=True,
+        shift=True,
+        warp=True
+    )
+    baseline = train_baseline_pfn(
+        baseline,
+        dataloader=prior_stream,
+        nll_criterion=nll_criterion,
+        epochs=1000,
+        steps_per_epoch=100,
+        lr=1e-4,
         device=device
     )
 
