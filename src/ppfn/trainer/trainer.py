@@ -136,51 +136,38 @@ class PPFNTrainer:
         # Then check the resulting log!
 
         try:
-            for eon in range(self.eons):
-                pbar = tqdm(range(epochs), disable=not self.verbose)
 
-                if self.eons > 1:
-                    logger.info(f"Starting eon {eon + 1}/{self.eons}...")
+            pbar = tqdm(range(epochs), disable=not self.verbose)
+            for epoch in pbar:
+                self.current_epoch = epoch
+                self.callback_handler.on_event("on_epoch_start", epoch=epoch)
 
-                # Check if the underlying dataset has the shuffle method
-                # FIXME: this is a code-smell
-                dataset = getattr(self.train_loader, 'dataset', self.train_loader)
-                if hasattr(dataset, 'shuffle'):
-                    dataset.shuffle()
+                epoch_metrics = self.train_epoch(steps)
 
-                # Create a FRESH iterator for this eon without overwriting the loader
-                self.train_iter = iter(self.train_loader)
+                feedback = self.callback_handler.on_event(
+                    "on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                )
 
-                for epoch in pbar:
-                    self.current_epoch = epoch
-                    self.callback_handler.on_event("on_epoch_start", epoch=epoch)
+                epoch_metrics.update(feedback)
 
-                    epoch_metrics = self.train_epoch(steps)
+                self.callback_handler.on_event(
+                    "log_on_epoch_end", epoch=epoch, metrics=epoch_metrics
+                )
 
-                    feedback = self.callback_handler.on_event(
-                        "on_epoch_end", epoch=epoch, metrics=epoch_metrics
-                    )
+                if feedback.get("stop_training", False):
+                    print("Early stopping triggered. Terminating training.")
+                    break
 
-                    epoch_metrics.update(feedback)
-
-                    self.callback_handler.on_event(
-                        "log_on_epoch_end", epoch=epoch, eon=eon, metrics=epoch_metrics
-                    )
-
-                    if feedback.get("stop_training", False):
-                        print("Early stopping triggered. Terminating training.")
-                        break
-
-                    if self.verbose:
-                        try:
-                            # We merge epoch into the metrics dict or pass it as a kwarg
-                            description = self.description_template.format(
-                                epoch=epoch, **epoch_metrics
-                            )
-                            pbar.set_description(description)
-                        except KeyError as e:
-                            # Fallback or warning if user provided a key that doesn't exist
-                            pbar.set_description(f"Epoch {epoch} (Template Error: Missing {e})")
+                if self.verbose:
+                    try:
+                        # We merge epoch into the metrics dict or pass it as a kwarg
+                        description = self.description_template.format(
+                            epoch=epoch, **epoch_metrics
+                        )
+                        pbar.set_description(description)
+                    except KeyError as e:
+                        # Fallback or warning if user provided a key that doesn't exist
+                        pbar.set_description(f"Epoch {epoch} (Template Error: Missing {e})")
 
         except KeyboardInterrupt:
             print("Training interrupted by user")
@@ -205,37 +192,6 @@ class PPFNTrainer:
         self.epochs = None
         self.steps = None
 
-    def _get_next_batch(self):
-
-        # FIXME Unfortunately the PFN's inability to deal with paddings^* (for both train and test) enforces a rigid design choice:
-        #  The context train test split must be at the exact same location in the entire batch.
-        #  Since we need to sample over different train context sizes, which makes collating and stacking batches without padding
-        #  impossible, made them precompute, store and fix the batch, causing this ugly design. Another consideration is,
-        #  that the independent item sampling in the batch with varying task complexity enforces looping over randomly sampled
-        #  MLP instances (both in size and weights). This forces pre-computing, because otherwise the GPU starves waiting for data.
-        #  ^* that themselves are an inefficiency
-
-        if hasattr(self.train_loader, "meta_batch"):
-            # Prior dataloader legacy support
-            return self.train_loader.get_batch(device=self.device)
-
-        # Standard loader path
-        batch = next(self.train_iter)
-        # If the loader collated it into a list/tuple of length 1
-        if isinstance(batch, (list, tuple)) and len(batch) == 1:
-            batch = batch[0]
-
-        if batch.single_eval_pos == 0:
-            # in this edge case, both A and B are empty, we cannot meta-learn
-            # FIXME: this needs to removed from the dataset generation for efficiency
-            # Fixme: we want to default to A's unconditional!
-            logger.error(
-                "Received batch with single_eval_pos=0 at step {step}, skipping this batch due to meta-learning minimal requirements.")
-            batch = self._get_next_batch()
-
-        kwargs = {'single_eval_pos': batch.single_eval_pos}
-
-        return batch.to(self.device), kwargs
 
     def train_epoch(self, n_steps=None) -> Dict[str, float]:
         self.model.train()
@@ -304,6 +260,7 @@ class PPFNTrainer:
             print("Halting before backward pass to preserve state.")
             import pdb
             pdb.set_trace()
+
         # Scale loss for gradient accumulation
         loss_scaled = loss / self.aggregate_k_gradients
 

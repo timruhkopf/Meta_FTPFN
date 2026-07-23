@@ -1,4 +1,4 @@
-dataset_class:
+prior_dataset_class:
   _target_: prototype.harmonic_restart.harmonic_prior.InfiniteHarmonicsStream
   batch_size: 256
   n_A: 10
