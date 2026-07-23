@@ -28,6 +28,8 @@ https://openreview.net/pdf?id=Ge3wbgb2Vi
 They will suffer with multi-fidelity tasks due to quadratic scaling
 
 we can also go for in context domain alignment!
+
+related paper, but instead of disjoint datasets, model vector valued y https://arxiv.org/html/2605.20234v1
 """
 
 # --- Updated Batched SDPA to support attn_mask ---
@@ -76,7 +78,6 @@ def _batched_scaled_dot_product_attention(
     return output_BHSD.permute(0, 2, 1, 3)
 
 
-# --- Perceiver Domain Transfer ---
 class PerceiverDomainTransfer(nn.Module):
     def __init__(self, embedding_size: int, num_heads: int, head_dim: int, num_latents: int = 1, device=None,
                  dtype=None):
@@ -93,35 +94,36 @@ class PerceiverDomainTransfer(nn.Module):
         if num_latents > 1:
             self.kv_proj = nn.Linear(num_latents * embedding_size, embedding_size, bias=False, **device_and_dtype)
 
-    def forward(self, A_train_BRCE: torch.Tensor, B_train_BRCE: torch.Tensor,
-                padding_mask_A: torch.Tensor | None = None) -> torch.Tensor:
+        layer_norm_args = {"device": device, "dtype": dtype, "elementwise_affine": False}
+        self.ln_bottleneck_A = LowerPrecisionLayerNorm(embedding_size, **layer_norm_args)
+        self.ln_translate_B = LowerPrecisionLayerNorm(embedding_size, **layer_norm_args)
+
+    def encode_target(self, A_train_BRCE: torch.Tensor, padding_mask_A: torch.Tensor | None = None) -> torch.Tensor:
+        """Step 1: Compress domain A into latent summaries (Calculated ONCE)."""
         B_batch, R_A, C, E = A_train_BRCE.shape
-        _, R_B, _, _ = B_train_BRCE.shape
         head_dim = self.bottleneck_attn.head_dim
         num_heads = self.bottleneck_attn.num_heads
 
-        # 1. Bottleneck: Compress A
         A_flat_BcRE = A_train_BRCE.transpose(1, 2).reshape(B_batch * C, R_A, E)
+
+        # Apply Pre-LN to A
+        A_flat_BcRE_norm = self.ln_bottleneck_A(A_flat_BcRE)
+
         q_latents = self.latent_queries.expand(B_batch, self.num_latents, C, E).transpose(1, 2).reshape(
             B_batch * C, self.num_latents, E)
 
         q_BcHNK = self.bottleneck_attn.q_projection(q_latents).view(B_batch * C, self.num_latents, -1, head_dim)
-        k_BcRNK = self.bottleneck_attn.k_projection(A_flat_BcRE).view(B_batch * C, R_A, -1, head_dim)
-        v_BcRNK = self.bottleneck_attn.v_projection(A_flat_BcRE).view(B_batch * C, R_A, -1, head_dim)
+        k_BcRNK = self.bottleneck_attn.k_projection(A_flat_BcRE_norm).view(B_batch * C, R_A, -1, head_dim)
+        v_BcRNK = self.bottleneck_attn.v_projection(A_flat_BcRE_norm).view(B_batch * C, R_A, -1, head_dim)
 
         # Handle Padding Mask for A
         attn_mask = None
         if padding_mask_A is not None:
             mask = torch.zeros_like(padding_mask_A, dtype=q_BcHNK.dtype)
             mask.masked_fill_(padding_mask_A, float('-inf'))
-
-            # 1. Add the feature dimension C
-            mask = mask.unsqueeze(1)  # Shape: (B_batch, 1, R_A)
-
-            # 2. Expand across C and flatten to match A_flat_BcRE's memory layout
+            mask = mask.unsqueeze(1)
             mask_Bc = mask.expand(B_batch, C, R_A).reshape(B_batch * C, R_A)
-
-            # 3. Expand for heads and latents
+            # This expansion is mathematically safe for F.scaled_dot_product_attention
             attn_mask = mask_Bc.view(B_batch * C, 1, 1, R_A).expand(-1, num_heads, self.num_latents, -1)
 
         A_bottleneck_BcKHD = _batched_scaled_dot_product_attention(q_BcHNK, k_BcRNK, v_BcRNK, attn_mask=attn_mask)
@@ -130,15 +132,25 @@ class PerceiverDomainTransfer(nn.Module):
         A_bottleneck_BCKE = A_bottleneck_BcK.view(B_batch, C, self.num_latents, E)
 
         if self.num_latents > 1:
-            A_bottleneck_BCE = self.kv_proj(A_bottleneck_BCKE.reshape(B_batch, C, self.num_latents * E))
+            return self.kv_proj(A_bottleneck_BCKE.reshape(B_batch, C, self.num_latents * E))
         else:
-            A_bottleneck_BCE = A_bottleneck_BCKE.squeeze(2)
+            return A_bottleneck_BCKE.squeeze(2)
 
-        # 2. Translate B
+    def translate_source(self, B_train_BRCE: torch.Tensor, A_bottleneck_BCE: torch.Tensor) -> torch.Tensor:
+        """Step 2: Translate domain B using A's latent summaries (Can be looped)."""
+        B_batch, R_B, C, E = B_train_BRCE.shape
+        head_dim = self.translate_attn.head_dim
+        num_heads = self.translate_attn.num_heads
+
         B_flat_BrCE = B_train_BRCE.reshape(B_batch * R_B, C, E)
+
+        # Apply Pre-LN to B
+        B_flat_BrCE_norm = self.ln_translate_B(B_flat_BrCE)
+
         A_bottleneck_BrCE = A_bottleneck_BCE.unsqueeze(1).expand(B_batch, R_B, C, E).reshape(B_batch * R_B, C, E)
 
-        q_BrCHF = self.translate_attn.q_projection(B_flat_BrCE).view(B_batch * R_B, C, -1, head_dim)
+        # Cross-feature attention: Sequence dim is C
+        q_BrCHF = self.translate_attn.q_projection(B_flat_BrCE_norm).view(B_batch * R_B, C, -1, head_dim)
         k_BrCHF = self.translate_attn.k_projection(A_bottleneck_BrCE).view(B_batch * R_B, C, -1, head_dim)
         v_BrCHF = self.translate_attn.v_projection(A_bottleneck_BrCE).view(B_batch * R_B, C, -1, head_dim)
 
@@ -147,6 +159,15 @@ class PerceiverDomainTransfer(nn.Module):
         translated_BrCE = self.translate_attn.out_projection(translated_BrCF)
 
         return translated_BrCE.view(B_batch, R_B, C, E)
+
+    def forward(self, A_train_BRCE: torch.Tensor, B_train_BRCE: torch.Tensor,
+                padding_mask_A: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Standard forward pass for a single step of domain transfer.
+        Compresses domain A, then uses it to translate domain B.
+        """
+        A_bottleneck_BCE = self.encode_target(A_train_BRCE, padding_mask_A)
+        return self.translate_source(B_train_BRCE, A_bottleneck_BCE)
 
 
 class TabPFNBlock(nn.Module):
@@ -220,8 +241,8 @@ class TabPFNBlock(nn.Module):
             single_eval_pos: int,
             save_peak_memory_factor: int | None,
             *,
-            n_train_A: int | None = None,  # <--- NEW
-            padding_mask_A: torch.Tensor | None = None,  # <--- NEW
+            n_train_A: int | None = None,
+            padding_mask_A: torch.Tensor | None = None,
             cached_kv: KVCacheEntry | None = None,
             return_kv: bool = False,
     ) -> tuple[torch.Tensor, KVCacheEntry | None, torch.Tensor | None]:
@@ -242,20 +263,14 @@ class TabPFNBlock(nn.Module):
             B_train = x_BRCE[:, n_train_A: single_eval_pos]
             A_test = x_BRCE[:, single_eval_pos:]
 
-            # B_translated = self.perceiver_domain_transfer(A_train, B_train, padding_mask_A)
-            # TODO instead of recursion, we can also instantiate one single PerceiverDomainTransfer object and
-            #  share it for all PFN blocks, this way we have the "universal Transformer" approach with tied weights
-            #  acting like an ODE solver.
+            # FIX: Calculate A's bottleneck exactly once
+            A_bottleneck = self.perceiver_domain_transfer.encode_target(A_train, padding_mask_A)
+
+            # FIX: Only the translation of B occurs in the recursive loop
             for step in range(self.alignment_num_recursion):
-                # FIXME: recursion is currently wasteful, because A_train's feature space is not updated, but recalculated
-                B_translated = self.perceiver_domain_transfer(A_train, B_train, padding_mask_A)
-                # The crucial residual connection:
+                B_translated = self.perceiver_domain_transfer.translate_source(B_train, A_bottleneck)
+                # The crucial residual connection
                 B_train = B_train + B_translated
-
-
-            B_train = chunked_evaluate_maybe_inplace(
-                self.layernorm_domain, B_train, save_peak_memory_factor, residual=False, batch_dims=3
-            )
 
             # This allows A_test to zero-out its attention to B_train via the dot product
             if self.use_task_emb_valve:
@@ -613,29 +628,24 @@ if __name__ == '__main__':
                 Y_B_in_A = batch['train']['Y_B_in_A'].to(device).squeeze(-1)
 
                 with torch.amp.autocast('cuda' if torch.cuda.is_available() else 'cpu'):
-                    # Extract Z_target dynamically without a full forward pass
                     if aux_weight > 0.0:
-                        recursions = model.blocks[0].alignment_num_recursion
-                        # sidestep the cross domain block, since we only have one task in the fwd.
-                        for block in model.blocks:
-                            block.alignment_num_recursion = 0
                         with torch.no_grad():
-                            raise NotImplementedError(
-                                'Auxiliary loss should not look at the embedding layer!'
-                                'instead it should look at the PFN\'s final output!'
-                                'But to do this, we would need to pass X & Y for B_in_A as training set without test set!'
-                            )
+                            # The total number of rows for this secondary pass
+                            num_rows_B = X_B_in_A.shape[1]
 
-                            # todo "train only" mode without test
-                            Z_target = model(
+                            # NATIVE TABPFN TRAIN-ONLY MODE:
+                            Z_target_dict = model(
                                 x=X_B_in_A,
                                 y=Y_B_in_A,
-                                n_train_A=X_B_in_A.shape[0],
+                                # Setting eval_pos to the total length means NO test set
+                                single_eval_pos=num_rows_B,
+                                # Setting this to None natively bypasses all Perceiver blocks
+                                n_train_A=None,
                                 padding_mask_A=None
-                            )['standard'].detach()
+                            )
 
-                        for block in model.blocks:
-                            block.alignment_num_recursion = recursions
+                            # Extract the detached targets
+                            Z_target = Z_target_dict['standard'].detach()
 
                     # 3. Main Forward Pass
                     out = model(

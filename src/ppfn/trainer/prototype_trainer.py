@@ -2,7 +2,7 @@ import logging
 
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
 from ppfn.trainer import PPFNTrainer
-from prototype.meta_jepa_v2.loss import  update_ema_dict_modules
+from prototype.meta_jepa.loss import  update_ema_dict_modules
 
 logger = logging.getLogger(__name__)
 

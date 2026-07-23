@@ -6,7 +6,7 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 
 from ppfn.model.mymodel.meta_context import ForwardMetaContext
-from prototype.meta_jepa_v2.pfn import PFNStack
+from prototype.meta_jepa.pfn import PFNStack
 
 
 class MetaJEPAPFN(nn.Module):  # ANAMORPHISM

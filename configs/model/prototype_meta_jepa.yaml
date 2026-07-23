@@ -5,7 +5,7 @@ model:
 
 
   model_class:
-    _target_: prototype.meta_jepa_v2.model.MetaJEPAPFN
+    _target_: prototype.meta_jepa.model.MetaJEPAPFN
     x_dim: 1 # FIXME: padd to a fixed upper dim in the dataset!
     y_dim: 1
     embed_dim: 128 # dmodel
@@ -20,7 +20,7 @@ model:
 trainer:
   trainer_class:
     criterion:
-      _target_: prototype.meta_jepa_v2.loss.TriJepaNLLLoss
+      _target_: prototype.meta_jepa.loss.TriJepaNLLLoss
       share_unrelated: ${dataset.dataset_class.share_unrelated}
 
       criterion:
