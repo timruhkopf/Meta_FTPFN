@@ -14,68 +14,20 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-@hydra.main(version_base="1.1", config_path="../configs", config_name="config")
-def main(cfg: DictConfig) -> None:
-    """
-    Main training entry point.
-
-    Args:
-        cfg: Hydra config from configs/config.yaml and experiment override
-    """
-
-    # Pretty print config
-    logger.info("\n" + OmegaConf.to_yaml(cfg))
-
-    # log hydra overrides in .err files for easier debugging:
-    logger.error(f"Overrides: {hydra.core.hydra_config.HydraConfig.get()['overrides']['task']}")
-
-    # Device
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-
-    # set seed for reproducibility
-    np.random.seed(cfg.seed)
-    torch.manual_seed(cfg.seed)
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(cfg.seed)
-
+def run(cfg: DictConfig, device: torch.device) -> None:
     logger.info(f"Set random seed to {cfg.seed}")
 
     # Create dataloaders
     logger.info("Creating dataloaders...")
 
     # Sampling the prior and storing it if required.
-    # This is only needed once and is the entry point to the get_batch functions
+    # This is only needed once and is the entry point to the meta_batch functions
     dataset = instantiate(cfg.dataset.dataset_class)
-    if cfg.dataset.get("sample_prior", False):
-        logger.info("Storing prior samples...")
-        dataset.store_prior(**instantiate(cfg.dataset.store_prior))
-
-        # store the generating yaml config alongside the prior samples
-        with open(dataset.storage_path / "generating_config.yaml", "w") as f:
-            OmegaConf.save(config=cfg.dataset, f=f)
-        return 0  # exit after storing prior
 
     # Create a simple DataLoader around the dataset
     loader = instantiate(
         cfg.dataset.dataloader_class, dataset=dataset
     )
-
-    # DEPREC: old API for pfns4bo.utils.PriorDataLoader
-    # loader = instantiate(cfg.dataset.dataloader)  # PriorDataLoader / DistributedPriorDataLoader
-    # if cfg.dataset.dataloader.get("store", True):
-    #     logger.info("Storing prior samples...")
-    #
-    #     (Path(cfg.dataset.dataloader.load_path) / 'partition_0').mkdir(parents=True, exist_ok=True)
-    #
-    #     # store the generating yaml config alongside the prior samples
-    #     with open( os.path.join(cfg.dataset.dataloader.load_path, 'generating_config.yaml'), 'w') as f:
-    #         OmegaConf.save(config=cfg.dataset, f=f)
-    #
-    #     loader.store_prior(**instantiate(cfg.dataset.store_prior))
-    #     loader._load_chunk(0)
-    #
-    #     return 0 # exit after storing prior
 
     # Load frozen model and get criterion from it
     logger.info("Loading frozen model...")
@@ -97,6 +49,7 @@ def main(cfg: DictConfig) -> None:
         scheduler=scheduler_partial,
         device=device,
     )
+
     # dictconfig cannot be passed directly; neither a dict with _target_ key
     trainer.config = (OmegaConf.to_container(cfg, resolve=True),)
 
@@ -105,33 +58,52 @@ def main(cfg: DictConfig) -> None:
 
     logger.info("Training completed!")
 
+
+@hydra.main(version_base="1.1", config_path="../configs", config_name="config")
+def main(cfg: DictConfig) -> None:
+    """
+    Main training entry point.
+
+    Args:
+        cfg: Hydra config from configs/config.yaml and experiment override
+    """
+    assert_clean_tree_for_real_runs(cfg)
+
+    # Pretty print config
+    logger.info("\n" + OmegaConf.to_yaml(cfg))
+
+    # log hydra overrides in .err files for easier debugging:
+    logger.error(f"Overrides: {hydra.core.hydra_config.HydraConfig.get()['overrides']['task']}")
+
+    # Device
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
+    # set seed for reproducibility
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(cfg.seed)
+
+    run(cfg, device)
+
     return 0
+
 
 
 if __name__ == "__main__":
     from pathlib import Path
     from dotenv import load_dotenv
+    from ppfn.utils.git_tools import githash, get_git_branch, assert_clean_tree_for_real_runs
 
     load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env")
 
-    def githash(*args, **kwargs) -> str:
-        try:
-            import subprocess
-
-            git_hash = (
-                subprocess.check_output(["git", "rev-parse", "HEAD"])
-                .decode("ascii")
-                .strip()
-            )
-            return git_hash
-        except Exception as e:
-            logger.warning(f"Could not retrieve git hash: {e}")
-            return "unknown"
 
     OmegaConf.register_new_resolver("mod", lambda x, y: x % y)
     OmegaConf.register_new_resolver("div", lambda x, y: int(x / y))
     OmegaConf.register_new_resolver("add", lambda x, y: x + y)
     OmegaConf.register_new_resolver('mul', lambda x, y: x * y)
     OmegaConf.register_new_resolver("githash", githash)
+    OmegaConf.register_new_resolver("get_git_branch", get_git_branch)
 
     main()

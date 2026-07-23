@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import time
-from ppfn.dataset.prior import AllocationPrior
+from ppfn.prior import AllocationPrior
 
 import pytest
 

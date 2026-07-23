@@ -7,7 +7,7 @@ same_task_128:
   dataset:
     _target_: ppfn.dataset.priordataloader.StoredPriorDataset
     get_batch_fn:
-      _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
+      _target_: ppfn.dataset.meta_batch.get_related_batch.meta_batch
       _partial_: True
 
     storage_path: ${oc.env:DATADIR}/validation/
@@ -21,13 +21,13 @@ same_task_128:
         share_unrelated: 0.
         num_features: 12
         transform:
-          _target_: ppfn.dataset.get_batch.transforms.SameTaskTransform
+          _target_: ppfn.dataset.meta_batch.transforms.SameTaskTransform
           resample_y0_ymax: False
 
       single_eval_pos: 128
       n_chunks: 1
       chunk_size: 1000
-      batch_size: 50 # 100 # half this number is number of pairs of items (bnn) per batch
+      batch_size: 50 # 100 # half this number is number of pairs of items (mf_ftpfn_refactor) per batch
 
 
 
@@ -42,7 +42,7 @@ unrelated_128:
   dataset:
     _target_: ppfn.dataset.priordataloader.StoredPriorDataset
     get_batch_fn:
-      _target_: ppfn.dataset.get_batch.get_related_batch.get_batch
+      _target_: ppfn.dataset.meta_batch.get_related_batch.meta_batch
       _partial_: True
 
     sample_on_init_kwargs:
@@ -56,6 +56,6 @@ unrelated_128:
       single_eval_pos: 128
       n_chunks: 1
       chunk_size: 1000
-      batch_size: 50 # 100 # half this number is number of pairs of items (bnn) per batch
+      batch_size: 50 # 100 # half this number is number of pairs of items (mf_ftpfn_refactor) per batch
     storage_path: ${oc.env:DATADIR}/validation/
     folder_name: synthetic_unrelated

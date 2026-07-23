@@ -7,5 +7,5 @@ dataset_name: ft_pfn
 
 store_prior: # method call
   get_batch_fn:
-    _target_: ppfn.dataset.get_batch.ftpfn_get_batch.get_batch
+    _target_: ppfn.dataset.meta_batch.ftpfn_get_batch.meta_batch
     _partial_: True

@@ -2,8 +2,8 @@ import pytest
 import torch
 import numpy as np
 
-from ppfn.dataset.get_batch.transforms.fidelity_warp import FidelityWarpTransform
-from ppfn.dataset.prior import MultiFidelityTask
+from ppfn.prior.multi_fidelity.meta_batch.transforms.fidelity_warp import FidelityWarpTransform
+from ppfn.prior import MultiFidelityTask
 
 
 class TestFidelityWarpTransform:

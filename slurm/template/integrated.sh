@@ -51,10 +51,10 @@
 #    experiment_name=bnn_interpolation_and_unrelated \
 #    dataset.dataset_name=bnn_interpolation_and_unrelated  \
 #    dataset.dataloader.store=True \
-#    dataset.store_prior.prior.get_batch_fn._target_=ppfn.dataset.get_batch.bnn_output_interpolation.get_batch_mixed \
+#    dataset.store_prior.prior.get_batch_fn._target_=ppfn.dataset.meta_batch.bnn_output_interpolation.get_batch_mixed \
 #    trainer.epochs=2000
 
-# HYDRA_FULL_ERROR=1 uv run src/ppfn/train.py dataset.dataloader.store=True dataset.store_prior.prior.get_batch_fn._target_=ppfn.dataset.get_batch.bnn_output_interpolation.get_batch_mixed  trainer.epochs=2000 experiment_name=bnn_interpolation_and_unrelated dataset.dataset_name=bnn_interpolation_and_unrelated
+# HYDRA_FULL_ERROR=1 uv run src/ppfn/train.py dataset.dataloader.store=True dataset.store_prior.prior.get_batch_fn._target_=ppfn.dataset.meta_batch.bnn_output_interpolation.get_batch_mixed  trainer.epochs=2000 experiment_name=bnn_interpolation_and_unrelated dataset.dataset_name=bnn_interpolation_and_unrelated
 
 
 REPO=Meta_FTPFN

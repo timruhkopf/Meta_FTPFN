@@ -5,8 +5,8 @@ import time
 
 from unittest.mock import patch
 
-from ppfn.dataset.prior.bnn_link_fn import VectorizedParameterLinker
-from ppfn.dataset.prior.bnn_link_fn_old import ECDFParameterLinker
+from ppfn.prior import VectorizedParameterLinker
+from ppfn.prior import ECDFParameterLinker
 
 
 # Assuming your classes are imported or defined above

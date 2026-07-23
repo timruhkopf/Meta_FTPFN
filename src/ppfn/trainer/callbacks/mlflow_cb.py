@@ -11,17 +11,11 @@ from typing import Dict, Optional
 import mlflow
 from hydra.core.hydra_config import HydraConfig
 from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
-from ppfn.utils.git_hash import get_git_hash
+from ppfn.utils.git_tools import githash as get_git_hash
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
-def get_git_hash() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
-    except Exception:
-        return "unknown"
 
 
 def get_dynamic_run_name(default_prefix="run"):

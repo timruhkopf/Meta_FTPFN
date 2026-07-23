@@ -215,7 +215,7 @@ class PPFNTrainer:
         #  MLP instances (both in size and weights). This forces pre-computing, because otherwise the GPU starves waiting for data.
         #  ^* that themselves are an inefficiency
 
-        if hasattr(self.train_loader, "get_batch"):
+        if hasattr(self.train_loader, "meta_batch"):
             # Prior dataloader legacy support
             return self.train_loader.get_batch(device=self.device)
 
