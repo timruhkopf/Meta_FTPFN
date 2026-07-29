@@ -79,7 +79,7 @@ class InfiniteHarmonicsStream(IterableDataset):
         X_test_B, Y_test_B = self.prior.warp_and_evaluate(X_test_B_in_A, params_B, shifts, scale_A, warps)
 
         # 3. Pad Task A to match Task B shapes
-        X_train_A_pad, Y_train_A_pad, padding_mask_A = self._pad_task_a(X_train_A, Y_train_A)
+        # X_train_A_pad, Y_train_A_pad, padding_mask_A = self._pad_task_a(X_train_A, Y_train_A)
 
         # 4. Compile and return dictionary
         return {
@@ -90,11 +90,11 @@ class InfiniteHarmonicsStream(IterableDataset):
                 'warps': warps,
                 'is_unrelated': is_unrelated
             },
-            'train': {
+            'train': { # [T, B, D]
                 'X_B': X_train_B.unsqueeze(-1), 'Y_B': Y_train_B.unsqueeze(-1),
-                'X_A': X_train_A_pad.unsqueeze(-1), 'Y_A': Y_train_A_pad.unsqueeze(-1),
+                'X_A': X_train_A.unsqueeze(-1), 'Y_A': Y_train_A.unsqueeze(-1),
                 'X_B_in_A': X_train_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_train_B_in_A.unsqueeze(-1),
-                'padding_mask_A': padding_mask_A,
+                # 'padding_mask_A': padding_mask_A,
             },
             'test': {
                 'X_B': X_test_B.unsqueeze(-1), 'Y_B': Y_test_B.unsqueeze(-1),
@@ -109,5 +109,9 @@ class InfiniteHarmonicsStream(IterableDataset):
 
 if __name__ == '__main__':
 
-    prior = HarmonicMixturePrior(num_components=4, noise_std=0.05, share_unrelated=0.2)
+    prior = HarmonicMixturePrior(num_components=4, noise_std=0.05, share_unrelated=0.)
     dataset = InfiniteHarmonicsStream(prior=prior, batch_size=32)
+
+    d = next(iter(dataset))
+
+    d

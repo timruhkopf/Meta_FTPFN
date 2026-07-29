@@ -1,0 +1,2 @@
+model_class:
+  _target_: ppfn.model.anamorphic.get_tabpfn2_5.get_raw_tabpfn_v2_5

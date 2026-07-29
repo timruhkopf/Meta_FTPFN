@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from ppfn.prior.bnn.mlp import MLP
+
 
 class BNNPrior(torch.nn.Module):
     output_samples = None  # Global cache for BNN output samples for ECDF fitting

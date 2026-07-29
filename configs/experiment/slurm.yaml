@@ -1,11 +1,10 @@
 # @package _global_
 defaults:
+  - /dispatch: slurm
   - /callbacks:
       - mlflow
-      - ckpt_nll_avg
       - clip
-      - validation_synthetic
-      - validation_real
+
   - _self_
 
 
@@ -17,3 +16,10 @@ mlflow_tracking_uri: 'file:////bigwork/nhwpruht/Meta_FTPFN/mlruns'
 trainer:
   trainer_class:
     verbose: False # tqdm
+
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

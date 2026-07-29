@@ -28,7 +28,7 @@ def assert_clean_tree_for_real_runs(cfg):
     """Hard rule: baseline/sweep runs must come from a committed tree, so
     the git_sha tag logged to MLflow is always trustworthy. Debug runs are
     exempt — that's what 00-debug is for."""
-    if str(cfg.mlflow_experiment).startswith(("02-baseline", "03-sweep")):
+    if str(cfg.experiment_name).startswith(("02-baseline", "03-sweep")):
         try:
             dirty = subprocess.check_output(
                 ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL

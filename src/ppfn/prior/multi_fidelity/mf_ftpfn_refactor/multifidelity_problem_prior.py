@@ -11,8 +11,9 @@ import torch
 import numpy as np
 from torch import vmap
 
+from ppfn.prior.bnn.bnn_prior import BNNPrior
 from ppfn.prior.multi_fidelity.mf_ftpfn_refactor.bnn_link_fn import VectorizedParameterLinker
-from ppfn.prior.bnn_prior import BNNPrior
+
 from copy import deepcopy
 
 class MultiFidelityTask:

@@ -9,35 +9,25 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine_with_warmup
   - trainer: default
-  - experiment: slurm
+  - experiment: debug
+
   - callbacks:
       - mlflow
+      - clip
   - _self_
 
 device: "cuda"
-experiment_name: ???
+
 # FIXME: SLURM_JOB_ID with a on login-node started job will not have a job_id yet!
 #  to have the folder be the job_id, we need to sbatch the master script e.g. `sbatch slim.sh`
 run_name: ${oc.env:SLURM_JOB_ID, ${now:%Y-%m-%d}_${now:%H-%M-%S}} #  will be set by mlflow at random
-
-
-validation_frequency: 3
 
 trainer:
   trainer_class:
     callbacks: ${callbacks}
 
-
-hydra:
-  run:
-    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
-  sweep:
-    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}
-
 seed: 42
 hash: ${githash:''}
 
-
-checkpoint: Null
 
 
