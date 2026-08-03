@@ -25,10 +25,10 @@ class InfiniteHarmonicsStream(IterableDataset):
         B = self.batch_size
 
         # B's domain is elongated here to ensure a valid target for the test point projection.
-        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x - 2, self.max_x + 2), dim=0)
+        X_train_B, _ = torch.sort(torch.empty(self.n_B, B).uniform_(self.min_x, self.max_x), dim=0)
         X_train_A, _ = torch.sort(torch.empty(self.n_A, B).uniform_(self.min_x, self.max_x), dim=0)
 
-        X_test_B = torch.empty(self.n_test, B).uniform_(self.min_x - 2, self.max_x + 2)
+        X_test_B = torch.empty(self.n_test, B).uniform_(self.min_x, self.max_x)
         X_test_A = torch.empty(self.n_test, B).uniform_(self.min_x, self.max_x)
 
         return X_train_A, X_test_A, X_train_B, X_test_B
@@ -70,13 +70,17 @@ class InfiniteHarmonicsStream(IterableDataset):
         Y_test_A = self.prior.eval_function(X_test_A, *params_A)
 
         # B in A
-        Y_train_B_in_A = self.prior.eval_function(X_train_B_in_A, *params_B) + (
+        Y_train_B_in_A = self.prior.eval_function(X_train_B_in_A, *params_A) + (
                     torch.randn_like(X_train_B_in_A) * self.prior.noise_std)
-        Y_test_B_in_A = self.prior.eval_function(X_test_B_in_A, *params_B)
+        Y_test_B_in_A = self.prior.eval_function(X_test_B_in_A, *params_A)
 
         # --- THE TARGET (Domain B mapped into A's curve) ---
         X_train_B, Y_train_B = self.prior.warp_and_evaluate(X_train_B_in_A, params_B, shifts, scale_A, warps)
         X_test_B, Y_test_B = self.prior.warp_and_evaluate(X_test_B_in_A, params_B, shifts, scale_A, warps)
+
+        # === INJECT HERE: A mapped into B's distorted coordinate/value space ===
+        X_train_A_in_B, Y_train_A_in_B = self.prior.warp_and_evaluate(X_train_A, params_B, shifts, scale_A, warps)
+        X_test_A_in_B, Y_test_A_in_B = self.prior.warp_and_evaluate(X_test_A, params_B, shifts, scale_A, warps)
 
         # 3. Pad Task A to match Task B shapes
         # X_train_A_pad, Y_train_A_pad, padding_mask_A = self._pad_task_a(X_train_A, Y_train_A)
@@ -85,6 +89,7 @@ class InfiniteHarmonicsStream(IterableDataset):
         return {
             'params': {
                 'params_A': params_A,
+                'params_B': params_B,
                 'shifts': shifts,
                 'scale_A': scale_A,
                 'warps': warps,
@@ -94,12 +99,15 @@ class InfiniteHarmonicsStream(IterableDataset):
                 'X_B': X_train_B.unsqueeze(-1), 'Y_B': Y_train_B.unsqueeze(-1),
                 'X_A': X_train_A.unsqueeze(-1), 'Y_A': Y_train_A.unsqueeze(-1),
                 'X_B_in_A': X_train_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_train_B_in_A.unsqueeze(-1),
+                'X_A_in_B': X_train_A_in_B.unsqueeze(-1), 'Y_A_in_B': Y_train_A_in_B.unsqueeze(-1),
                 # 'padding_mask_A': padding_mask_A,
             },
             'test': {
                 'X_B': X_test_B.unsqueeze(-1), 'Y_B': Y_test_B.unsqueeze(-1),
                 'X_A': X_test_A.unsqueeze(-1), 'Y_A': Y_test_A.unsqueeze(-1),
                 'X_B_in_A': X_test_B_in_A.unsqueeze(-1), 'Y_B_in_A': Y_test_B_in_A.unsqueeze(-1),
+                'X_A_in_B': X_test_A_in_B.unsqueeze(-1), 'Y_A_in_B': Y_test_A_in_B.unsqueeze(-1),
+
             }
         }
 
