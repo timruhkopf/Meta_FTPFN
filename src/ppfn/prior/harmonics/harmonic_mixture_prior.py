@@ -89,9 +89,7 @@ class HarmonicMixturePrior:
 
     def warp_and_evaluate(self, X, params, shifts, scale, warps):
         v_shift, h_shift = shifts
-        X_warped = X - h_shift + self.apply_spatial_warp(X, *warps)
-        Y = scale * self.eval_function(X_warped, *params) + v_shift
-
-        Y += torch.randn_like(X_warped) * self.noise_std
-        return X_warped, Y
-
+        X_obs = X - h_shift + self.apply_spatial_warp(X, *warps)  # observed coordinate
+        Y = scale * self.eval_function(X, *params) + v_shift  # evaluated in latent frame
+        Y += torch.randn_like(Y) * self.noise_std
+        return X_obs, Y

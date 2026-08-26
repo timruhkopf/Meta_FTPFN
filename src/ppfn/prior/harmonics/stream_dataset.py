@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import IterableDataset
 
-from ppfn.prior.harmonics.harmnoic_mixture_prior import HarmonicMixturePrior
+from ppfn.prior.harmonics.harmonic_mixture_prior import HarmonicMixturePrior
 
 
 class InfiniteHarmonicsStream(IterableDataset):
