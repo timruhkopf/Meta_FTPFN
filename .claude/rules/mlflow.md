@@ -26,6 +26,14 @@ rely on being reverted.
   `get_experiment_by_name`/`create_experiment` for local/interactive runs. Don't
   remove the env-var fast path — it exists because of a real race condition on the
   cluster's shared filesystem, not as a debug shortcut.
+- **Open problem, not yet solved**: the above only fixes the *experiment-creation*
+  race. Concurrent *run/metric writes* from a real SLURM array (many tasks
+  logging throughout hours-long runs) are a separate, harder problem — SQLite's
+  been stress-tested and empirically fails at this cluster's concurrency, a
+  persistent Postgres isn't available (no long-lived non-SLURM process), and the
+  filesystem-store workaround used previously is no longer relied on. Tracked in
+  `docs/milestones/M13-mlflow-tracking-backend.md` — don't assume the current `sqlite:///mlflow.db`
+  default in `configs/experiment/debug.yaml` scales past single-writer local use.
 - Run names are dynamically generated from Hydra task overrides
   (`get_dynamic_run_name`), truncated to 97 chars, and are for human
   readability in the MLflow UI only — nothing in the codebase parses a run name

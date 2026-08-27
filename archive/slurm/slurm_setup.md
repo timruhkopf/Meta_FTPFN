@@ -31,7 +31,7 @@ git checkout icml-2024
  
 ## 2. Prepare the PFN checkpoint
 
-# Collect the ft-pfn checkpoint and move it into `models/pfn_ckpt/.model` 
+# Collect the ft-pfn checkpoint and move it into `../../models/pfn_ckpt/.model` 
 
 #TODO: automate this
 

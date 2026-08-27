@@ -61,7 +61,7 @@ against downstream. No existing metric catches this.
 If you're building anything that consumes a checkpoint trained elsewhere in this
 repo (not just resuming the same run), consider whether it needs a startup check
 comparing the checkpoint's recorded prior config (once one exists — see
-`docs/milestones/M0.md`'s open question on `harmonics`/`harmonics_fix`) against
+`docs/milestones/M0-repo-hygiene.md`'s open question on `harmonics`/`harmonics_fix`) against
 the current run's `cfg.prior`, and raising loudly on mismatch rather than
 training through it. This isn't implemented yet — don't assume a check like this
 exists just because it should.

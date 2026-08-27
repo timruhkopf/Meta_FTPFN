@@ -10,9 +10,11 @@ Argument: a milestone id (e.g. `M0`, `M1`). If none is given, read
 
 ## Steps
 
-1. **Read the spec.** Open `docs/milestones/<id>.md`. If it doesn't exist, stop and
-   say so — don't improvise a milestone that hasn't been written. Read
-   `docs/ROADMAP.md` for surrounding context (what's already done, what this
+1. **Read the spec.** Files are named `docs/milestones/<id>-<slug>.md` (e.g.
+   `M8-task-token-baseline.md`) — match on the `<id>-` prefix, don't assume the
+   exact slug. If nothing matches, stop and say so — don't improvise a
+   milestone that hasn't been written. Read `docs/ROADMAP.md` for the exact
+   filename/link and surrounding context (what's already done, what this
    depends on).
 
 2. **Read the invariants that apply.** Root `CLAUDE.md`, plus any nested

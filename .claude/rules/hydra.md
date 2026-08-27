@@ -112,5 +112,5 @@ updating that check.
 
 `configs/prior/harmonics.yaml` and the code it targeted are both in
 `archive/` (see `archive/README.md`) — the dangling `_target_` bug tracked in
-`docs/milestones/M0.md` still applies whenever that comes back, it just isn't
+`docs/milestones/M0-repo-hygiene.md` still applies whenever that comes back, it just isn't
 live right now. `prior: bnn` is the only real option today.
