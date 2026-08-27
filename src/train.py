@@ -22,11 +22,11 @@ def run(cfg: DictConfig, device: torch.device) -> None:
 
     # Sampling the prior and storing it if required.
     # This is only needed once and is the entry point to the meta_batch functions
-    dataset = instantiate(cfg.dataset.dataset_class)
+    dataset = instantiate(cfg.prior.dataset_class)
 
     # Create a simple DataLoader around the dataset
     loader = instantiate(
-        cfg.dataset.dataloader_class, dataset=dataset
+        cfg.prior.dataloader_class, dataset=dataset
     )
 
     # Load frozen model and get criterion from it
@@ -94,16 +94,11 @@ def main(cfg: DictConfig) -> None:
 if __name__ == "__main__":
     from pathlib import Path
     from dotenv import load_dotenv
-    from ppfn.utils.git_tools import githash, get_git_branch, assert_clean_tree_for_real_runs
+    from ppfn.utils.git_tools import assert_clean_tree_for_real_runs
+    from ppfn.utils.resolvers import register_resolvers
 
     load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env")
 
-
-    OmegaConf.register_new_resolver("mod", lambda x, y: x % y)
-    OmegaConf.register_new_resolver("div", lambda x, y: int(x / y))
-    OmegaConf.register_new_resolver("add", lambda x, y: x + y)
-    OmegaConf.register_new_resolver('mul', lambda x, y: x * y)
-    OmegaConf.register_new_resolver("githash", githash)
-    OmegaConf.register_new_resolver("get_git_branch", get_git_branch)
+    register_resolvers()
 
     main()

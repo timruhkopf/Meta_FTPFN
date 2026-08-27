@@ -1,0 +1,2 @@
+# Constant learning rate scheduler
+type: "constant"

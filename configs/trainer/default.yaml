@@ -1,14 +1,21 @@
-# Default trainer configuration
-epochs: ${dataset.store_prior.n_chunks }
-steps:  ${div:${dataset.store_prior.chunk_size},${dataset.store_prior.batch_size}}
-# number of batches assuming chunk_size=1008 and batch_size=16
-objective: ???
+# `epochs`/`steps` are read directly by src/train.py
+# (trainer.fit(epochs=cfg.trainer.epochs, steps=cfg.trainer.steps)) — override
+# per experiment.
+epochs: 10
+steps: 100
+
 trainer_class:
-  _target_: ppfn.trainer.PPFNTrainer
+  _target_: ppfn.trainer.trainer.PPFNTrainer
+  # No active loss/objective module exists yet — the old one
+  # (MultiStreamObjective) is archived at
+  # archive/src/ppfn/model/mymodel/multistream_objective.py. Pull it back (or
+  # write a new one) before this can train anything end-to-end; src/train.py's
+  # instantiate(cfg.trainer.trainer_class, model=..., ...) call reads this key
+  # directly as a PPFNTrainer constructor kwarg.
+  criterion: ???
   use_amp: false
   grad_clip: 1.0
   aggregate_k_gradients: 1
   verbose: true
-
-
-  callbacks: Null
+  eons: 1
+  callbacks: null  # overridden to ${callbacks} in the root configs/config.yaml

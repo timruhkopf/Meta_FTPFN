@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,sys,subprocess,shutil;d=json.load(sys.stdin);f=d.get('tool_input',{}).get('file_path','');shutil.which('ruff') and f.endswith('.py') and subprocess.run(['ruff','format',f])\" 2>/dev/null || true",
+            "statusMessage": "ruff format"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,sys;d=json.load(sys.stdin);f=(d.get('tool_input',{}).get('file_path','') or '').replace('\\\\\\\\','/');parts=f.split('/');protected={'data','external','.venv','outputs','mlruns'};print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Protected path (data/external/.venv/outputs/mlruns) - gitignored raw data, vendored ifBO clone, venv, or run outputs; must not be hand-edited'}})) if any(p in protected for p in parts) else None\" 2>/dev/null"
+          }
+        ]
+      }
+    ]
+  }
+}

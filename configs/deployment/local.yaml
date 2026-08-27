@@ -1,0 +1,17 @@
+# @package _global_
+
+# Run through submitit locally (a subprocess, not through SLURM) rather than
+# Hydra's plain basic launcher — keeps local and SLURM dispatch on the same
+# code path (checkpointing/requeue semantics, multirun-as-job-array), so a config
+# that works locally is more likely to also work once switched to `slurm`.
+
+defaults:
+  - override /hydra/launcher: submitit_local
+
+hydra:
+  launcher:
+    timeout_min: 60
+    tasks_per_node: 1
+    nodes: 1
+    gpus_per_node: 1
+    name: ${hydra.job.name}

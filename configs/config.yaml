@@ -1,16 +1,21 @@
 # @package _global_
 
-# Default configuration for PPFN training
-# Override with specific experiments via configs/experiment/
+# Root configuration for PPFN training (src/train.py). Override per run via
+# configs/experiment/ (selects deployment + callbacks + output dirs).
+#
+# `model` and `benchmark` have no active implementation yet (see
+# configs/model/README.md, configs/benchmark/README.md) — they're declared as
+# mandatory (`???`) so running without them fails loudly and early instead of
+# with a confusing AttributeError deep in train.py.
 
 defaults:
-  - model: apfn
-  - prior: harmonics
+  - model: ???
+  - prior: bnn
+  - benchmark: ???
   - optimizer: adamw
   - scheduler: cosine_with_warmup
   - trainer: default
   - experiment: debug
-
   - callbacks:
       - mlflow
       - clip
@@ -18,9 +23,9 @@ defaults:
 
 device: "cuda"
 
-# FIXME: SLURM_JOB_ID with a on login-node started job will not have a job_id yet!
-#  to have the folder be the job_id, we need to sbatch the master script e.g. `sbatch slim.sh`
-run_name: ${oc.env:SLURM_JOB_ID, ${now:%Y-%m-%d}_${now:%H-%M-%S}} #  will be set by mlflow at random
+# will be set by SLURM job id when dispatched via configs/deployment/slurm.yaml,
+# otherwise a timestamp
+run_name: ${oc.env:SLURM_JOB_ID, ${now:%Y-%m-%d}_${now:%H-%M-%S}}
 
 trainer:
   trainer_class:
@@ -28,6 +33,3 @@ trainer:
 
 seed: 42
 hash: ${githash:''}
-
-
-

@@ -1,0 +1,22 @@
+# Meta information about what this prior produces, kept alongside the _target_s
+# so other config groups (model, trainer) can reference it via interpolation
+# (e.g. ${prior.num_inputs}) without instantiating anything.
+num_inputs: 8
+num_outputs: 1
+
+# The prior itself: a sampler over ground-truth functions (BNNPrior.sample()
+# returns a freshly sampled MLP), not by itself a torch Dataset/DataLoader.
+prior_class:
+  _target_: ppfn.prior.bnn.bnn_prior.BNNPrior
+  num_inputs: ${prior.num_inputs}
+  num_outputs: ${prior.num_outputs}
+
+# src/train.py instantiates these two directly (dataset, then loader wrapping
+# it) — see cfg.prior.dataset_class / cfg.prior.dataloader_class in run().
+# No stream/IterableDataset wrapper around `prior_class` exists yet (the old
+# harmonics prior had one: archive/src/ppfn/prior/harmonics/stream_dataset.py,
+# wired via prior_dataset_class + dataloader_class — same shape, different
+# name). Writing that wrapper is milestone work, not today's setup, so these
+# stay mandatory placeholders.
+dataset_class: ???
+dataloader_class: ???

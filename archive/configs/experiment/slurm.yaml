@@ -1,11 +1,12 @@
 # @package _global_
-
 defaults:
-  - /deployment: slurm
+  - /dispatch: slurm
   - /callbacks:
       - mlflow
       - clip
+
   - _self_
+
 
 experiment_name: ???
 run_name: ???
@@ -14,7 +15,8 @@ mlflow_tracking_uri: 'file:////bigwork/nhwpruht/Meta_FTPFN/mlruns'
 
 trainer:
   trainer_class:
-    verbose: false  # tqdm is noisy in non-interactive SLURM logs
+    verbose: False # tqdm
+
 
 hydra:
   run:

@@ -3,3 +3,7 @@ mlflow:
   experiment_name: ${experiment_name}
   run_name: ${run_name}
   sweep_id: ${run_name}
+  # Previously unset here, so MLflowCallback fell back to the
+  # MLFLOW_TRACKING_URI env var and the experiment-level `mlflow_tracking_uri`
+  # (set in configs/experiment/*.yaml) was silently never used. Wired up now.
+  mlflow_tracking_uri: ${mlflow_tracking_uri}

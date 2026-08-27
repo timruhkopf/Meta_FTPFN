@@ -113,6 +113,121 @@ def pad_test_features(X_test_A: torch.Tensor, F_B: int, pad_val: float = float("
         components.append(task_id_col)
 
     return torch.cat(components, dim=-1)
+
+# --------------------------------
+# Alternate Mixed effect design
+
+
+
+def build_stacked_overlay_features(X_A, Y_A, X_B, Y_B, pad_val: float = 0.0):
+    """
+    Stacked Overlay + Interaction design:
+      [ X_A_padded , 0 , 0          ]
+      [ X_B_padded , 1 , X_B_padded ]
+
+    Y is returned separately, never concatenated into X.
+
+    One important caveat about what this design tests
+
+    The stacked-overlay construction bakes in an assumption that the block-diagonal design deliberately avoided:
+    it assumes column i of A and column i of B play the same physical role, just under a different value transform.
+    That's true for your current transform family (per-feature shift/scale is diagonal and index-preserving),
+    so the design is a great fit for it — but it means this architecture is testing "can the model apply a
+    per-feature correction when told which feature is which," not "can the model discover which of B's
+    columns corresponds to which of A's columns." The latter — genuine correspondence discovery under permutation,
+    dimensionality mismatch, or cross-dimension mixing — is the harder problem the original coordinate-alignment
+    framing was aimed at, and this design doesn't exercise it at all; it can't, since same-index-same-role is wired
+    into the construction.
+
+    results in the best performance so far:
+    gap1 (distorted, block): mean=-1.1962  median=-1.2014  sem=0.0624  n_inf=0/100
+    gap2 (aligned, block): mean=-2.0476  median=-2.1724  sem=0.0841  n_inf=0/100
+    gap3 (oracle/concat): mean=-2.2350  median=-2.9120  sem=0.1814  n_inf=0/100
+
+    i.e. the model is able to extract a lot of information from B about A's task, even when B is distorted,
+    simply because it does not relies u
+
+    Returns:
+      X_design: (..., N_A+N_B, 2*F_max + 1)
+      y_design: (..., N_A+N_B, 1)
+    """
+    batch_shape = X_A.shape[:-2]
+    N_A, F_A = X_A.shape[-2], X_A.shape[-1]
+    N_B, F_B = X_B.shape[-2], X_B.shape[-1]
+    device, dtype = X_A.device, X_A.dtype
+
+    F_max = max(F_A, F_B)
+
+    # 1. Pad raw features up to F_max so they can be stacked vertically
+    if F_A < F_max:
+        pad_A = torch.full((*batch_shape, N_A, F_max - F_A), pad_val, dtype=dtype, device=device)
+        X_A_pad = torch.cat([X_A, pad_A], dim=-1)
+    else:
+        X_A_pad = X_A
+
+    if F_B < F_max:
+        pad_B = torch.full((*batch_shape, N_B, F_max - F_B), pad_val, dtype=dtype, device=device)
+        X_B_pad = torch.cat([X_B, pad_B], dim=-1)
+    else:
+        X_B_pad = X_B
+
+    # 2. Base Shared Representation (X_raw)
+    X_raw = torch.cat([X_A_pad, X_B_pad], dim=-2)
+
+    # 3. Domain Indicator (I_B)
+    I_A = torch.zeros((*batch_shape, N_A, 1), dtype=dtype, device=device)
+    I_B_ind = torch.ones((*batch_shape, N_B, 1), dtype=dtype, device=device)
+    I_B_col = torch.cat([I_A, I_B_ind], dim=-2)
+
+    # 4. Interaction Term (X_raw * I_B)
+    # Built explicitly to avoid NaN * 0 = NaN propagation if pad_val is NaN
+    int_A = torch.zeros((*batch_shape, N_A, F_max), dtype=dtype, device=device)
+    int_B = X_B_pad.clone()
+    X_int = torch.cat([int_A, int_B], dim=-2)
+
+    # 5. Final Assembly along the feature dimension
+    X_design = torch.cat([X_raw, I_B_col, X_int], dim=-1)
+    y_design = torch.cat([Y_A, Y_B], dim=0)
+
+    return X_design, y_design
+
+
+def format_test_features_stacked(X_test, F_other: int, task_id: int = 0, pad_val: float = 0.0):
+    """
+    Format test points to match the (2*F_max + 1) stacked interaction layout.
+
+    Args:
+        X_test: Test features (..., N_test, F_test)
+        F_other (int): The number of features in the *other* domain (needed to compute F_max).
+        task_id (int): 0 for A, 1 for B. Defaults to 0.
+    """
+    batch_shape = X_test.shape[:-2]
+    N_test, F_test = X_test.shape[-2], X_test.shape[-1]
+    device, dtype = X_test.device, X_test.dtype
+
+    # Determine F_max based on which domain we are testing
+    F_A = F_test if task_id == 0 else F_other
+    F_B = F_other if task_id == 0 else F_test
+    F_max = max(F_A, F_B)
+
+    # 1. Pad to F_max
+    if F_test < F_max:
+        pad = torch.full((*batch_shape, N_test, F_max - F_test), pad_val, dtype=dtype, device=device)
+        X_pad = torch.cat([X_test, pad], dim=-1)
+    else:
+        X_pad = X_test
+
+    # 2. Indicator
+    I_col = torch.full((*batch_shape, N_test, 1), float(task_id), dtype=dtype, device=device)
+
+    # 3. Interaction Term
+    if task_id == 0:
+        X_int = torch.zeros((*batch_shape, N_test, F_max), dtype=dtype, device=device)
+    else:
+        X_int = X_pad.clone()
+
+    return torch.cat([X_pad, I_col, X_int], dim=-1)
+
 # --------------------------------------------------------------------------- #
 # 2. Fit + score NLL under a given context, using the native TabPFN interface
 # --------------------------------------------------------------------------- #
@@ -165,7 +280,7 @@ def evidence_gap_poc(X_A, Y_A, X_test_A: torch.Tensor, y_test_A: torch.Tensor, b
     # ---- block design: A + B jointly in context ----
     X_design, y_design = build_design_fn(X_A, Y_A, X_B, Y_B, *args, **kwargs)
     if X_design.shape[-1] != X_A.shape[-1]:  # padding, if we have block design!
-        X_test_A = pad_test_features(X_test_A, F_B, *args, **kwargs)
+        X_test_A = format_test_features_stacked(X_test_A, F_B, task_id=0, *args, **kwargs)
 
     nll_block = fit_and_score_nll(X_design, y_design, X_test_A, y_test_A, device=device)
 
@@ -283,7 +398,7 @@ if __name__ == "__main__":
     from ppfn.prior.harmonics.harmonic_mixture_prior import HarmonicMixturePrior
     from ppfn.prior.harmonics.stream_dataset import InfiniteHarmonicsStream
 
-    BATCH_SIZE = 100
+    BATCH_SIZE = 50
     N_A, N_B = 10, 50
     device = 'cpu' # FIXME: install a newer cuda driver to use GPU acceleration (due to tabpfn's torch dependency)
     prior = HarmonicMixturePrior(warp=False)
@@ -327,14 +442,14 @@ if __name__ == "__main__":
         # the use case, where B is distorted, and we pass it as block diag with nan tokens for padding,
         # forcing the model to infer the alignment
         X_B, Y_B = train["X_B"][:, b], train["Y_B"][:, b, 0]
-        nll_block2 = evidence_gap_poc(X_A, Y_A, X_test_A, y_test_A, build_block_design_features, device=device, add_task_id=False)
+        nll_block2 = evidence_gap_poc(X_A, Y_A, X_test_A, y_test_A, build_stacked_overlay_features, device=device)
         gap1 = nll_block2 - nll_baseline
 
         # Experiment 2:
         # Simplified case, where B is still in the domain of A, but passed as a Block diag, meaning, the model
         # has to understand the block design in feature-space in order to undo it.
         X_B, Y_B = train["X_B_in_A"][:, b], train["Y_B_in_A"][:, b, 0]
-        nll_block1 = evidence_gap_poc(X_A, Y_A, X_test_A, y_test_A, build_block_design_features, device=device, add_task_id=False)
+        nll_block1 = evidence_gap_poc(X_A, Y_A, X_test_A, y_test_A, build_stacked_overlay_features, device=device)
         gap2 = nll_block1 - nll_baseline
 
         """
