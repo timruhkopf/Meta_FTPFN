@@ -3,7 +3,7 @@ from typing import Dict
 import torch
 from torch import amp
 
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
+from ppfn.callbacks.abstract_callback import AbstractCallback
 
 
 class MetaTestCallback(AbstractCallback):

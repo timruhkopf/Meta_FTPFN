@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import mlflow
 import torch
 
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
+from ppfn.callbacks.abstract_callback import AbstractCallback
 
 logger = logging.getLogger(__name__)
 

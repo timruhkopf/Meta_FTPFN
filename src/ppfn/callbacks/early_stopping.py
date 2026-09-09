@@ -1,4 +1,4 @@
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback
+from ppfn.callbacks.abstract_callback import AbstractCallback
 from typing import Dict
 
 import logging

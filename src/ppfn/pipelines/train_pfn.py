@@ -35,11 +35,11 @@ from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
-from ppfn.trainer.callbacks.dim_validation import build_dim_validation_callback
+from ppfn.callbacks.dim_validation import build_dim_validation_callback
 from ppfn.deployment.provenance import record_provenance
-from ppfn.models.bar_distribution import BarDistribution
-from ppfn.models.pfn import PFN
-from ppfn.priors.bnn import BNNPrior
+from ppfn.model.pfn.bar_distribution import BarDistribution
+from ppfn.model.pfn.pfn import PFN
+from ppfn.prior.bnn.bnn_prior_vec import BNNPrior
 from ppfn.trainer.pfn_trainer import PFNTrainer
 from ppfn.utils.flatten import flatten
 
@@ -356,9 +356,9 @@ def main(cfg: DictConfig) -> dict:
         mlflow.set_tags(provenance.as_mlflow_tags())
         mlflow.log_params(flatten(OmegaConf.to_container(cfg, resolve=True)))
 
-        prior = instantiate(cfg.priors, seed=cfg.seed, device=cfg.device)
-        model = instantiate(cfg.models.surrogates).to(cfg.device)
-        model_config = OmegaConf.to_container(cfg.models.surrogates, resolve=True)
+        prior = instantiate(cfg.prior, seed=cfg.seed, device=cfg.device)
+        model = instantiate(cfg.model).to(cfg.device)
+        model_config = OmegaConf.to_container(cfg.model, resolve=True)
         model_config.pop("_target_")
 
         # Per-dimension validation (docs/log/2026-08-31-variable-xdim-
@@ -376,14 +376,14 @@ def main(cfg: DictConfig) -> dict:
         validate_dims = cfg.get("validate_dims", None)
         callbacks = None
         if validate_dims:
-            prior_kwargs = OmegaConf.to_container(cfg.priors, resolve=True)
+            prior_kwargs = OmegaConf.to_container(cfg.prior, resolve=True)
             for key in (
                 "_target_", "x_dim", "variable_dim_min", "batch_size", "seed",
                 "ecdf_n_samples", "ecdf_n_draws", "ecdf_samples_per_draw", "cache_dir",
             ):
                 prior_kwargs.pop(key, None)
             callbacks = [build_dim_validation_callback(
-                dims=list(validate_dims), max_x_dim=cfg.priors.x_dim,
+                dims=list(validate_dims), max_x_dim=cfg.prior.x_dim,
                 ecdf_sorted=prior.ecdf_sorted, prior_kwargs=prior_kwargs, seed=cfg.seed, device=cfg.device,
             )]
 

@@ -41,8 +41,8 @@ from typing import Any
 
 import torch
 
-from anytimeacquisition.callbacks.handler import Callback
-from anytimeacquisition.priors.bnn import BNNPrior
+from ppfn.callbacks.handler import Callback
+from ppfn.prior.bnn.bnn_prior_vec import BNNPrior
 
 
 def build_dim_validation_callback(
@@ -125,8 +125,8 @@ def build_dim_validation_callback(
 
 
 if __name__ == "__main__":
-    from anytimeacquisition.callbacks.handler import CallbackHandler
-    from anytimeacquisition.models.pfn import PFN
+    from ppfn.callbacks.handler import CallbackHandler
+    from ppfn.model.pfn.pfn import PFN
 
     class _FakeTrainer:
         def __init__(self, model):
