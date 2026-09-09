@@ -1,7 +1,7 @@
 # Archive
 
 Parked work-in-progress, moved here in one pass on 2026-08-26 to reset the active
-tree to a bare skeleton: `src/ppfn/trainer/`, `src/ppfn/prior/bnn/`, `src/train.py`,
+tree to a bare skeleton: `src/ppfn/trainer/`, `src/ppfn/prior/bnn/`, `src/ppfn/piplelines/train.py`,
 and `src/ppfn/utils/{git_tools,gracefull_exit}.py` stayed in place; everything else
 — models, other priors, benchmarks, all tests, all Hydra configs — moved here
 verbatim. Nothing was deleted or rewritten during the move; layout mirrors the
@@ -34,7 +34,7 @@ the current state of the kept skeleton before wiring it back in).
   won't run standalone without pulling the model code back too).
 - `configs/` — every Hydra config group, including `trainer/`, `optimizer/`,
   `scheduler/`, `callbacks/` (which *do* pair with the kept trainer code) and
-  `config.yaml` itself. **`src/train.py` currently has no config to run against**
+  `config.yaml` itself. **`src/ppfn/piplelines/train.py` currently has no config to run against**
   — `config_path="../configs"` points at nothing until at least `config.yaml` +
   a `model` + a `prior` + `trainer`/`optimizer`/`scheduler`/`callbacks` config are
   copied back. That's intentional, not a bug from the move.

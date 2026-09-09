@@ -34,7 +34,7 @@ the expected, honest failure point, not a bug.
 - Custom OmegaConf resolvers (`${mul:...}`, `${githash:...}`, etc.) live in
   `src/ppfn/utils/resolvers.py::register_resolvers()` — call it before composing
   any config outside of `python src/train.py` (tests do this in `conftest.py`).
-- `.env` holds `MLFLOW_TRACKING_URI` / `ROOT`, loaded by `src/train.py` — don't
+- `.env` holds `MLFLOW_TRACKING_URI` / `ROOT`, loaded by `src/ppfn/piplelines/train.py` — don't
   commit secrets there, and don't assume it's present in a fresh checkout.
 - Lint/format: `ruff` is a dev dependency; a `.claude/settings.json` hook auto-runs
   `ruff format` on Python files Claude edits. No `ruff` config section in
@@ -53,7 +53,7 @@ the expected, honest failure point, not a bug.
   `multi_fidelity`).
 - `src/ppfn/utils/git_tools.py`, `gracefull_exit.py` — cross-cutting, kept as-is.
   `mybatch.py` and `deprecate.py` moved to `archive/` (only used by archived code).
-- `src/train.py` — Hydra entry point. Reads `cfg.prior.dataset_class`/
+- `src/ppfn/piplelines/train.py` — Hydra entry point. Reads `cfg.prior.dataset_class`/
   `dataloader_class` (fixed 2026-08-27 — used to read `cfg.dataset.*`, a
   pre-existing mismatch with every `config.yaml` this repo has had).
 - `configs/` — rebuilt 2026-08-27 to match the kept skeleton: `experiment/`,
@@ -90,3 +90,7 @@ Loaded automatically when you touch matching files — see `.claude/rules/`:
   hook, but don't try to route around it either.
 - Don't pull things out of `archive/` speculatively — wait to be asked, or for a
   milestone that names the specific piece needed.
+- Real findings (non-obvious bugs, "tried X, it didn't work, here's why," a
+  verified fix) get a `docs/labbook/` entry, not just a chat message — see
+  `.claude/rules/labbook.md`. Append-only; a wrong first attempt gets recorded
+  as wrong, not silently rewritten.

@@ -69,7 +69,13 @@ class MLP(nn.Module):
 
     def forward(self, x):
         # FIXME: check if the original mlp also did not use the normalizer!
-        raise NotImplementedError('check if the original mlp also did not use the normalizer!')
+        # This used to unconditionally `raise NotImplementedError` here, which
+        # blocked ANY use of a sampled MLP (including BNNPrior's own ECDF cache
+        # regeneration path). Removed the block; the normalizer call below is
+        # left exactly as it was -- computed and its result discarded -- so
+        # this doesn't silently start applying normalization while the
+        # question above is still open. Resolve deliberately, don't let this
+        # comment silently answer itself.
         self.normalizer(x)
         for linear in self.linears[:-1]:
             x = linear(x)

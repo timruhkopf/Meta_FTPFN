@@ -328,3 +328,33 @@ you are forcing the Transformer to act as a non-linear, non-parametric mixed-eff
 * The attention heads that isolate columns unique to $B$ (or unalignable noise) act as the random effects (capturing
   block-specific variance).
 
+
+ **The "Stacked Overlay + Interaction" Formulation (Literal Mixed-Effects)**
+
+In a mixed-effects model ($y = X\beta + Zu + \epsilon$), the random effects ($Z$) are often just the global features
+($X$) interacted with a group indicator.
+
+Instead of isolating $A$ and $B$ spatially into different columns (which requires padding the empty space with `NaN`s),
+you **stack them vertically into the exact same column indices** and add a categorical Domain Indicator column, plus
+explicit interaction columns.
+
+$$X_{input} = \left[ X_{raw} \quad \vert{} \quad I_B \quad \vert{} \quad X_{raw} \odot I_B \right]$$
+
+* **$X_{raw}$:** Column 1 contains Domain A's Feature 1 *and* Domain B's Feature 1 (even if they mean completely
+  different things, like `log(lr)` vs `batch_size`).
+* **$I_B$:** A binary column (0 for Domain A, 1 for Domain B). This acts as the **random intercept**.
+* **$X_{raw} \odot I_B$:** The raw features multiplied by the indicator (so it is $0$ for Domain A, and equals $X_B$ for
+  Domain B). This acts as the **random slope / transformation**.
+
+**Why this works for PFNs:**
+You have eliminated the massive blocks of `NaN`s entirely. The matrix is fully dense (except for structural zeros in the
+interaction term, which PFNs handle easily). TabPFN's feature-wise attention will use the $I_B$ column to dynamically
+untangle the overlapping $X_{raw}$ columns. It explicitly frames the problem as: *"Learn a baseline
+representation ($A$), and learn a conditional delta/warp ($B$) when $I_B = 1$."*
+
+Results on this: 
+While the Block Design with Nan passed to the PFN seems to severly (and understandably) suffer from not having 
+encountered this type of missingness during pretraining, the stacked overlay + interaction formulation is a much more natural fit
+for the PFN's attention mechanism and achieves significantly better results. However, this format requires 
+schema alignment between the two domains and allows only scalar adjustments, which severely limits the expressivity of the model.
+There is howerv

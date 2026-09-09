@@ -6,7 +6,7 @@ Same situation as `configs/model/`: the only benchmark code that existed
 `configs/bench/` directory was already empty). `config.yaml` declares
 `benchmark: ???` so this is a loud placeholder, not a silent gap.
 
-Unlike `model`/`prior`/`trainer`, nothing in `src/train.py` reads `cfg.benchmark`
+Unlike `model`/`prior`/`trainer`, nothing in `src/ppfn/piplelines/train.py` reads `cfg.benchmark`
 yet — before adding a real config here, first decide *what consumes it*: a
 periodic-evaluation callback during training (see the kept but currently-unused
 `trainer/callbacks/meta_test.py` / `hefty_meta_test.py` for a plausible existing

@@ -72,7 +72,36 @@ class BNNPrior(torch.nn.Module):
 
         num_layers = np.random.randint(8, 16)
         num_hidden = np.random.randint(36, 150)
-        init_std = np.random.uniform(0.089, 0.193)
+
+        # init_std used to be drawn independently of num_hidden (width), so
+        # the effective per-layer variance-scaling factor
+        # crit = init_std**2 * width (Xavier/mean-field criticality for a
+        # tanh net -- crit ~ 1 roughly preserves variance layer to layer;
+        # well below 1, signal collapses toward a constant a few layers in,
+        # and with 8-16 layers that collapse compounds fast) ended up
+        # scattered ~Uniform(0.25, 4.7) across instances by sheer chance,
+        # since width and init_std were two independent draws. Measured
+        # empirically (see docs/labbook/): corr(output complexity, crit) =
+        # 0.68 across 300 sampled instances, vs corr(., depth) = 0.16 -- crit
+        # is the real driver, not depth. About a quarter of instances landed
+        # sub-critical and came out visually flat.
+        #
+        # Sample crit directly instead of backing into it via two independent
+        # draws. Range chosen empirically against the real MLP class (not
+        # assumed) -- Uniform(1.0, 5.5) keeps the old sampling's upper spread
+        # (its own effective crit reached ~5.5) but floors it at the critical
+        # value, which is what actually mattered: on a matched 300-sample
+        # comparison against the old (width, init_std)-independent sampling,
+        # median output range over the domain went 0.17 -> 0.83 and the
+        # fraction of near-flat draws (range < 0.05) went 0.24 -> 0.03.
+        # Uniform(0.5, 2.0) was tried first and made things WORSE (median
+        # 0.07, flat fraction 0.41) -- the old sampling's median crit was
+        # already ~1.6, so centering the new range at 1.25 was a regression,
+        # not a fix. Re-run this comparison if you change the range again;
+        # "sounds reasonable" was wrong here on the first attempt.
+        crit = np.random.uniform(1.0, 5.5)
+        init_std = float(np.sqrt(crit / num_hidden))
+
         sparseness = 0.145
         preactivation_noise_std = np.random.uniform(
             0.0003, 0.0014
@@ -156,3 +185,42 @@ class BNNPrior(torch.nn.Module):
     # u = (b - a) * self.u_values[self.counter] + a
     # self.counter += 1
     # return u
+
+
+if __name__ == "__main__":
+    """Diagnostic per .claude/rules/research-demos.md. BNNPrior has no A/B
+    pairing yet (that's M4's job -- see docs/milestones/M4-bnn-prior-relatedness.md);
+    right now it's just a sampler over ground-truth functions, so "how the
+    prior looks" means: what does the diversity of sampled draws look like?
+    Several independent draws, evaluated on a dense grid, overlaid in one
+    panel -- same "no query-position artifacts" principle as the harmonics
+    demo (src/ppfn/prior/harmonics/stream_dataset.py), just without a second
+    domain to subplot against yet."""
+    import matplotlib.pyplot as plt
+
+    # BNNPrior.sample_mlp draws from numpy's global RNG, not torch's -- seed
+    # both, or this demo silently isn't reproducible (found while verifying
+    # the crit fix above: two "identical" runs gave different plots).
+    np.random.seed(3)
+    torch.manual_seed(1)
+    num_inputs, num_outputs = 1, 1
+    n_draws = 8
+
+    grid = torch.linspace(0.0, 1.0, 300).unsqueeze(-1)  # [300, 1], matches the
+    # normalizer's implicit assumption of inputs ~ Uniform(0, 1) (mean 0.5,
+    # std sqrt(1/12) -- see TorchStandardScaler usage in mlp.py's Normalize).
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for i in range(n_draws):
+        prior = BNNPrior(num_inputs=num_inputs, num_outputs=num_outputs)
+        mlp = prior.sample()
+        mlp.eval()
+        with torch.no_grad():
+            y = mlp(grid)
+        ax.plot(grid.squeeze(-1).numpy(), y.squeeze(-1).numpy(), alpha=0.7, lw=1.2)
+
+    ax.set_title(f"BNNPrior — {n_draws} independent sampled ground-truth functions")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    fig.tight_layout()
+    plt.show()
