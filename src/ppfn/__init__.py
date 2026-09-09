@@ -3,3 +3,6 @@
 __all__ = ["__version__"]
 
 __version__ = "0.7.0"
+
+
+from ppfn.utils import paths as _paths
