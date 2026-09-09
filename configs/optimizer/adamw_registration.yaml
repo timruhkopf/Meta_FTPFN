@@ -1,0 +1,9 @@
+# ARCHITECTURE.md §4.1: AdamW, lr 3e-4, wd 0.01, beta=(0.9, 0.98). Additive
+# to configs/optimizer/adamw.yaml (beta=(0.9,0.999), used elsewhere) rather
+# than changing it, since beta_2=0.98 is specific to this project's spec.
+_target_: torch.optim.AdamW
+_partial_: true
+lr: 3e-4
+weight_decay: 1e-2
+eps: 1e-8
+betas: [0.9, 0.98]

@@ -1,0 +1,58 @@
+# @package _global_
+#
+# Smoke-test / development config for the encoder-decoder registration
+# pipeline (ARCHITECTURE.md). Small model, short run -- NOT the reference
+# sizes in configs/model/encoder_decoder.yaml (d_model=256 etc.; those are
+# what to scale to once this runs cleanly, per ARCHITECTURE.md §2's own
+# "tune later; these are what to build first").
+#
+# Run (still needs `~benchmark` on the CLI -- configs/benchmark has no
+# implementation, see .claude/rules/hydra.md):
+#   python src/train.py experiment=registration_debug experiment_name=00-debug-registration ~benchmark
+
+defaults:
+  - /loss: full
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+  - override /prior: registration
+  - override /model: encoder_decoder
+  - override /optimizer: adamw_registration
+  - override /trainer: registration
+  - _self_
+# NOTE: Hydra requires `override /...` entries to come AFTER plain
+# (non-override) defaults-list entries -- see the identical ordering in
+# configs/experiment/step4_pathway.yaml.
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: "sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db"
+
+prior:
+  batch_size: 8
+  s_max: 0.1
+
+model:
+  d_model: 32
+  n_heads: 4
+  d_ff: 64
+  n_layers_enc: 2
+  n_layers_dec: 3
+
+trainer:
+  epochs: 2
+  steps: 5
+  trainer_class:
+    val_size: 8
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

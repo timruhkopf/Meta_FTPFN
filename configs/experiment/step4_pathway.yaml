@@ -1,0 +1,44 @@
+# @package _global_
+#
+# ARCHITECTURE.md build order step 3 / CLAUDE.md build-order step 4, the
+# go/no-go run: encoder + gated cross-attention trained at rho=0 only
+# (prior=p0_identity), transport residual disabled (t_i = x-tilde_i^A,
+# exactly correct there -- trainer.force_identity_transport), pathway
+# distillation on (it's always on in loss=full; at rho=0 it's the only
+# non-floor loss term that matters). Registration contributes nothing at
+# rho=0, so failure here is unambiguously an architecture/plumbing problem,
+# not a hard inference one -- target: match upper-2 (the pooled oracle).
+#
+# Run:
+#   python src/train.py experiment=step4_pathway experiment_name=00-debug-step4 ~benchmark
+
+defaults:
+  - /loss: full
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+  - override /prior: p0_identity
+  - override /model: encoder_decoder
+  - override /optimizer: adamw_registration
+  - override /trainer: registration
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: "sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db"
+
+trainer:
+  trainer_class:
+    force_identity_transport: true
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}
