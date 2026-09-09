@@ -398,6 +398,7 @@ Sweep warp complexity p (spline bins K, or velocity-field centers M) against n_A
 | Coherent Point Drift | Classical soft-correspondence EM, unequal cardinality, no one-to-one assumption. Needs ambient overlap, so expect P2 to break it. |
 | Entropic Gromov-Wasserstein + barycentric projection | The genuinely coordinate-free classical method, and the honest home for the GW idea. Minimizes pairwise-distance distortion, so a non-uniform stretch admits no zero-distortion coupling and GW returns the best isometric approximation; the bias is structured (it spreads the stretch) and should be visible. |
 | Two-stage non-amortized (§8.2) | Isolates what amortization buys |
+| MTPFN, reconstructed (Li et al., see `docs/REFERENCES.md`) | Closest published amortized multi-task PFN baseline. Its hierarchical attention gates per-task relevance but assumes every task shares one coordinate system — no warp, no registration. Tests whether relevance-gating alone, with no transport machinery, is enough once tasks are actually misaligned. |
 
 ### 8.5 Diagnostics with predicted relationships
 
@@ -449,7 +450,7 @@ Cost is roughly the Spearman-vs-Pearson efficiency premium (~10% under Gaussian 
 
 ## Open items
 
-- Whether the two-cloud PFN construction has been published; I have not verified the current literature on amortized registration inside PFNs specifically, as distinct from multi-task PFNs generally.
+- Whether the two-cloud PFN construction has been published; I have not verified the current literature on amortized registration inside PFNs specifically, as distinct from multi-task PFNs generally. The closest published multi-task PFN found so far is MTPFN (Li, Daulton, Müller, Wilson & Bakshy — see `docs/REFERENCES.md`): it amortizes per-task relevance gating via hierarchical attention, but assumes all tasks share one coordinate system, so it doesn't resolve this question — it's a baseline to reconstruct (§8.4), not a prior-art answer.
 - Whether the two-stream bottleneck's representational cost is acceptable, or whether warp-independence must be given up. Measurable at P0 in Phase 2.
 - Whether autoregressive-over-axes bar distributions scale acceptably past small d, or whether a low-rank plus residual parameterization is needed.
 - Whether severity should be an inference target in its own right — a cheap global "how deformed is this pair" readout, complementary to the fold statistic.
