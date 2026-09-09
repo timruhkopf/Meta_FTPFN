@@ -1,9 +1,12 @@
+# File-store backend (no DB server, no SQLite) so concurrent SLURM jobs never
+# contend on a single connection/lock. Every run gets its own run directory
+# under tracking_uri; `mlflow ui --backend-store-uri <tracking_uri>` browses
+# them afterward, no server process needs to run during training.
+#
+# On SLURM, override AA_MLFLOW_DIR to a path on shared/network storage so all
+# parallel jobs land in the same place, e.g.:
+#   AA_MLFLOW_DIR=/path/to/shared/project/mlruns
 mlflow:
-  _target_: ppfn.trainer.callbacks.mlflow_cb.MLflowCallback
-  experiment_name: ${experiment_name}
-  run_name: ${run_name}
-  sweep_id: ${run_name}
-  # Previously unset here, so MLflowCallback fell back to the
-  # MLFLOW_TRACKING_URI env var and the experiment-level `mlflow_tracking_uri`
-  # (set in configs/experiment/*.yaml) was silently never used. Wired up now.
-  mlflow_tracking_uri: ${mlflow_tracking_uri}
+  _target_: ppfn.callbacks.mlflow_cb.MLflowCallback
+  tracking_uri: file://${oc.env:MLFLOW_DIR,${root:}/mlruns}
+  experiment_name: ppfn_training

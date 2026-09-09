@@ -1,22 +1,46 @@
-# Meta information about what this prior produces, kept alongside the _target_s
-# so other config groups (model, trainer) can reference it via interpolation
-# (e.g. ${prior.num_inputs}) without instantiating anything.
-num_inputs: 8
-num_outputs: 1
+# x_dim is a placeholder — the medium-dim target isn't pinned yet (still
+# open). Override via `priors.x_dim=...` until it is.
+_target_: anytimeacquisition.priors.bnn.BNNPrior
+batch_size: 64
+x_dim: 5
+# PFNs4BO/ifBO never sample below depth 8 (docs/log/) — raised the floor to
+# match, ceiling raised further for a deeper family by default.
+depth_range: [8, 32]
+width_range: [32, 128]
+# Target range for depth*log(crit) (crit = init_std**2 * width), sampled per
+# instance then used to derive init_std — see bnn.py and docs/log/. Targets
+# the compounded quantity directly so it stays robust across depth_range,
+# not just a fixed crit range that happens to work at one depth.
+log_amp_range: [8.0, 20.0]
+bias_std: 0.1
+# Aligned with PFNs4BO/ifBO's own BNN prior — see docs/log/.
+sparseness: 0.145
+preactivation_noise_std_range: [0.0003, 0.0014]
+output_noise_std_range: [0.0004, 0.0013]
+frac_relevant_features: 0.7
 
-# The prior itself: a sampler over ground-truth functions (BNNPrior.sample()
-# returns a freshly sampled MLP), not by itself a torch Dataset/DataLoader.
-prior_class:
-  _target_: ppfn.prior.bnn.bnn_prior.BNNPrior
-  num_inputs: ${prior.num_inputs}
-  num_outputs: ${prior.num_outputs}
+# Train across a distribution of dimensionalities instead of one fixed
+# x_dim -- see bnn.py's constructor comment; models/pfn.py's PFN.forward
+# n_features (see that module's docstring) consumes the resulting
+# batch-uniform active_dim straight through PFNTrainer (one active_dim per
+# training step, resampled fresh every step -- matches ifBO/PFNs4BO's own
+# convention; NOT per-instance, see docs/log/2026-08-31-variable-xdim-
+# training-stagnation.md for why that was reverted), so turning this on is
+# a one-line config change, not a pipeline change. Left off (null)
+# deliberately for now (M2's own experiment configs train on a single known
+# x_dim to keep those specific runs simple); see
+# configs/experiment/pfn_variable_xdim_smoke.yaml for turning it on. Flip on
+# here (the shared default) before real-world benchmarks need one PFN to
+# generalize across dimensionalities. e.g. variable_dim_min: 1
+variable_dim_min: null
 
-# src/train.py instantiates these two directly (dataset, then loader wrapping
-# it) — see cfg.prior.dataset_class / cfg.prior.dataloader_class in run().
-# No stream/IterableDataset wrapper around `prior_class` exists yet (the old
-# harmonics prior had one: archive/src/ppfn/prior/harmonics/stream_dataset.py,
-# wired via prior_dataset_class + dataloader_class — same shape, different
-# name). Writing that wrapper is milestone work, not today's setup, so these
-# stay mandatory placeholders.
-dataset_class: ???
-dataloader_class: ???
+# Fits once, cold, then cached to disk (see bnn.py) -- cost depends on the
+# whole family config above (x_dim, depth/width range, batch_size), not
+# just these three numbers; ~70s measured at this file's current x_dim=4
+# (was ~13s at x_dim=2). Time it on your own config before bumping these up
+# for a "better" fit -- see bnn.py's constructor comment and
+# configs/experiment/pfn_ulysses_real.yaml for what happens when you don't.
+ecdf_n_samples: 1000
+ecdf_n_draws: 50
+ecdf_samples_per_draw: 300
+seed: null

@@ -1,0 +1,47 @@
+# @package _global_
+#
+# Reference training run for ppfn.model.pfn.pfn.PFN (the single-stream,
+# PFNs4BO/ifBO-style PFN under src/ppfn/model/pfn/ -- distinct from the
+# encoder-decoder RegistrationPFN) against BNNPrior with variable x_dim
+# (1..5) and variable context size, purely to see its bar-distribution NLL
+# curve. Sizing mirrors the sibling AnytimeAcquisition project's own
+# pfn_ulysses_real.yaml (a "reasonable first real run", not a tuned
+# optimum) -- see that file's own comments for why these numbers, not
+# PFNs4BO's much larger production sizes.
+#
+# Run on ulysses (cuda):
+#   uv run python -m ppfn.pipelines.train_pfn experiment=pfn_variable_dim5_reference
+
+prior:
+  batch_size: 32
+  x_dim: 5
+  variable_dim_min: 1  # batch-uniform active_dim ~ U{1..5}, resampled every step
+
+model:
+  d_model: 256
+  n_heads: 8
+  n_layers: 6
+  d_ff: 512
+  n_bins: 128
+
+trainer:
+  n_steps: 5000
+  min_train: 5      # context size (n_train) randint(min_train, max_train+1) every step
+  max_train: 300
+  n_test: 1000
+  warmup_steps: 200
+  log_every: 100
+  checkpoint_path: ${root:}/models/pfn_variable_dim5_reference.pt
+  mixed_precision: false  # untested on real GPU hardware (trainer/pfn_trainer.py docstring) -- kept off for a clean reference NLL curve
+
+device: cuda
+
+# Per-dimension NLL/MSE curves (nll/val_dim1..nll/val_dim5), each against a
+# dedicated fixed-x_dim BNNPrior sharing the training prior's own ecdf_sorted
+# -- see callbacks/dim_validation.py's module docstring for why that sharing
+# matters for a fair cross-dimension comparison.
+validate_dims: [1, 2, 3, 4, 5]
+
+callbacks:
+  mlflow:
+    experiment_name: pfn-variable-dim5-reference

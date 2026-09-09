@@ -1,5 +1,0 @@
-mlflow:
-  _target_: ppfn.trainer.callbacks.mlflow_cb.MLflowCallback
-  experiment_name: ${experiment_name}
-  run_name: ${run_name}
-  sweep_id: ${run_name}

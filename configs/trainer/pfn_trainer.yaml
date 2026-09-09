@@ -1,0 +1,20 @@
+# prior/model/bar_dist/seed/on_log are runtime objects, passed at
+# instantiate() time in pipelines/train_pfn.py -- not representable in YAML,
+# same pattern as trainer/dummy.yaml's benchmark/prior/surrogate.
+_target_: anytimeacquisition.trainer.pfn_trainer.PFNTrainer
+n_steps: 100000
+min_train: 5
+max_train: 300
+n_test: 1000
+lr: 1.0e-3
+warmup_steps: 50
+log_every: 50
+checkpoint_path: null  # set via an experiment config, or override directly
+# CUDA-only (see trainer/pfn_trainer.py docstring) -- no-ops on CPU, but
+# still prints a one-time "ignoring" notice there, which is just noise for
+# every CPU experiment (the common case locally). configs/train_pfn.yaml's
+# own default device is cpu, so default to False here too rather than
+# every non-GPU experiment inheriting a mismatched True; the one config
+# that actually targets CUDA (configs/experiment/pfn_ulysses_real.yaml)
+# already overrides this explicitly, so it doesn't rely on this default.
+mixed_precision: False

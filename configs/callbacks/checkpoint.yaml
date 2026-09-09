@@ -1,0 +1,22 @@
+# ppfn.callbacks.checkpoint.CheckpointCallback -- the checkpoint scheme
+# actually wired up via configs/callbacks/ (.claude/rules/checkpoints.md;
+# distinct from RegistrationTrainer's own minimal `_save_checkpoint`, which
+# stays off via trainer.checkpoint_dir=null). Saves the best-so-far model
+# under `save_dir`, async, plus a JSON metrics sidecar and an MLflow
+# artifact upload on `on_train_end` -- the file a later notebook loads via
+# `torch.load(...)["model_state_dict"]`.
+#
+# `monitor` defaults to `bounds/nll_full` -- ARCHITECTURE.md §4.5's held-out
+# predictive NLL of the FULL (non-severed) model on the fixed validation
+# batch (ppfn.monitor.registry._transfer_gap). Override per experiment if a
+# different run wants a different monitor (e.g. a run without a `bounds/*`
+# monitor computed).
+checkpoint:
+  _target_: ppfn.callbacks.checkpoint.CheckpointCallback
+  save_dir: ${root:}/models/${experiment_name}/
+  monitor: bounds/nll_full
+  mode: min
+  name: ${experiment_name}
+  min_save_interval: 300
+  min_save_epoch: 5
+  frequency: 1

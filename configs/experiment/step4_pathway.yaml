@@ -10,7 +10,7 @@
 # not a hard inference one -- target: match upper-2 (the pooled oracle).
 #
 # Run:
-#   python src/train.py experiment=step4_pathway experiment_name=00-debug-step4 ~benchmark
+#   python -m ppfn.pipelines.train experiment=step4_pathway experiment_name=00-debug-step4 ~benchmark
 
 defaults:
   - /loss: full
@@ -18,6 +18,7 @@ defaults:
   - /callbacks:
       - mlflow
       - clip
+      - checkpoint
   - override /prior: p0_identity
   - override /model: encoder_decoder
   - override /optimizer: adamw_registration
@@ -27,7 +28,18 @@ defaults:
 experiment_name: ???
 run_name: Null
 
-mlflow_tracking_uri: "sqlite:////home/ruhkopf/PycharmProjects/Meta_FTPFN/mlflow.db"
+# Same file-store MLflow backend the running pfn-variable-dim5-reference
+# baseline uses (configs/callbacks/mlflow.yaml's own default, `.env`'s
+# MLFLOW_TRACKING_URI) -- kept as an explicit interpolation target here
+# (rather than only relying on the shared default) so this run and the
+# baseline it's meant to be compared against are guaranteed to land in the
+# same store even if one of the two defaults ever drifts.
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: registration-step4-pathway
 
 trainer:
   trainer_class:

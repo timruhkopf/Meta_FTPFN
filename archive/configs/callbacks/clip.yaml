@@ -1,3 +1,0 @@
-clip:
-      _target_: ppfn.trainer.callbacks.grad_clipping.GradientClippingCallback
-      frequency: 1
