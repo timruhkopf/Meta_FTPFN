@@ -50,8 +50,11 @@ def run(cfg: DictConfig, device: torch.device) -> None:
         device=device,
     )
 
-    # dictconfig cannot be passed directly; neither a dict with _target_ key
-    trainer.config = (OmegaConf.to_container(cfg, resolve=True),)
+    # dictconfig cannot be passed directly; neither a dict with _target_ key.
+    # Read by MLflowCallback._log_task_metadata to log the full resolved
+    # config as params (CLAUDE.md: "Log the flattened resolved config as
+    # params"), not just the raw CLI overrides.
+    trainer.config = OmegaConf.to_container(cfg, resolve=True)
 
     logger.info(f"Starting training for {cfg.trainer.epochs} epochs...")
     trainer.fit(epochs=cfg.trainer.epochs, steps=cfg.trainer.steps)

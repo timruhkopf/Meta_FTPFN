@@ -10,6 +10,8 @@ from typing import Dict, Optional
 import mlflow
 from hydra.core.hydra_config import HydraConfig
 from ppfn.callbacks.abstract_callback import AbstractCallback
+from ppfn.deployment.provenance import record_provenance
+from ppfn.utils.flatten import flatten
 from ppfn.utils.git_tools import githash as get_git_hash
 
 logger = logging.getLogger(__name__)
@@ -143,8 +145,20 @@ class MLflowCallback(AbstractCallback):
         self._log_task_metadata()
 
     def _log_global_metadata(self):
-        """Logs heavyweight metadata."""
+        """Logs heavyweight metadata: git provenance (commit, dirty flag,
+        Hydra overrides -- ppfn.deployment.provenance, the same mechanism
+        pipelines/train_pfn.py uses) plus the uncommitted diff, if any.
+        `allow_dirty=True` here since dirty-tree gating for real runs is
+        already enforced by `assert_clean_tree_for_real_runs`
+        (git_tools.py) at pipeline entry -- this call is for tagging, not a
+        second gate."""
         mlflow.set_tag("mlflow.source.git.commit", get_git_hash())
+        try:
+            overrides = HydraConfig.get().overrides.task if HydraConfig.initialized() else []
+            provenance = record_provenance(list(overrides), allow_dirty=True)
+            mlflow.set_tags(provenance.as_mlflow_tags())
+        except Exception as e:
+            logger.warning(f"Failed to record git provenance: {e}")
         try:
             git_diff = subprocess.check_output(["git", "diff"], stderr=subprocess.STDOUT).decode("utf-8")
             if git_diff.strip():
@@ -159,17 +173,27 @@ class MLflowCallback(AbstractCallback):
             logger.warning(f"Failed to capture git diff: {e}")
 
     def _log_task_metadata(self):
-        """Logs configuration specific to this specific worker/task."""
+        """Logs configuration specific to this specific worker/task: the
+        full flattened resolved config (CLAUDE.md: "Log the flattened
+        resolved config as params"), if the pipeline attached one to the
+        trainer (see pipelines/train.py), plus hydra_dir/mlflow_run_id.
+        Falls back to bare Hydra overrides when no resolved config is
+        available (e.g. a trainer that doesn't set `.config`)."""
         mlflow.set_tag("mlflow.folder", os.getcwd())
 
-        if HydraConfig.initialized():
-            try:
+        params = {"hydra_dir": os.getcwd(), "mlflow_run_id": self.run.info.run_id}
+        resolved_config = getattr(self.trainer, "config", None)
+        try:
+            if resolved_config is not None:
+                params.update(flatten(resolved_config))
+            elif HydraConfig.initialized():
                 overrides = HydraConfig.get().overrides.task
-                params = {o.strip("+").split("=")[0]: o.split("=")[1] for o in overrides if "=" in o}
-                params.update({'hydra_dir': os.getcwd(), 'mlflow_run_id': self.run.info.run_id})
-                mlflow.log_params(params)
-            except Exception:
-                logger.warning("Could not log Hydra overrides.")
+                params.update(
+                    {o.strip("+").split("=")[0]: o.split("=")[1] for o in overrides if "=" in o}
+                )
+            mlflow.log_params(params)
+        except Exception:
+            logger.warning("Could not log run config/Hydra overrides.")
 
     def log_on_epoch_end(self, epoch: int, eon: int, metrics: Dict[str, float], **kwargs):
         global_step = (eon * self.trainer.epochs) + epoch
