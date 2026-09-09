@@ -15,10 +15,17 @@ defaults:
   - optimizer: adamw
   - scheduler: cosine_with_warmup
   - trainer: default
-  - experiment: debug
   - callbacks:
       - mlflow
       - clip
+  # `experiment` last (before `_self_`): an experiment config's own body can
+  # override a sub-key of any group selected above (e.g. callbacks.mlflow.*)
+  # only if it merges in AFTER that group's file does. With `experiment`
+  # earlier in this list, such per-key overrides were silently clobbered by
+  # the group file's own default merging in later -- see step4_pathway.yaml
+  # and the mlflow_old.yaml/debug.yaml `mlflow_tracking_uri` history for the
+  # gap this caused.
+  - experiment: debug
   - _self_
 
 device: "cuda"
