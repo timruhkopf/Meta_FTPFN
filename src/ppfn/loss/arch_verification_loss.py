@@ -56,10 +56,18 @@ class ArchVerificationLoss(nn.Module):
         del progress  # no schedule -- see module docstring
         metrics: dict[str, float] = {}
 
+        # Named to match ppfn.monitor.arch_verification's val-batch
+        # counterparts (nll/encoder_decoder) with a train/ prefix -- this is
+        # the SAME predictive NLL, just on the training minibatch (in train
+        # mode) rather than the held-out validation batch. Kept as a
+        # separate, clearly-labeled metric rather than reusing the bare
+        # `loss/pred` name from ppfn.loss.registration_loss, which reads as
+        # a fourth, unrelated number next to the three held-out NLLs this
+        # experiment is actually about.
         pred_nll = model.predictive_dist(output["predictive_logits"], batch.y_qry)
         token_mask = batch.dec_qry_mask & (~batch.role_swapped).unsqueeze(-1)
         l_pred = _masked_mean(pred_nll, token_mask)
-        metrics["loss/pred"] = l_pred.item()
+        metrics["train/nll_encoder_decoder"] = l_pred.item()
 
         pooled_batch = build_pooled_context(batch)
         with torch.no_grad():
@@ -68,10 +76,10 @@ class ArchVerificationLoss(nn.Module):
             pooled_out["predictive_logits"].detach(), output["predictive_logits"]
         )
         l_pathway = _masked_mean(kl, token_mask)
-        metrics["loss/pathway"] = l_pathway.item()
+        metrics["train/pathway_kl"] = l_pathway.item()
 
         total = l_pred + self.lambda_pathway * l_pathway
-        metrics["loss/total"] = total.item()
+        metrics["train/loss_total"] = total.item()
         return total, metrics
 
 

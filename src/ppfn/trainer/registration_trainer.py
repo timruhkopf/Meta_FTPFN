@@ -201,18 +201,27 @@ class RegistrationTrainer:
                 )
 
                 if self.verbose:
-                    # gate/mean_abs and bounds/transfer_gap are only produced
-                    # by the full ppfn.monitor.registry dashboard -- skip
-                    # them rather than print NaN for a monitor_fn (e.g.
-                    # ppfn.monitor.arch_verification) that doesn't compute
-                    # them.
+                    # `loss/total` (ppfn.loss.registration_loss) vs
+                    # `train/loss_total` (ppfn.loss.arch_verification_loss),
+                    # and gate/mean_abs, bounds/transfer_gap (only from the
+                    # full ppfn.monitor.registry dashboard) aren't all
+                    # produced by every criterion/monitor_fn combination --
+                    # print whichever happen to be present rather than NaN
+                    # for the rest.
+                    total_key = next(
+                        (k for k in ("loss/total", "train/loss_total") if k in epoch_metrics),
+                        None,
+                    )
+                    total_str = (
+                        f"{epoch_metrics[total_key]:.4f}" if total_key else "n/a"
+                    )
                     extra = "".join(
                         f"| {key}={epoch_metrics[key]:.4f} "
                         for key in ("gate/mean_abs", "bounds/transfer_gap")
                         if key in epoch_metrics
                     )
                     logger.info(
-                        f"epoch {epoch:4d} | loss/total={epoch_metrics.get('loss/total', float('nan')):.4f} "
+                        f"epoch {epoch:4d} | loss_total={total_str} "
                         f"{extra}| time={epoch_metrics['time']:.1f}s"
                     )
 
