@@ -1,0 +1,27 @@
+# The ARCHITECTURE.md §1 registration prior -- two warped point clouds from
+# a shared latent z, ADDITIVE to (not a replacement of) configs/prior/bnn.yaml
+# (a different, single-cloud prior for an unrelated plain-PFN pipeline; left
+# untouched). No fixed num_inputs/num_outputs meta field the way bnn.yaml
+# has one: d ~ Uniform{1,2,3,5} per draw. D_MAX (=5,
+# ppfn.prior.registration.dataset.D_MAX) is the coordinate-padding width the
+# `model` group's `d_max` must match -- both currently hardcode 5 since
+# ARCHITECTURE.md §1.1 fixes d's support to {1,2,3,5}.
+seed: 0
+s_max: 0.1  # calibrated for ~a few percent per-draw rejection -- see docs/labbook/
+force_rho_zero: false  # true selects the CLAUDE.md "p0_identity" behavior; see p0_identity.yaml
+batch_size: 32
+num_workers: 0  # see ppfn.prior.registration.dataset's module docstring on multi-worker rho-curriculum sharing
+
+dataset_class:
+  _target_: ppfn.prior.registration.dataset.RegistrationStreamDataset
+  seed: ${prior.seed}
+  s_max: ${prior.s_max}
+  force_rho_zero: ${prior.force_rho_zero}
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: ${prior.batch_size}
+  num_workers: ${prior.num_workers}
+  collate_fn:
+    _target_: ppfn.prior.registration.dataset.collate_registration_batch
+    _partial_: true

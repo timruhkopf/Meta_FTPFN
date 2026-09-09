@@ -1,0 +1,26 @@
+# The encoder-decoder registration PFN -- ARCHITECTURE.md §2. Reference
+# sizes from §2 ("tune later; these are what to build first"); override for
+# smoke tests (see configs/experiment/registration_debug.yaml).
+d_model: 256
+n_heads: 8
+d_ff: 1024
+n_layers_enc: 6
+n_layers_dec: 8
+n_fourier_frequencies: 8
+n_bins_predictive: 64
+n_bins_transport: 64
+dropout: 0.0
+d_max: 5  # must match ppfn.prior.registration.dataset.D_MAX (see configs/prior/registration.yaml)
+
+model_class:
+  _target_: ppfn.model.registration.model.RegistrationPFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  d_ff: ${model.d_ff}
+  n_layers_enc: ${model.n_layers_enc}
+  n_layers_dec: ${model.n_layers_dec}
+  n_fourier_frequencies: ${model.n_fourier_frequencies}
+  n_bins_predictive: ${model.n_bins_predictive}
+  n_bins_transport: ${model.n_bins_transport}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

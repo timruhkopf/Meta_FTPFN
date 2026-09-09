@@ -1,0 +1,8 @@
+# The full ARCHITECTURE.md §3 objective (predictive + transport + coupling +
+# affine + oracle distillation + pathway distillation). Weight SCHEDULE
+# (§3.6) is not a config knob -- it's implemented directly in
+# ppfn.loss.registration_loss.weight_schedule as a function of training
+# progress, since it's a load-bearing invariant (CLAUDE.md: "lambda_T has a
+# floor and never reaches zero"), not a tunable default.
+loss_class:
+  _target_: ppfn.loss.registration_loss.RegistrationLoss

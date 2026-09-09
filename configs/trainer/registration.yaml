@@ -1,0 +1,24 @@
+# ppfn.trainer.registration_trainer.RegistrationTrainer -- additive to
+# configs/trainer/default.yaml (which targets the older, currently broken
+# PPFNTrainer; left untouched). `epochs`/`steps`: `steps` training steps
+# per "epoch"; the §4.5 monitor set is computed on the fixed validation
+# batch at every epoch boundary (see registration_trainer.py's module
+# docstring) -- these are NOT passes over a finite dataset, since the prior
+# resamples fresh every step (ARCHITECTURE.md §4.1: "datasets sampled fresh
+# each step (no epochs)").
+epochs: 100
+steps: 500
+
+trainer_class:
+  _target_: ppfn.trainer.registration_trainer.RegistrationTrainer
+  criterion: ${loss.loss_class}
+  grad_clip: 1.0
+  use_bf16: false
+  val_size: 256
+  val_seed: 999999
+  val_s_max: ${prior.s_max}
+  val_force_rho_zero: ${prior.force_rho_zero}
+  force_identity_transport: false  # true only for configs/experiment/step4_pathway.yaml
+  callbacks: null  # overridden to ${callbacks} in configs/config.yaml, matching configs/trainer/default.yaml's own convention
+  checkpoint_dir: null
+  verbose: true

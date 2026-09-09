@@ -1,0 +1,25 @@
+# CLAUDE.md: "Keep a prior=p0_identity variant (rho=0 always)." Same as
+# registration.yaml except force_rho_zero: true -- every draw's transport is
+# then exactly the identity (ARCHITECTURE.md §1.3), which is what the
+# build-order go/no-go run (CLAUDE.md step 4 / configs/experiment/step4_pathway.yaml)
+# needs: registration contributes nothing, so failure there is unambiguously
+# architecture/plumbing rather than a hard inference problem.
+seed: 0
+s_max: 0.1
+force_rho_zero: true
+batch_size: 32
+num_workers: 0
+
+dataset_class:
+  _target_: ppfn.prior.registration.dataset.RegistrationStreamDataset
+  seed: ${prior.seed}
+  s_max: ${prior.s_max}
+  force_rho_zero: ${prior.force_rho_zero}
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: ${prior.batch_size}
+  num_workers: ${prior.num_workers}
+  collate_fn:
+    _target_: ppfn.prior.registration.dataset.collate_registration_batch
+    _partial_: true
