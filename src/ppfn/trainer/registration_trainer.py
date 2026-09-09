@@ -30,6 +30,7 @@ import logging
 import signal
 import time
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -78,6 +79,7 @@ class RegistrationTrainer:
         callbacks: dict | None = None,
         checkpoint_dir: str | None = None,
         verbose: bool = True,
+        monitor_fn: Callable | None = None,
     ):
         """`force_identity_transport`: bypass the affine head and Delta_l
         entirely, using t_i = x-tilde_i^A (the raw decoder coordinates) at
@@ -86,10 +88,20 @@ class RegistrationTrainer:
         correct there)", trained together with `prior.force_rho_zero=true`
         (`configs/prior/p0_identity.yaml`) via `configs/experiment/step4_pathway.yaml`.
         Reuses the same `Decoder.transport_override` plumbing built for
-        oracle-teacher-forcing (`loss.registration_loss`'s `L_distil`)."""
+        oracle-teacher-forcing (`loss.registration_loss`'s `L_distil`).
+
+        `monitor_fn`: `MonitorContext -> dict[str, float]`, called at every
+        epoch boundary on the fixed validation batch. Defaults to
+        `ppfn.monitor.registry.compute_all_monitors` (the full §4.5
+        dashboard); pass a narrower function (e.g.
+        `ppfn.monitor.arch_verification.compute_arch_verification_metrics`)
+        for an experiment that doesn't want that whole monitor set logged --
+        CLAUDE.md: "nothing gets logged that isn't declared" applies per
+        experiment, not just globally."""
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.train_loader = train_loader
+        self.monitor_fn = monitor_fn or compute_all_monitors
         self.criterion = criterion
         self.grad_clip = grad_clip
         self.use_bf16 = use_bf16
@@ -170,7 +182,7 @@ class RegistrationTrainer:
                     )
 
                 self.model.eval()
-                monitor_metrics = compute_all_monitors(
+                monitor_metrics = self.monitor_fn(
                     MonitorContext(model=self.model, val_batch=self.val_batch)
                 )
                 self.model.train()
@@ -189,11 +201,19 @@ class RegistrationTrainer:
                 )
 
                 if self.verbose:
+                    # gate/mean_abs and bounds/transfer_gap are only produced
+                    # by the full ppfn.monitor.registry dashboard -- skip
+                    # them rather than print NaN for a monitor_fn (e.g.
+                    # ppfn.monitor.arch_verification) that doesn't compute
+                    # them.
+                    extra = "".join(
+                        f"| {key}={epoch_metrics[key]:.4f} "
+                        for key in ("gate/mean_abs", "bounds/transfer_gap")
+                        if key in epoch_metrics
+                    )
                     logger.info(
                         f"epoch {epoch:4d} | loss/total={epoch_metrics.get('loss/total', float('nan')):.4f} "
-                        f"| gate/mean_abs={epoch_metrics.get('gate/mean_abs', float('nan')):.3f} "
-                        f"| transfer_gap={epoch_metrics.get('bounds/transfer_gap', float('nan')):.4f} "
-                        f"| time={epoch_metrics['time']:.1f}s"
+                        f"{extra}| time={epoch_metrics['time']:.1f}s"
                     )
 
                 if self.checkpoint_dir is not None:

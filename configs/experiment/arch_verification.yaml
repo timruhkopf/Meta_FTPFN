@@ -1,0 +1,66 @@
+# @package _global_
+#
+# CLAUDE.md build-order step 4 ("the go/no-go run"), reduced to exactly the
+# question it's meant to answer and nothing else: on same-domain (rho=0,
+# un-warped) data, does the encoder-decoder's cross-attention pathway
+# recover what pooling A and B would give a query in A? No loss-weight
+# ramping, no transport/coupling/affine supervision (identity transport is
+# already forced structurally) -- see loss=arch_verification and
+# ppfn.monitor.arch_verification's module docstrings. Three NLLs on the SAME
+# validation batch, nothing else logged:
+#   nll/lower_severed    -- decoder-only, A_test attends to A_train only
+#   nll/upper2_pooled     -- decoder-only on the pooled context [A ; B_inA]
+#   nll/encoder_decoder   -- the actual two-stream model
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=arch_verification experiment_name=01-pretraining-arch-verification ~benchmark
+
+defaults:
+  - /loss: arch_verification
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: p0_identity
+  - override /model: encoder_decoder
+  - override /optimizer: adamw_registration
+  - override /trainer: registration
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+# Same file-store MLflow backend other runs in this repo use by default, so
+# this experiment's runs land in the same store -- see configs/experiment/
+# step4_pathway.yaml's identical comment.
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: arch-verification
+  checkpoint:
+    monitor: nll/encoder_decoder
+
+prior:
+  batch_size: 8
+  num_workers: 8
+
+trainer:
+  trainer_class:
+    force_identity_transport: true
+    val_size: 64
+    monitor_fn:
+      _target_: ppfn.monitor.arch_verification.compute_arch_verification_metrics
+      _partial_: true
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

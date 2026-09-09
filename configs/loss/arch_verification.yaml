@@ -1,0 +1,10 @@
+# The reduced objective for configs/experiment/arch_verification.yaml --
+# L_pred + lambda_pathway * L_pathway, both fixed weight, no
+# ppfn.loss.registration_loss.weight_schedule ramp. See
+# ppfn.loss.arch_verification_loss's module docstring for why: this
+# experiment never turns registration on (prior=p0_identity,
+# force_identity_transport=true), so there's no transport/coupling/affine
+# curriculum to protect or schedule.
+loss_class:
+  _target_: ppfn.loss.arch_verification_loss.ArchVerificationLoss
+  lambda_pathway: 1.0

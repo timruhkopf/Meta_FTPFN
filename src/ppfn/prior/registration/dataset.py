@@ -34,7 +34,7 @@ behavior has been checked on the target machine.
 from __future__ import annotations
 
 import multiprocessing as mp
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import torch
@@ -258,6 +258,36 @@ def collate_registration_batch(items: list[dict]) -> RegistrationBatch:
             }
             for it in items
         ],
+    )
+
+
+def build_pooled_context(batch: RegistrationBatch) -> RegistrationBatch:
+    """`batch` with the decoder context replaced by the pooled context
+    `[A ; B_inA]` (ARCHITECTURE.md upper-2, the pooled oracle) -- shared by
+    `RegistrationLoss`'s L_pathway, `ArchVerificationLoss`, and
+    `ppfn.monitor.arch_verification`, so the three don't drift on this
+    construction independently.
+
+    `transport_ctx` is padded with zeros to the pooled shape rather than
+    left at its original (smaller) shape: the model always runs its
+    (teacher-forced) transport head on every context token regardless of
+    `severed_mask`, so this needs SOME value of the right shape. Its content
+    is irrelevant to any caller here -- each caller's own severed_mask=True
+    forward pass zeroes every cross-attention gate, so this pooled batch is
+    only ever used to read off `predictive_logits`, never a transport
+    target."""
+    pooled_x = torch.cat([batch.dec_ctx_x, batch.enc_x], dim=1)
+    pooled_y = torch.cat([batch.dec_ctx_y, batch.enc_y], dim=1)
+    pooled_mask = torch.cat([batch.dec_ctx_mask, batch.enc_mask], dim=1)
+    pooled_transport = torch.cat(
+        [batch.transport_ctx, torch.zeros_like(batch.enc_x)], dim=1
+    )
+    return replace(
+        batch,
+        dec_ctx_x=pooled_x,
+        dec_ctx_y=pooled_y,
+        dec_ctx_mask=pooled_mask,
+        transport_ctx=pooled_transport,
     )
 
 
