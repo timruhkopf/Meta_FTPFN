@@ -8,8 +8,7 @@ PPFN (Pre-conditioned Prior Fitted Network) architecture.
 from __future__ import annotations
 
 import time
-import warnings
-from typing import Dict, List
+from typing import Dict
 from tqdm import tqdm
 import signal
 import math
@@ -21,7 +20,7 @@ from torch import amp
 from pfns4hpo.priors import Batch
 
 from ppfn.utils.gracefull_exit import GracefulExit, signal_handler
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
+from ppfn.callbacks.abstract_callback import AbstractCallback, CallbackHandler
 
 import logging
 

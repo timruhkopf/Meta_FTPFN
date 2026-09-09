@@ -41,7 +41,7 @@ from ppfn.prior.registration.dataset import (
     build_training_item,
     collate_registration_batch,
 )
-from ppfn.trainer.callbacks.abstract_callback import AbstractCallback, CallbackHandler
+from ppfn.callbacks.abstract_callback import CallbackHandler
 from ppfn.utils.gracefull_exit import GracefulExit, signal_handler
 
 logger = logging.getLogger(__name__)

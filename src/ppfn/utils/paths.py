@@ -35,5 +35,5 @@ from omegaconf import OmegaConf
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CHECKPOINT_DIR = PROJECT_ROOT / "models"
 
-if not OmegaConf.has_resolver("aa_root"):
-    OmegaConf.register_new_resolver("aa_root", lambda: os.environ.get("AA_PROJECT_ROOT", str(PROJECT_ROOT)))
+if not OmegaConf.has_resolver("root"):
+    OmegaConf.register_new_resolver("root", lambda: os.environ.get("PROJECT_ROOT", str(PROJECT_ROOT)))
