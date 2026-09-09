@@ -50,7 +50,13 @@ prior:
 trainer:
   trainer_class:
     force_identity_transport: true
-    val_size: 64
+    # Smaller than step4_pathway's val_size=64: compute_arch_verification_metrics
+    # adds a THIRD, larger forward pass at eval time (the pooled [A ; B_inA]
+    # context -- ppfn.monitor.registry's own monitors never pool, so they
+    # never needed this), which OOM'd on this 24GB GPU at val_size=64 even
+    # though ordinary training steps (batch_size=8) were nowhere near the
+    # limit. Tune up once running with headroom to spare is confirmed.
+    val_size: 24
     monitor_fn:
       _target_: ppfn.monitor.arch_verification.compute_arch_verification_metrics
       _partial_: true
