@@ -130,6 +130,19 @@ class RegistrationTrainer:
         # a fixed validation set of 2048 pairs... and never train on it." Built
         # once, eagerly, at a seed disjoint from the training stream's worker
         # seeds, so it's genuinely frozen for the life of this trainer.
+        #
+        # d/n_a_range/n_b_range are read off the training dataset (not their
+        # own val_* constructor args) so the held-out batch always matches
+        # whatever cloud-size/dimension caps the training stream is actually
+        # using -- a validation set drawn from a different n_b_range than
+        # training would be comparing the model against an out-of-distribution
+        # (and, for the arch_verification experiment specifically, far more
+        # expensive -- see build_training_item's docstring on the OOM this
+        # caused) cloud-size regime.
+        train_dataset = getattr(train_loader, "dataset", None)
+        val_d = getattr(train_dataset, "d", None)
+        val_n_a_range = getattr(train_dataset, "n_a_range", (8, 256))
+        val_n_b_range = getattr(train_dataset, "n_b_range", (256, 1024))
         val_rng = np.random.default_rng(val_seed)
         val_items = [
             build_training_item(
@@ -137,6 +150,9 @@ class RegistrationTrainer:
                 progress=1.0,
                 s_max=val_s_max,
                 force_rho_zero=val_force_rho_zero,
+                d=val_d,
+                n_a_range=val_n_a_range,
+                n_b_range=val_n_b_range,
             )
             for _ in range(val_size)
         ]

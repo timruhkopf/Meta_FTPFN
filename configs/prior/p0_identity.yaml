@@ -9,12 +9,25 @@ s_max: 0.1
 force_rho_zero: true
 batch_size: 32
 num_workers: 0
+# ARCHITECTURE.md §1.1's full ranges by default (d in {1,2,3,5}, n_b up to
+# 1024) -- override per experiment, e.g. configs/experiment/
+# arch_verification.yaml caps n_b_range and fixes d for a cheap,
+# 1D-plottable sanity run (see ppfn.prior.registration.dataset.build_training_item's
+# docstring for why: the full n_b range's quadratic cost in the pooled
+# [A ; B_inA] self-attention can exceed a single GPU's memory even at a
+# small batch size).
+d: null
+n_a_range: [8, 256]
+n_b_range: [256, 1024]
 
 dataset_class:
   _target_: ppfn.prior.registration.dataset.RegistrationStreamDataset
   seed: ${prior.seed}
   s_max: ${prior.s_max}
   force_rho_zero: ${prior.force_rho_zero}
+  d: ${prior.d}
+  n_a_range: ${prior.n_a_range}
+  n_b_range: ${prior.n_b_range}
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader

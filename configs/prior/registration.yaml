@@ -11,12 +11,20 @@ s_max: 0.1  # calibrated for ~a few percent per-draw rejection -- see docs/labbo
 force_rho_zero: false  # true selects the CLAUDE.md "p0_identity" behavior; see p0_identity.yaml
 batch_size: 32
 num_workers: 0  # see ppfn.prior.registration.dataset's module docstring on multi-worker rho-curriculum sharing
+# ARCHITECTURE.md §1.1's full ranges by default -- see p0_identity.yaml's
+# identical fields for why an experiment might override these.
+d: null
+n_a_range: [8, 256]
+n_b_range: [256, 1024]
 
 dataset_class:
   _target_: ppfn.prior.registration.dataset.RegistrationStreamDataset
   seed: ${prior.seed}
   s_max: ${prior.s_max}
   force_rho_zero: ${prior.force_rho_zero}
+  d: ${prior.d}
+  n_a_range: ${prior.n_a_range}
+  n_b_range: ${prior.n_b_range}
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader

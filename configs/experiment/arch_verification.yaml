@@ -44,19 +44,29 @@ callbacks:
     monitor: nll/encoder_decoder
 
 prior:
-  batch_size: 8
+  batch_size: 16
   num_workers: 8
+  # Capping n_b (not just batch_size) is the actual fix for the OOMs this
+  # experiment hit at the full ARCHITECTURE.md range (n_b up to 1024):
+  # decoder self-attention over the pooled context [A ; B_inA]
+  # (build_pooled_context) is O((n_a+n_b)^2), and that quadratic blew past
+  # this GPU's memory even at batch_size=2 -- reducing batch_size alone
+  # couldn't fix a cost dominated by a single item's cloud size. n_a_range
+  # is capped the same way: build_training_item's role randomization (35%)
+  # can swap which cloud plays encoder vs decoder, so A's own range would
+  # otherwise still let the "encoder" reach 256 regardless of n_b_range
+  # (verified empirically -- enc_x hit 214 rows with n_b_range=(8,100)
+  # alone, from a role-swapped draw). Fixing d=1 also makes this
+  # experiment's prior/predictions directly plottable
+  # (.claude/rules/research-demos.md).
+  d: 1
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
 
 trainer:
   trainer_class:
     force_identity_transport: true
-    # Smaller than step4_pathway's val_size=64: compute_arch_verification_metrics
-    # adds a THIRD, larger forward pass at eval time (the pooled [A ; B_inA]
-    # context -- ppfn.monitor.registry's own monitors never pool, so they
-    # never needed this), which OOM'd on this 24GB GPU at val_size=64 even
-    # though ordinary training steps (batch_size=8) were nowhere near the
-    # limit. Tune up once running with headroom to spare is confirmed.
-    val_size: 24
+    val_size: 64
     monitor_fn:
       _target_: ppfn.monitor.arch_verification.compute_arch_verification_metrics
       _partial_: true

@@ -67,6 +67,9 @@ def build_training_item(
     progress: float,
     s_max: float = 0.1,
     force_rho_zero: bool = False,
+    d: int | None = None,
+    n_a_range: tuple[int, int] = (8, 256),
+    n_b_range: tuple[int, int] = (256, 1024),
 ) -> dict:
     """One fully-assembled training item: role randomization + context/query
     split + severed-mode flag, on top of one `sample_pair` draw.
@@ -74,9 +77,19 @@ def build_training_item(
     `force_rho_zero`: bypass the curriculum and always draw at rho=0 --
     CLAUDE.md's `prior=p0_identity` variant, and the input side of the
     ARCHITECTURE.md build-order go/no-go run (encoder + gated cross-attention
-    trained at rho=0 only, before the transport head exists)."""
+    trained at rho=0 only, before the transport head exists).
+
+    `d`, `n_a_range`, `n_b_range`: pass-through to `sample_pair` -- default
+    to ARCHITECTURE.md's full ranges (d in {1,2,3,5}, n_b up to 1024). A
+    smaller n_b_range (e.g. configs/experiment/arch_verification.yaml's
+    (8, 100)) caps the quadratic cost of decoder self-attention over the
+    pooled context [A ; B_inA] (ppfn.prior.registration.dataset.build_pooled_context),
+    which the full n_b range can push well past this GPU's memory even at a
+    small batch size -- see docs/labbook/ for the OOM this was diagnosed
+    from. Fixing `d` (e.g. d=1) also makes the prior/model 1D-plottable per
+    .claude/rules/research-demos.md's convention."""
     rho = 0.0 if force_rho_zero else sample_rho_curriculum(rng, progress)
-    pair = sample_pair(rng, rho=rho, s_max=s_max)
+    pair = sample_pair(rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range)
 
     role_swapped = bool(rng.random() < 0.35)
     if not role_swapped:
@@ -128,12 +141,18 @@ class RegistrationStreamDataset(IterableDataset):
         s_max: float = 0.1,
         force_rho_zero: bool = False,
         progress: SharedProgress | None = None,
+        d: int | None = None,
+        n_a_range: tuple[int, int] = (8, 256),
+        n_b_range: tuple[int, int] = (256, 1024),
     ):
         super().__init__()
         self.seed = seed
         self.s_max = s_max
         self.force_rho_zero = force_rho_zero
         self.progress = progress or SharedProgress(0.0)
+        self.d = d
+        self.n_a_range = n_a_range
+        self.n_b_range = n_b_range
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -145,6 +164,9 @@ class RegistrationStreamDataset(IterableDataset):
                 progress=self.progress.get(),
                 s_max=self.s_max,
                 force_rho_zero=self.force_rho_zero,
+                d=self.d,
+                n_a_range=self.n_a_range,
+                n_b_range=self.n_b_range,
             )
 
 
