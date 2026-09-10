@@ -1,0 +1,52 @@
+# @package _global_
+#
+# Plain encoder-decoder PFN, no registration machinery at all -- verifies
+# the cross-attention pathway can carry information from B into A's
+# predictions on a genuinely same-domain (no warp) prior, one level below
+# CLAUDE.md build-order step 4's go/no-go (which still carries the full
+# RegistrationPFN even at rho=0). See ppfn.prior.bridge.dataset /
+# ppfn.model.bridge.model module docstrings.
+#
+# Logs val/nll_bridged and val/nll_severed on the SAME held-out validation
+# batch (BridgePFN's use_encoder toggle) -- CLAUDE.md's "never a bare NLL",
+# in its simplest form: is the cross-attention pathway doing anything at all.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=bridge_pfn experiment_name=01-pretraining-bridge-pfn ~benchmark
+
+defaults:
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: bridge
+  - override /model: bridge
+  - override /optimizer: adamw_registration
+  - override /trainer: bridge
+  - override /scheduler: cosine_with_warmup
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+# Same file-store MLflow backend other runs in this repo use by default --
+# see configs/experiment/step4_pathway.yaml's identical comment.
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: bridge-pfn
+  checkpoint:
+    monitor: val/nll_bridged
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

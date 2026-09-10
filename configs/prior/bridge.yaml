@@ -1,0 +1,25 @@
+# ppfn.prior.bridge.dataset -- same-domain, no-warp prior. See that
+# module's docstring: A and B share the literal [0,1]^d domain, no velocity
+# field, no box normalization -- just the registration prior's
+# support-restriction logic (sample_latent_A/B) and function prior.
+seed: 0
+d: 1  # fixed for this first run -- see module docstring on d_max padding
+n_a_range: [8, 100]
+n_b_range: [8, 100]
+batch_size: 16
+num_workers: 8
+
+dataset_class:
+  _target_: ppfn.prior.bridge.dataset.BridgeStreamDataset
+  seed: ${prior.seed}
+  d: ${prior.d}
+  n_a_range: ${prior.n_a_range}
+  n_b_range: ${prior.n_b_range}
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: ${prior.batch_size}
+  num_workers: ${prior.num_workers}
+  collate_fn:
+    _target_: ppfn.prior.bridge.dataset.collate_bridge_batch
+    _partial_: true

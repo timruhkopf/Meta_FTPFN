@@ -1,0 +1,21 @@
+# ppfn.model.bridge.model.BridgePFN -- plain encoder-decoder, same reference
+# sizes as configs/model/encoder_decoder.yaml for a fair later comparison.
+d_model: 256
+n_heads: 8
+d_ff: 1024
+n_layers_enc: 6
+n_layers_dec: 8
+n_bins: 64
+dropout: 0.0
+d_max: 5  # must match ppfn.prior.bridge.dataset.D_MAX
+
+model_class:
+  _target_: ppfn.model.bridge.model.BridgePFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  d_ff: ${model.d_ff}
+  n_layers_enc: ${model.n_layers_enc}
+  n_layers_dec: ${model.n_layers_dec}
+  n_bins: ${model.n_bins}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}
