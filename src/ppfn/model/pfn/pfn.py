@@ -120,7 +120,7 @@ an earlier per-instance version was reverted (stagnated in training) --
 import torch
 import torch.nn as nn
 
-from anytimeacquisition.models.bar_distribution import BarDistribution, uniform_bin_borders
+from ppfn.model.pfn.bar_distribution import BarDistribution, uniform_bin_borders
 
 
 def _pad_and_rescale_features(
