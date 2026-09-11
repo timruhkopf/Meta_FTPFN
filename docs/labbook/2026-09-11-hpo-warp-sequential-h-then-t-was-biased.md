@@ -1,6 +1,6 @@
 # One-shot sequential h-then-T fit understated severity by ~8x
 
-commit: pending
+commit: b968452
 
 ## What was investigated
 

@@ -1,6 +1,6 @@
 # Chain script silently "succeeded" after a CLI-breaking mid-run redeploy
 
-commit: pending
+commit: b968452
 
 ## What happened
 

@@ -1,6 +1,6 @@
 # Isotonic h retracted: it's an identifiability confound, not an optimization bug
 
-commit: pending
+commit: b968452
 
 ## What was investigated
 

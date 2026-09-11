@@ -1,6 +1,6 @@
 # Velocity-field fits collapsing near identity, fixed by multi-restart selection
 
-commit: pending
+commit: b968452
 
 ## What was investigated
 

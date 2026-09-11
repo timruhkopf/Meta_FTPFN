@@ -1,6 +1,6 @@
 # Extending the HPO-warp pipeline to LCBench/TaskSet: four bugs, one deferred
 
-commit: pending
+commit: b968452
 
 ## What was investigated
 

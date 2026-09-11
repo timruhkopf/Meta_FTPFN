@@ -1,6 +1,6 @@
 # Boundary dead-zone in warp fitting, fixed with a penalty term
 
-commit: pending
+commit: b968452
 
 ## What was investigated
 

@@ -1,6 +1,6 @@
 # HPO-warp noise floor was too lenient by a factor of `n_seeds`
 
-commit: pending
+commit: b968452
 
 ## What was investigated
 
