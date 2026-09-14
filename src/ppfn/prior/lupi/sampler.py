@@ -100,12 +100,25 @@ def sample_pair(
     frac_uniform: float = 0.4,
     frac_near_b: float = 0.4,
     query_eps_std: float = 0.03,
+    warp_grid_n: int = 4,
 ) -> LUPIPair:
     """One draw at relative-warp coefficient `rho`. `frac_near_b`: set to 0.0
     to disable spec §6.2's anti-B-blindness mechanism as an ablation (the
     "optional" preferential-near-B query sampling); `frac_uniform` +
     `frac_near_b` must be <= 1, the remainder is spec's third bucket
-    (near A's own context)."""
+    (near A's own context).
+
+    `warp_grid_n`: LUPI-local override of `sample_warp_pair`/`declared_box`'s
+    own `grid_n=5` default (never touches `ppfn.prior.registration`, which
+    keeps its calibrated default). Profiling (2026-09-14,
+    `docs/labbook/2026-09-14-lupi-prior-warp-grid-speedup.md`) found the
+    log|det J| Jacobian-band rejection check inside `sample_warp_pair`
+    dominates per-item cost (~84%, via a `grid_n^d` finite-difference grid --
+    3125 points at d=5) and scales as `grid_n^d`: 5->4 cuts it ~3x for a
+    measured, modest loosening of the accept/reject band estimate (kept over
+    the more aggressive grid_n=3, which underestimated the true band by
+    ~40% on average). `n_steps` (RK4 integration steps) is left at its
+    default 5 -- untouched, not profiled as a bottleneck."""
     assert 0.0 <= frac_uniform + frac_near_b <= 1.0
     if d is None:
         d = int(rng.choice(D_CHOICES))
@@ -115,10 +128,10 @@ def sample_pair(
     n_a = int(np.clip(np.exp(rng.uniform(np.log(n_a_range[0]), np.log(n_a_range[1] + 1))), *n_a_range))
     n_qry = int(np.clip(np.exp(rng.uniform(np.log(n_qry_range[0]), np.log(n_qry_range[1] + 1))), *n_qry_range))
 
-    v_a, v_b = sample_warp_pair(rng, d, s_max=s_max)
-    box_a = declared_box(v_a, d)
+    v_a, v_b = sample_warp_pair(rng, d, s_max=s_max, grid_n=warp_grid_n)
+    box_a = declared_box(v_a, d, grid_n=warp_grid_n)
     phi_rho = mix_velocity([v_a, v_b], [1.0 - rho, rho])
-    box_e = declared_box(phi_rho, d)
+    box_e = declared_box(phi_rho, d, grid_n=warp_grid_n)
 
     def to_a(z: np.ndarray) -> np.ndarray:
         return normalize(flow_rk4(v_a, z), box_a)

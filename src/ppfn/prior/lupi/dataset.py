@@ -51,12 +51,13 @@ def build_training_item(
     frac_uniform: float = 0.4,
     frac_near_b: float = 0.4,
     query_eps_std: float = 0.03,
+    warp_grid_n: int = 4,
 ) -> dict:
     rho = 0.0 if force_rho_zero else sample_rho_curriculum(rng, progress)
     pair = sample_pair(
         rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range,
         n_qry_range=n_qry_range, frac_uniform=frac_uniform, frac_near_b=frac_near_b,
-        query_eps_std=query_eps_std,
+        query_eps_std=query_eps_std, warp_grid_n=warp_grid_n,
     )
     return {
         "d_real": pair.d,
@@ -93,6 +94,7 @@ class LUPIStreamDataset(IterableDataset):
         frac_uniform: float = 0.4,
         frac_near_b: float = 0.4,
         query_eps_std: float = 0.03,
+        warp_grid_n: int = 4,
     ):
         super().__init__()
         self.seed = seed
@@ -106,6 +108,7 @@ class LUPIStreamDataset(IterableDataset):
         self.frac_uniform = frac_uniform
         self.frac_near_b = frac_near_b
         self.query_eps_std = query_eps_std
+        self.warp_grid_n = warp_grid_n
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -124,6 +127,7 @@ class LUPIStreamDataset(IterableDataset):
                 frac_uniform=self.frac_uniform,
                 frac_near_b=self.frac_near_b,
                 query_eps_std=self.query_eps_std,
+                warp_grid_n=self.warp_grid_n,
             )
 
 

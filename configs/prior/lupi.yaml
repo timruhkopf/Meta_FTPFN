@@ -15,6 +15,13 @@ n_qry_range: [8, 128]
 frac_uniform: 0.4   # spec §6.2's query mixture
 frac_near_b: 0.4    # set to 0.0 to disable the anti-B-blindness mechanism (ablation)
 query_eps_std: 0.03
+# LUPI-local override of ppfn.prior.registration.warp's grid_n=5 default for
+# the log|det J| rejection-band check + declared_box -- see
+# docs/labbook/2026-09-14-lupi-prior-warp-grid-speedup.md: this dominates
+# per-item CPU cost (~84%, scales as grid_n^d) and grid_n=4 cuts it ~3x for
+# a modest loosening of the accept/reject band estimate. Never affects
+# configs/prior/registration.yaml, which keeps grid_n=5.
+warp_grid_n: 4
 
 dataset_class:
   _target_: ppfn.prior.lupi.dataset.LUPIStreamDataset
@@ -28,6 +35,7 @@ dataset_class:
   frac_uniform: ${prior.frac_uniform}
   frac_near_b: ${prior.frac_near_b}
   query_eps_std: ${prior.query_eps_std}
+  warp_grid_n: ${prior.warp_grid_n}
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader
