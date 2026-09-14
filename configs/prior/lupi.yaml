@@ -1,0 +1,38 @@
+# The LUPI-distilled alignment-aware multi-task PFN prior --
+# docs/labbook/'s 2026-09-14 build spec, ppfn.prior.lupi. ADDITIVE to
+# configs/prior/registration.yaml (a different generative recipe: adds the
+# y-distortion h and a simulated-acquisition A-design; see
+# ppfn.prior.lupi's package docstring), left untouched.
+seed: 0
+s_max: 0.1  # same calibration as configs/prior/registration.yaml -- reuses ppfn.prior.registration.warp verbatim
+force_rho_zero: false
+batch_size: 32
+num_workers: 0  # same rho-curriculum multi-worker caveat as ppfn.prior.registration.dataset
+d: null
+n_a_range: [8, 256]
+n_b_range: [256, 1024]
+n_qry_range: [8, 128]
+frac_uniform: 0.4   # spec §6.2's query mixture
+frac_near_b: 0.4    # set to 0.0 to disable the anti-B-blindness mechanism (ablation)
+query_eps_std: 0.03
+
+dataset_class:
+  _target_: ppfn.prior.lupi.dataset.LUPIStreamDataset
+  seed: ${prior.seed}
+  s_max: ${prior.s_max}
+  force_rho_zero: ${prior.force_rho_zero}
+  d: ${prior.d}
+  n_a_range: ${prior.n_a_range}
+  n_b_range: ${prior.n_b_range}
+  n_qry_range: ${prior.n_qry_range}
+  frac_uniform: ${prior.frac_uniform}
+  frac_near_b: ${prior.frac_near_b}
+  query_eps_std: ${prior.query_eps_std}
+
+dataloader_class:
+  _target_: torch.utils.data.DataLoader
+  batch_size: ${prior.batch_size}
+  num_workers: ${prior.num_workers}
+  collate_fn:
+    _target_: ppfn.prior.lupi.dataset.collate_lupi_batch
+    _partial_: true

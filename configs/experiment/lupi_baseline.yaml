@@ -1,0 +1,65 @@
+# @package _global_
+#
+# Real-sized run of the LUPI-distilled alignment-aware multi-task PFN --
+# docs/labbook/'s 2026-09-14 build spec (build order §8, steps 2-4: oracle
+# mode is always on here since ppfn.loss.lupi_loss.LUPILoss runs both modes
+# every batch unconditionally -- there's no separate "oracle-only" config,
+# the pure-NLL control is `loss.lambda_d=0`).
+#
+# n_a_range/n_b_range capped the same way configs/experiment/id_token_baseline.yaml
+# and configs/experiment/arch_verification.yaml were: the align stack's
+# self-attention is over [A_context] and cross-attention reads all of B, so
+# the O(n_b) cross-attention + O(n_a^2) self-attention costs need the same
+# guardrail against the OOM those two experiments already hit at the full
+# ARCHITECTURE.md-scale n_b range (docs/labbook/2026-09-10-arch-verification-oom-cloud-size.md).
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=lupi_baseline experiment_name=01-pretraining-lupi-baseline ~benchmark
+
+defaults:
+  - /loss: lupi
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: lupi_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: lupi
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: lupi-alignment-pfn
+  checkpoint:
+    monitor: val/loss/student_nll
+
+prior:
+  batch_size: 16
+  num_workers: 8
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  n_qry_range: [8, 64]
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 64
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

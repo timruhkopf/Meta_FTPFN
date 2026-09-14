@@ -1,0 +1,9 @@
+# L = L_student_NLL + lambda_o * L_oracle_NLL + lambda_d * L_distil --
+# build spec §5. See ppfn.loss.lupi_loss's module docstring.
+lambda_o: 1.0
+lambda_d: 1.0
+
+loss_class:
+  _target_: ppfn.loss.lupi_loss.LUPILoss
+  lambda_o: ${loss.lambda_o}
+  lambda_d: ${loss.lambda_d}

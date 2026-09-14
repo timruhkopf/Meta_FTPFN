@@ -1,0 +1,55 @@
+# @package _global_
+#
+# Smoke-test config for the LUPI-distilled alignment-aware multi-task PFN
+# (docs/labbook/'s 2026-09-14 build spec) -- tiny model, short run, to
+# confirm the prior/model/loss data path wires up correctly before
+# configs/experiment/lupi_baseline.yaml.
+#
+# Run (needs `~benchmark` on the CLI, same as every pipeline.train experiment):
+#   python -m ppfn.pipelines.train experiment=lupi_baseline_debug experiment_name=00-debug-lupi ~benchmark
+
+defaults:
+  - /loss: lupi
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+  - override /prior: lupi
+  - override /model: lupi_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: lupi
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+callbacks:
+  mlflow:
+    tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+    experiment_name: lupi-alignment-pfn-debug
+
+prior:
+  batch_size: 8
+  s_max: 0.1
+  n_a_range: [8, 32]
+  n_b_range: [8, 32]
+  n_qry_range: [8, 16]
+
+model:
+  d_model: 32
+  n_heads: 4
+  d_ff: 64
+  n_layers_enc_b: 2
+  n_layers_align: 2
+
+trainer:
+  epochs: 2
+  steps: 5
+  trainer_class:
+    val_size: 8
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}
