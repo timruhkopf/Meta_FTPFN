@@ -78,11 +78,22 @@ class LUPIPairInternals:
     h: object  # MonotoneMap -- h(y)
     sorted_a: np.ndarray  # A's ECDF reference sample (fit_ecdf(y_a_ctx_obs))
     sorted_b: np.ndarray  # B's ECDF reference sample (fit_ecdf(y_b_clean))
+    z_a_ctx: np.ndarray  # [n_a, d] -- the actual latents behind pair.x_a_ctx/z_a_ctx (A's small, acquisition-biased sample)
+    z_b: np.ndarray  # [n_b, d] -- the actual latents behind pair.x_b/x_b_inA/z_b (B's large, uniform sample)
 
     def true_z_a(self, z: np.ndarray) -> np.ndarray:
         """z [N,d] -> noiseless quantile-normalized-on-A's-scale target
         [N] -- the "true function" curve, A's own value calibration."""
         return apply_ecdf(self.sorted_a, self.h(self.f(z)))
+
+    def value_under_b_ecdf(self, z: np.ndarray) -> np.ndarray:
+        """z [N,d] -> what the SAME raw value h(f(z)) would quantile-
+        normalize to under B's OWN (larger, unbiased-by-acquisition) ECDF
+        instead of A's -- for directly testing whether A's small,
+        acquisition-biased sample assigns systematically different
+        quantiles than B's large, uniform one would to the same points
+        (docs/labbook/2026-09-15-lupi-reference-measure-mismatch.md)."""
+        return apply_ecdf(self.sorted_b, self.h(self.f(z)))
 
 
 def _sample_query_z(
@@ -244,6 +255,7 @@ def sample_pair(
         return pair
     internals = LUPIPairInternals(
         to_a=to_a, to_b=to_b, f=f, h=h, sorted_a=sorted_a, sorted_b=sorted_b,
+        z_a_ctx=z_a_ctx, z_b=z_b,
     )
     return pair, internals
 
