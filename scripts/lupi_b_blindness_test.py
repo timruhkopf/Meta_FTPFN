@@ -58,10 +58,13 @@ for i in range(N):
     rho = float(rng_target.uniform(0.0, 1.0))
     pair_t = sample_pair(rng_target, rho=rho, d=d, s_max=0.1,
                           n_a_range=(8, 100), n_b_range=(8, 100), n_qry_range=(8, 64))
-    # unrelated foreign pair -- independent draw, own d/rho, only used for its B cloud
-    d_f = int(rng_foreign.choice([1, 2, 3, 5]))
+    # unrelated foreign pair -- independent draw, own rho, only used for its B
+    # cloud -- MUST share d with pair_t: collate_lupi_batch pads every field
+    # in an item by one shared d_real, so a swapped-in B at a different real
+    # dimensionality than A's own would silently mis-pad (caught by this
+    # exact bug on the first run -- see the labbook entry).
     rho_f = float(rng_foreign.uniform(0.0, 1.0))
-    pair_f = sample_pair(rng_foreign, rho=rho_f, d=d_f, s_max=0.1,
+    pair_f = sample_pair(rng_foreign, rho=rho_f, d=d, s_max=0.1,
                           n_a_range=(8, 100), n_b_range=(8, 100), n_qry_range=(8, 64))
 
     item_real = item_from_pair(pair_t)
