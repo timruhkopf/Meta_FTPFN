@@ -71,6 +71,7 @@ def build_training_item(
         "dec_qry_x": pair.x_a_qry.astype(np.float32),
         "dec_qry_z": pair.z_a_qry.astype(np.float32),
         "dec_qry_oracle_bpos": pair.oracle_bpos_a_qry.astype(np.float32),
+        "dec_qry_source": pair.qry_source,  # int8: 0=uniform, 1=near-B, 2=near-A-context
         "region_type": pair.meta["region_type"],
         "volume_fraction": pair.meta["volume_fraction"],
     }
@@ -165,6 +166,7 @@ class LUPIBatch:
     dec_qry_z: torch.Tensor  # [B, n_qry]  target
     dec_qry_oracle_bpos: torch.Tensor  # [B, n_qry, D_MAX]
     dec_qry_mask: torch.Tensor  # [B, n_qry] bool
+    dec_qry_source: torch.Tensor  # [B, n_qry] long: 0=uniform, 1=near-B, 2=near-A-context (padding=0, masked out)
 
     d_real: torch.Tensor  # [B] long
     rho: torch.Tensor  # [B] float
@@ -214,6 +216,9 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
     dec_qry_x, dec_qry_mask = _pad_stack([it["dec_qry_x"] for it in padded], max_n_qry)
     dec_qry_z, _ = _pad_stack([it["dec_qry_z"] for it in padded], max_n_qry)
     dec_qry_oracle_bpos, _ = _pad_stack([it["dec_qry_oracle_bpos"] for it in padded], max_n_qry)
+    dec_qry_source, _ = _pad_stack(
+        [it["dec_qry_source"].astype(np.float32) for it in padded], max_n_qry
+    )
 
     return LUPIBatch(
         enc_x=torch.from_numpy(enc_x),
@@ -227,6 +232,7 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
         dec_qry_z=torch.from_numpy(dec_qry_z),
         dec_qry_oracle_bpos=torch.from_numpy(dec_qry_oracle_bpos),
         dec_qry_mask=torch.from_numpy(dec_qry_mask),
+        dec_qry_source=torch.from_numpy(dec_qry_source).long(),
         d_real=torch.tensor([it["d_real"] for it in items], dtype=torch.long),
         rho=torch.tensor([it["rho"] for it in items], dtype=torch.float32),
         beta=torch.tensor([it["beta"] for it in items], dtype=torch.float32),
