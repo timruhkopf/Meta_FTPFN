@@ -94,6 +94,54 @@ def _qry_source_breakdown(ctx: LUPIMonitorContext) -> dict:
     return result
 
 
+def compute_bounds_report(
+    lupi_model: nn.Module, bounds_model: nn.Module, batch: LUPIBatch
+) -> dict:
+    """The "standing view" -- lower/student/oracle/upper NLL together on
+    ONE shared batch, from `ppfn.model.lupi.model.LUPIPFN` (`lupi_model`)
+    and `ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN` (`bounds_model`,
+    trained separately -- see `configs/experiment/lupi_bounds.yaml`).
+    Not a `@register_lupi_monitor` entry: the registry pattern assumes one
+    model per `LUPIMonitorContext`, and this genuinely needs two
+    independently-trained checkpoints loaded together, so it's a plain
+    function instead (called from `scripts/lupi_bounds_report.py`).
+
+    Lower/upper come from BoundsPFN's `severed` toggle (`ppfn.loss.
+    lupi_bounds_loss.BoundsLoss`'s own two-forward pattern, reused
+    directly here rather than duplicating the masking logic) -- ONE
+    trained model yields both, so the bracket is internally consistent
+    (CLAUDE.md's own "always report three gaps, never a bare NLL",
+    extended to four numbers / three gaps here: lower->student,
+    student->oracle, oracle->upper)."""
+    out_lower = bounds_model(batch, severed=True)
+    out_upper = bounds_model(batch, severed=False)
+    b = lupi_model.encode_b(batch)
+    out_student = lupi_model.align(batch, b, mode="student")
+    out_oracle = lupi_model.align(batch, b, mode="oracle")
+
+    nll_lower = bounds_model.bar_dist(out_lower["predictive_logits"], batch.dec_qry_z)
+    nll_upper = bounds_model.bar_dist(out_upper["predictive_logits"], batch.dec_qry_z)
+    nll_student = lupi_model.bar_dist(out_student["predictive_logits"], batch.dec_qry_z)
+    nll_oracle = lupi_model.bar_dist(out_oracle["predictive_logits"], batch.dec_qry_z)
+
+    mask = batch.dec_qry_mask
+    lower = _masked_mean(nll_lower, mask)
+    upper = _masked_mean(nll_upper, mask)
+    student = _masked_mean(nll_student, mask)
+    oracle = _masked_mean(nll_oracle, mask)
+
+    return {
+        "bounds_report/lower_nll": lower,
+        "bounds_report/student_nll": student,
+        "bounds_report/oracle_nll": oracle,
+        "bounds_report/upper_nll": upper,
+        "bounds_report/gap_lower_to_student": (student - lower) if None not in (student, lower) else None,
+        "bounds_report/gap_student_to_oracle": (oracle - student) if None not in (oracle, student) else None,
+        "bounds_report/gap_oracle_to_upper": (upper - oracle) if None not in (upper, oracle) else None,
+        "bounds_report/gap_lower_to_upper": (upper - lower) if None not in (upper, lower) else None,
+    }
+
+
 @register_lupi_monitor("rho_stratified_gap")
 def _rho_stratified_gap(ctx: LUPIMonitorContext) -> dict:
     batch = ctx.val_batch
