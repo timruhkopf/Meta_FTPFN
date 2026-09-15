@@ -1,11 +1,10 @@
-# ppfn.trainer.lupi_trainer.LUPITrainer -- see that module's docstring for
-# why this is a sibling of configs/trainer/id_token.yaml rather than a reuse
-# of RegistrationTrainer.
+# ppfn.trainer.lupi_bounds_trainer.BoundsTrainer -- see that module's
+# docstring; near-verbatim sibling of configs/trainer/lupi.yaml.
 epochs: 100
 steps: 500
 
 trainer_class:
-  _target_: ppfn.trainer.lupi_trainer.LUPITrainer
+  _target_: ppfn.trainer.lupi_bounds_trainer.BoundsTrainer
   criterion: ${loss.loss_class}
   grad_clip: 1.0
   use_bf16: false

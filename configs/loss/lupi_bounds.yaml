@@ -1,0 +1,4 @@
+# Lower NLL (A_ctx alone) + upper NLL ([A_ctx ; B_inA]), both every batch --
+# see ppfn.loss.lupi_bounds_loss's module docstring.
+loss_class:
+  _target_: ppfn.loss.lupi_bounds_loss.BoundsLoss

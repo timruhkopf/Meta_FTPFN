@@ -65,6 +65,7 @@ def build_training_item(
         "beta": np.float32(pair.beta),
         "enc_x": pair.x_b.astype(np.float32),
         "enc_z": pair.z_b.astype(np.float32),
+        "enc_x_inA": pair.x_b_inA.astype(np.float32),  # same n_b, same enc_z values, A-frame position
         "dec_ctx_x": pair.x_a_ctx.astype(np.float32),
         "dec_ctx_z": pair.z_a_ctx.astype(np.float32),
         "dec_ctx_oracle_bpos": pair.oracle_bpos_a_ctx.astype(np.float32),
@@ -155,6 +156,7 @@ class LUPIBatch:
 
     enc_x: torch.Tensor  # [B, n_enc, D_MAX]
     enc_z: torch.Tensor  # [B, n_enc]
+    enc_x_inA: torch.Tensor  # [B, n_enc, D_MAX]  B transported into A's frame (same enc_z values, enc_mask)
     enc_mask: torch.Tensor  # [B, n_enc] bool
 
     dec_ctx_x: torch.Tensor  # [B, n_ctx, D_MAX]
@@ -196,6 +198,7 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
         {
             **it,
             "enc_x": _pad_rescale_coords(it["enc_x"], it["d_real"]),
+            "enc_x_inA": _pad_rescale_coords(it["enc_x_inA"], it["d_real"]),
             "dec_ctx_x": _pad_rescale_coords(it["dec_ctx_x"], it["d_real"]),
             "dec_ctx_oracle_bpos": _pad_rescale_coords(it["dec_ctx_oracle_bpos"], it["d_real"]),
             "dec_qry_x": _pad_rescale_coords(it["dec_qry_x"], it["d_real"]),
@@ -210,6 +213,7 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
 
     enc_x, enc_mask = _pad_stack([it["enc_x"] for it in padded], max_n_enc)
     enc_z, _ = _pad_stack([it["enc_z"] for it in padded], max_n_enc)
+    enc_x_inA, _ = _pad_stack([it["enc_x_inA"] for it in padded], max_n_enc)
     dec_ctx_x, dec_ctx_mask = _pad_stack([it["dec_ctx_x"] for it in padded], max_n_ctx)
     dec_ctx_z, _ = _pad_stack([it["dec_ctx_z"] for it in padded], max_n_ctx)
     dec_ctx_oracle_bpos, _ = _pad_stack([it["dec_ctx_oracle_bpos"] for it in padded], max_n_ctx)
@@ -223,6 +227,7 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
     return LUPIBatch(
         enc_x=torch.from_numpy(enc_x),
         enc_z=torch.from_numpy(enc_z),
+        enc_x_inA=torch.from_numpy(enc_x_inA),
         enc_mask=torch.from_numpy(enc_mask),
         dec_ctx_x=torch.from_numpy(dec_ctx_x),
         dec_ctx_z=torch.from_numpy(dec_ctx_z),

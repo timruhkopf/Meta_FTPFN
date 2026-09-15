@@ -1,0 +1,68 @@
+# @package _global_
+#
+# Lower/upper bound PFN for the ppfn.prior.lupi prior --
+# ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN. One model, trained on
+# both severed (A_ctx alone, the LOWER bound) and pooled ([A_ctx ; B_inA],
+# the UPPER bound) every batch -- see that module's docstring. Reports
+# loss/lower_nll and loss/upper_nll to the SAME MLflow experiment as
+# configs/experiment/lupi_baseline.yaml (lupi-alignment-pfn), for direct
+# comparison against that run's loss/student_nll and loss/oracle_nll:
+# lower <= student <~ oracle <= upper is the bracket read as a "standing
+# view" (ppfn.monitor.lupi's bounds report, once this checkpoint exists).
+#
+# Same n_a_range/n_b_range/n_qry_range as lupi_baseline.yaml -- same
+# quadratic-context-cost guardrail applies (the pooled context here is
+# [A_ctx ; B_inA], same size as lupi_baseline's [A_ctx] + B read).
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=lupi_bounds experiment_name=01-pretraining-lupi-bounds \
+#     callbacks.mlflow.run_name=lupi-bounds-pfn ~benchmark
+
+defaults:
+  - /loss: lupi_bounds
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: lupi_bounds_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: lupi_bounds
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: lupi-alignment-pfn
+    run_name: lupi-bounds-pfn
+  checkpoint:
+    monitor: val/loss/upper_nll
+
+prior:
+  batch_size: 16
+  num_workers: 8
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  n_qry_range: [8, 64]
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 64
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

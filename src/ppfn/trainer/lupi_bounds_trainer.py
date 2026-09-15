@@ -1,10 +1,11 @@
-"""Training loop for `ppfn.model.lupi.model.LUPIPFN` -- a near-verbatim
-sibling of `ppfn.trainer.id_token_trainer.IDTokenTrainer` (same reasoning
-for not reusing `RegistrationTrainer`: this model has neither a transport
-head nor a curriculum-progress-dependent loss term, so forcing it through
-that interface would mean stubbing arguments that mean nothing here). See
-that module's docstring for the fixed-validation-batch rationale, which
-applies identically here.
+"""Training loop for `ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN` -- a
+near-verbatim sibling of `ppfn.trainer.lupi_trainer.LUPITrainer` (same
+prior/dataset, same fixed-validation-batch convention); the only
+LUPI-trainer-specific thing that doesn't carry over is the console log
+line's metric names (`loss/lower_nll`/`loss/upper_nll` here vs.
+`loss/student_nll`/`loss/oracle_nll` there) -- kept as a separate file
+rather than a shared base class per this repo's established convention of
+independent per-model trainer siblings (IDTokenTrainer, LUPITrainer, ...).
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def _move_batch(batch: LUPIBatch, device: torch.device) -> LUPIBatch:
     return LUPIBatch(**moved)
 
 
-class LUPITrainer:
+class BoundsTrainer:
     def __init__(
         self,
         model: nn.Module,
@@ -80,17 +81,6 @@ class LUPITrainer:
         self.callbacks = callbacks or {}
         self.callback_handler = CallbackHandler(self.callbacks, trainer=self)
 
-        # val_n_a_range/val_n_b_range/val_n_qry_range default to
-        # build_training_item's own defaults (matching the full
-        # ARCHITECTURE-scale ranges) rather than silently inheriting
-        # whatever a caller's prior.n_a_range/n_b_range happen to be --
-        # pass them explicitly (configs/trainer/lupi.yaml does) so
-        # validation is drawn from the SAME distribution training actually
-        # saw. An earlier version of this constructor never threaded these
-        # through at all, so every prior run's own val/loss/* metrics were
-        # silently computed on the (256,1024) n_b default regardless of
-        # what prior.n_b_range the run itself trained on -- see
-        # docs/labbook/ for the entry this was caught and fixed in.
         val_rng = np.random.default_rng(val_seed)
         val_items = [
             build_training_item(
@@ -158,9 +148,10 @@ class LUPITrainer:
 
                 if self.verbose:
                     logger.info(
-                        f"epoch {epoch:4d} | loss/student_nll={epoch_metrics.get('loss/student_nll', float('nan')):.4f} "
-                        f"| loss/oracle_nll={epoch_metrics.get('loss/oracle_nll', float('nan')):.4f} "
-                        f"| val/loss/student_nll={epoch_metrics.get('val/loss/student_nll', float('nan')):.4f} "
+                        f"epoch {epoch:4d} | loss/lower_nll={epoch_metrics.get('loss/lower_nll', float('nan')):.4f} "
+                        f"| loss/upper_nll={epoch_metrics.get('loss/upper_nll', float('nan')):.4f} "
+                        f"| val/loss/lower_nll={epoch_metrics.get('val/loss/lower_nll', float('nan')):.4f} "
+                        f"| val/loss/upper_nll={epoch_metrics.get('val/loss/upper_nll', float('nan')):.4f} "
                         f"| time={epoch_metrics['time']:.1f}s"
                     )
 

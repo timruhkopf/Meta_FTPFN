@@ -39,6 +39,11 @@ class LUPIPair:
 
     x_b: np.ndarray  # [n_b, d]      B's own frame, normalized to [0,1]^d
     z_b: np.ndarray  # [n_b]         quantile-normalized value (F_hat_B(y_b_obs))
+    x_b_inA: np.ndarray  # [n_b, d]  B transported into A's frame via A's OWN warp (no inversion --
+    # B_inA = Phi_0(z_B), same trick _sample_query_z's near-B bucket already
+    # uses). Shares z_b's values exactly (position differs, value doesn't) --
+    # the "upper bound" pooled context [A_ctx ; B_inA] for
+    # ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN.
 
     x_a_ctx: np.ndarray  # [n_a, d]
     z_a_ctx: np.ndarray  # [n_a]
@@ -148,6 +153,7 @@ def sample_pair(
     # B's own sample already matches the reference measure, see ecdf.py).
     z_b = sample_latent_B(rng, d, n_b)
     x_b = to_b(z_b)
+    x_b_inA = to_a(z_b)  # B transported into A's frame -- no inversion, see field docstring
 
     f = sample_function_prior(rng, d, probe_z=z_b)
     h = sample_monotone_map(rng)
@@ -195,6 +201,7 @@ def sample_pair(
         beta=beta,
         x_b=x_b,
         z_b=z_b_quant,
+        x_b_inA=x_b_inA,
         x_a_ctx=x_a_ctx,
         z_a_ctx=z_a_ctx_quant,
         oracle_bpos_a_ctx=oracle_bpos_a_ctx,
