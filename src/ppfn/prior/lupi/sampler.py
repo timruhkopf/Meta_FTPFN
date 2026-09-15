@@ -57,6 +57,34 @@ class LUPIPair:
     meta: dict = field(default_factory=dict)
 
 
+@dataclass
+class LUPIPairInternals:
+    """Everything needed to evaluate the TRUE (noiseless) generative
+    process at ARBITRARY z-grid points after the fact -- for
+    `notebooks/lupi_1d_visualization.ipynb`'s "true function" overlay, not
+    used anywhere in training/loss. Only returned when `sample_pair(...,
+    return_internals=True)`; the default (False) path is byte-identical to
+    before this was added, so this costs nothing when unused.
+
+    Grid in z-space, not x-space: z ~ Uniform([0,1]^d) is the shared latent
+    the whole generative process is defined on, so a dense z-grid mapped
+    through `to_a`/`to_b` gives dense, CORRECTLY-ORDERED x-space curves
+    without ever needing to invert a warp (same trick `_sample_query_z`'s
+    near-B bucket and `x_b_inA` already use)."""
+
+    to_a: object  # Callable[[np.ndarray], np.ndarray] -- z [N,d] -> A-frame x [N,d]
+    to_b: object  # Callable[[np.ndarray], np.ndarray] -- z [N,d] -> B-frame x [N,d]
+    f: object  # FunctionPrior -- f(z) noiseless
+    h: object  # MonotoneMap -- h(y)
+    sorted_a: np.ndarray  # A's ECDF reference sample (fit_ecdf(y_a_ctx_obs))
+    sorted_b: np.ndarray  # B's ECDF reference sample (fit_ecdf(y_b_clean))
+
+    def true_z_a(self, z: np.ndarray) -> np.ndarray:
+        """z [N,d] -> noiseless quantile-normalized-on-A's-scale target
+        [N] -- the "true function" curve, A's own value calibration."""
+        return apply_ecdf(self.sorted_a, self.h(self.f(z)))
+
+
 def _sample_query_z(
     rng: np.random.Generator,
     d: int,
@@ -106,7 +134,8 @@ def sample_pair(
     frac_near_b: float = 0.4,
     query_eps_std: float = 0.03,
     warp_grid_n: int = 4,
-) -> LUPIPair:
+    return_internals: bool = False,
+) -> LUPIPair | tuple[LUPIPair, LUPIPairInternals]:
     """One draw at relative-warp coefficient `rho`. `frac_near_b`: set to 0.0
     to disable spec §6.2's anti-B-blindness mechanism as an ablation (the
     "optional" preferential-near-B query sampling); `frac_uniform` +
@@ -195,7 +224,7 @@ def sample_pair(
         "rho": rho,
     }
 
-    return LUPIPair(
+    pair = LUPIPair(
         d=d,
         rho=rho,
         beta=beta,
@@ -211,6 +240,12 @@ def sample_pair(
         qry_source=qry_source,
         meta=meta,
     )
+    if not return_internals:
+        return pair
+    internals = LUPIPairInternals(
+        to_a=to_a, to_b=to_b, f=f, h=h, sorted_a=sorted_a, sorted_b=sorted_b,
+    )
+    return pair, internals
 
 
 def sample_rho_curriculum(rng: np.random.Generator, progress: float) -> float:
