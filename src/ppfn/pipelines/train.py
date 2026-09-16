@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+import os
+
+# Must be set before numpy/torch (or anything importing them) is imported --
+# BLAS backends read these once at init and ignore later changes. Without
+# this, each DataLoader worker process's own numpy calls spawn one thread
+# PER CORE by default (confirmed 2026-09-16: a live worker had 18 threads),
+# so `num_workers=N` silently oversubscribes to N * ncores threads instead
+# of N -- measured load average ~54 on a 16-core box running two
+# num_workers=6 jobs, and a ~2.3-2.8x slower-than-expected epoch (745.7s
+# vs. ~280s at a smaller batch/no parallel job) as a direct result. Workers
+# inherit this process's environment at fork/spawn time, so setting it here
+# (before the DataLoader/worker pool exists) is sufficient -- no per-worker
+# init hook needed.
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 import numpy as np
 import torch
