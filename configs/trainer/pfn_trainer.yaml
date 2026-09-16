@@ -1,7 +1,7 @@
 # prior/model/bar_dist/seed/on_log are runtime objects, passed at
 # instantiate() time in pipelines/train_pfn.py -- not representable in YAML,
 # same pattern as trainer/dummy.yaml's benchmark/prior/surrogate.
-_target_: anytimeacquisition.trainer.pfn_trainer.PFNTrainer
+_target_: ppfn.trainer.pfn_trainer.PFNTrainer
 n_steps: 100000
 min_train: 5
 max_train: 300

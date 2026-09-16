@@ -1,0 +1,20 @@
+# Lower-bound reference: IDTokenPFN with B masked out entirely (context =
+# A only). Same sizing as configs/model/id_token_pfn.yaml so the comparison
+# isn't confounded by capacity. See ppfn.model.baselines.lupi_id_token_pfn.AAloneIDTokenPFN.
+d_model: 256
+n_heads: 8
+n_layers: 6
+d_ff: 512
+n_bins_predictive: 64
+dropout: 0.0
+d_max: 5
+
+model_class:
+  _target_: ppfn.model.baselines.lupi_id_token_pfn.AAloneIDTokenPFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_layers: ${model.n_layers}
+  d_ff: ${model.d_ff}
+  n_bins_predictive: ${model.n_bins_predictive}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

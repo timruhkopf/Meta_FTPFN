@@ -1,0 +1,33 @@
+# @package _global_
+#
+# Overnight-length rerun of pfn_variable_dim5_reference.yaml -- same prior/
+# model/validate_dims, just many more steps, and periodic checkpointing
+# (trainer.checkpoint_every) since an unattended multi-hour run losing all
+# progress to a mid-run crash would actually hurt, unlike the ~12-minute
+# reference run.
+#
+# At the measured ~0.105s/step steady-state throughput on ulysses's RTX
+# 3090 (pfn_variable_dim5_reference.yaml's own run, 5000 steps in ~717s
+# incl. one-time ECDF fit), 200,000 steps is ~5.8h of training -- sized to
+# fit an overnight window with margin, not derived from any convergence
+# target. checkpoint_path overwrites the same file every checkpoint_every
+# steps, so whatever is on disk when checked is always the latest, whether
+# or not the full run has finished.
+#
+# Run on ulysses (cuda):
+#   uv run python -m ppfn.pipelines.train_pfn experiment=pfn_variable_dim5_long
+
+defaults:
+  - pfn_variable_dim5_reference
+  - _self_
+
+trainer:
+  n_steps: 200000
+  warmup_steps: 2000
+  log_every: 200
+  checkpoint_every: 10000
+  checkpoint_path: ${root:}/models/pfn_variable_dim5_long.pt
+
+callbacks:
+  mlflow:
+    experiment_name: pfn-variable-dim5-long

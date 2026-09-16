@@ -1,5 +1,14 @@
 # @package _global_
 #
+# FIXME (2026-09-16, flagged for the next session): the model this trains,
+# ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN, pools B_inA's position
+# (enc_x_inA, via T) with its RAW value (enc_z, no h applied) instead of the
+# newly added enc_z_inA (= h(y_b_obs)) -- so the "upper bound" this produces
+# still has an unsolved value-calibration problem baked in. See that
+# module's own top-of-file FIXME for the full explanation and the fix
+# (ppfn.prior.lupi.sampler.LUPIPair.z_b_inA's docstring). Any checkpoint
+# from this config trained before that fix lands should be re-trained.
+#
 # Lower/upper bound PFN for the ppfn.prior.lupi prior --
 # ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN. One model, trained on
 # both severed (A_ctx alone, the LOWER bound) and pooled ([A_ctx ; B_inA],

@@ -1,0 +1,72 @@
+# @package _global_
+#
+# Real-sized run of the additive-ID-token single-stream PFN baseline --
+# ROADMAP.md §8.1 ("A ∪ B with an additive dataset-ID token") / §8.4's
+# baseline ladder, ARCHITECTURE.md §5.5. Naive pooling of A's context and B
+# into one train set, tagged only by a learned per-cloud additive
+# embedding (ppfn.model.baselines.id_token_pfn.IDTokenPFN), scored with a
+# plain bar-distribution NLL on A's query tokens only
+# (ppfn.loss.id_token_loss.IDTokenLoss) -- no transport/coupling/affine/
+# distillation terms, unlike the full RegistrationPFN.
+#
+# n_a_range/n_b_range capped the same way configs/experiment/arch_verification.yaml
+# discovered was necessary: this model's train-train self-attention is over
+# the pooled [A_context ; B] set, exactly the same O((n_a+n_b)^2) cost that
+# caused arch_verification's OOM at the full ARCHITECTURE.md ranges (n_b up
+# to 1024) -- and role randomization (35%, build_training_item) means
+# either cloud can land in the "large" slot, so both ranges need capping,
+# not just n_b_range. Full rho curriculum (not p0_identity): unlike
+# arch_verification's architecture check, this baseline's whole point is
+# how it does once the clouds are ACTUALLY warped (ROADMAP.md §8.1 wants
+# both P0 and mild/severe).
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=id_token_baseline experiment_name=01-pretraining-id-token-baseline ~benchmark
+
+defaults:
+  - /loss: id_token
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: id_token_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: id-token-baseline
+  checkpoint:
+    monitor: val/loss/pred_nll
+
+prior:
+  batch_size: 16
+  num_workers: 8
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  warp_grid_n: 4  # reuse the LUPI-found speedup (docs/labbook/2026-09-14-lupi-prior-warp-grid-speedup.md) -- ~3x cheaper warp-rejection check, same accuracy tradeoff already vetted there
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 64
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

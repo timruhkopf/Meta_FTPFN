@@ -4,8 +4,8 @@
 # separate value to keep in sync by hand. The PFN accepts any real
 # per-episode x_dim <= max_x_dim (models/pfn.py's n_features, generalizing
 # ifBO/PFNs4BO's VariableNumFeaturesEncoder -- see that module's docstring).
-_target_: anytimeacquisition.models.pfn.PFN
-max_x_dim: ${priors.x_dim}
+_target_: ppfn.model.pfn.pfn.PFN
+max_x_dim: ${prior.x_dim}
 d_model: 64
 n_heads: 4
 n_layers: 4

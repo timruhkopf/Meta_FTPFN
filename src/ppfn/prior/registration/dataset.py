@@ -70,9 +70,15 @@ def build_training_item(
     d: int | None = None,
     n_a_range: tuple[int, int] = (8, 256),
     n_b_range: tuple[int, int] = (256, 1024),
+    warp_grid_n: int = 5,
 ) -> dict:
     """One fully-assembled training item: role randomization + context/query
     split + severed-mode flag, on top of one `sample_pair` draw.
+
+    `warp_grid_n`: pass-through to `sample_pair`'s own override of the same
+    name -- see that function's docstring. Default (5) is unchanged from
+    `sample_warp_pair`/`declared_box`'s own default, so nothing changes
+    for an existing caller unless it opts in explicitly.
 
     `force_rho_zero`: bypass the curriculum and always draw at rho=0 --
     CLAUDE.md's `prior=p0_identity` variant, and the input side of the
@@ -89,17 +95,34 @@ def build_training_item(
     from. Fixing `d` (e.g. d=1) also makes the prior/model 1D-plottable per
     .claude/rules/research-demos.md's convention."""
     rho = 0.0 if force_rho_zero else sample_rho_curriculum(rng, progress)
-    pair = sample_pair(rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range)
+    pair = sample_pair(
+        rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range,
+        warp_grid_n=warp_grid_n,
+    )
 
     role_swapped = bool(rng.random() < 0.35)
     if not role_swapped:
         enc_x, enc_y = pair.x_e_norm, pair.y_e
         dec_x_full, dec_y_full = pair.x_a_norm, pair.y_a
         transport_full = pair.a_inb_target
+        # The encoder cloud's OWN points, expressed in the decoder's frame
+        # via the true (ground-truth) transport -- the oracle "B_inA"
+        # pooling target LUPI-style baselines need at any rho (not just
+        # rho=0, unlike ppfn.prior.registration.dataset.build_pooled_context's
+        # naive concatenation, which is only correct at rho=0 -- see that
+        # function's own docstring). Note this is the OPPOSITE of
+        # `transport_full` above: that supervises the decoder cloud's own
+        # points mapped INTO the encoder's frame (for the transport head);
+        # this is the encoder cloud's points mapped INTO the decoder's
+        # frame (for oracle pooling). Both targets already come out of
+        # `sample_pair` regardless of role_swapped -- just picking the
+        # other one here.
+        enc_x_oracle = pair.b_ina_target
     else:
         enc_x, enc_y = pair.x_a_norm, pair.y_a
         dec_x_full, dec_y_full = pair.x_e_norm, pair.y_e
         transport_full = pair.b_ina_target
+        enc_x_oracle = pair.a_inb_target
 
     n_dec = dec_x_full.shape[0]
     k_ctx = int(rng.integers(1, max(2, n_dec)))  # at least 1 context, at least 1 query
@@ -116,6 +139,7 @@ def build_training_item(
         "severed": severed,
         "enc_x": enc_x.astype(np.float32),
         "enc_y": enc_y.astype(np.float32),
+        "enc_x_oracle": enc_x_oracle.astype(np.float32),
         "dec_ctx_x": dec_x_full[ctx_idx].astype(np.float32),
         "dec_ctx_y": dec_y_full[ctx_idx].astype(np.float32),
         "dec_qry_x": dec_x_full[qry_idx].astype(np.float32),
@@ -144,6 +168,7 @@ class RegistrationStreamDataset(IterableDataset):
         d: int | None = None,
         n_a_range: tuple[int, int] = (8, 256),
         n_b_range: tuple[int, int] = (256, 1024),
+        warp_grid_n: int = 5,
     ):
         super().__init__()
         self.seed = seed
@@ -153,6 +178,7 @@ class RegistrationStreamDataset(IterableDataset):
         self.d = d
         self.n_a_range = n_a_range
         self.n_b_range = n_b_range
+        self.warp_grid_n = warp_grid_n
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -165,6 +191,7 @@ class RegistrationStreamDataset(IterableDataset):
                 s_max=self.s_max,
                 force_rho_zero=self.force_rho_zero,
                 d=self.d,
+                warp_grid_n=self.warp_grid_n,
                 n_a_range=self.n_a_range,
                 n_b_range=self.n_b_range,
             )
@@ -196,6 +223,7 @@ class RegistrationBatch:
     enc_x: torch.Tensor  # [B, n_enc, D_MAX]
     enc_y: torch.Tensor  # [B, n_enc]
     enc_mask: torch.Tensor  # [B, n_enc] bool
+    enc_x_oracle: torch.Tensor  # [B, n_enc, D_MAX] -- enc_x pushed into the decoder's frame via the TRUE transport, valid at any rho; same points/mask as enc_x, just different coordinates
     dec_ctx_x: torch.Tensor  # [B, n_ctx, D_MAX]
     dec_ctx_y: torch.Tensor  # [B, n_ctx]
     dec_ctx_mask: torch.Tensor  # [B, n_ctx] bool
@@ -231,6 +259,7 @@ def collate_registration_batch(items: list[dict]) -> RegistrationBatch:
         {
             **it,
             "enc_x": _pad_rescale_coords(it["enc_x"], it["d_real"]),
+            "enc_x_oracle": _pad_rescale_coords(it["enc_x_oracle"], it["d_real"]),
             "dec_ctx_x": _pad_rescale_coords(it["dec_ctx_x"], it["d_real"]),
             "dec_qry_x": _pad_rescale_coords(it["dec_qry_x"], it["d_real"]),
             "transport_ctx": _pad_rescale_coords(it["transport_ctx"], it["d_real"]),
@@ -244,6 +273,7 @@ def collate_registration_batch(items: list[dict]) -> RegistrationBatch:
     max_n_qry = max(it["dec_qry_x"].shape[0] for it in padded)
 
     enc_x, enc_mask = _pad_stack([it["enc_x"] for it in padded], max_n_enc)
+    enc_x_oracle, _ = _pad_stack([it["enc_x_oracle"] for it in padded], max_n_enc)
     enc_y, _ = _pad_stack([it["enc_y"][:, None] for it in padded], max_n_enc)
     dec_ctx_x, dec_ctx_mask = _pad_stack([it["dec_ctx_x"] for it in padded], max_n_ctx)
     dec_ctx_y, _ = _pad_stack([it["dec_ctx_y"][:, None] for it in padded], max_n_ctx)
@@ -256,6 +286,7 @@ def collate_registration_batch(items: list[dict]) -> RegistrationBatch:
         enc_x=torch.from_numpy(enc_x),
         enc_y=torch.from_numpy(enc_y).squeeze(-1),
         enc_mask=torch.from_numpy(enc_mask),
+        enc_x_oracle=torch.from_numpy(enc_x_oracle),
         dec_ctx_x=torch.from_numpy(dec_ctx_x),
         dec_ctx_y=torch.from_numpy(dec_ctx_y).squeeze(-1),
         dec_ctx_mask=torch.from_numpy(dec_ctx_mask),

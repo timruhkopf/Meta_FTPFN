@@ -22,6 +22,11 @@ query_eps_std: 0.03
 # a modest loosening of the accept/reject band estimate. Never affects
 # configs/prior/registration.yaml, which keeps grid_n=5.
 warp_grid_n: 4
+# Force a fixed acquisition aggressiveness instead of sample_beta's own
+# per-draw sampling -- e.g. 0.0 for a clean, deterministic "no acquisition
+# bias" ablation. null (default) preserves the original sampled-beta
+# behavior (including its own 20% chance of landing on beta=0).
+beta_override: null
 
 dataset_class:
   _target_: ppfn.prior.lupi.dataset.LUPIStreamDataset
@@ -36,6 +41,7 @@ dataset_class:
   frac_near_b: ${prior.frac_near_b}
   query_eps_std: ${prior.query_eps_std}
   warp_grid_n: ${prior.warp_grid_n}
+  beta_override: ${prior.beta_override}
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader

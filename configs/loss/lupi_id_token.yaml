@@ -1,0 +1,5 @@
+# NLL(student) + NLL(teacher) + lambda_ce * CE(teacher.detach(), student).
+# See ppfn.loss.lupi_id_token_loss's module docstring.
+loss_class:
+  _target_: ppfn.loss.lupi_id_token_loss.LUPIIDTokenLoss
+  lambda_ce: 1.0

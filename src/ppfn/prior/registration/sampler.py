@@ -62,12 +62,30 @@ def sample_pair(
     s_max: float = 0.1,
     n_b_range: tuple[int, int] = (256, 1024),
     n_a_range: tuple[int, int] = (8, 256),
+    warp_grid_n: int = 5,
 ) -> RegistrationPair:
     """One draw of (A, E) at the given relative-warp coefficient `rho`.
     `s_max=0.1` is the calibrated default -- empirically ~3-7% per-draw
     rejection at d in {1,2,3} under `warp.sample_warp_pair`'s log|det J|
     band, i.e. "a few percent" per ARCHITECTURE.md §1.3's tuning target (see
-    the warp.py module demo / docs/labbook/ for the calibration sweep)."""
+    the warp.py module demo / docs/labbook/ for the calibration sweep).
+
+    `warp_grid_n`: override of `sample_warp_pair`/`declared_box`'s own
+    `grid_n=5` default, threaded through here rather than left at their
+    hardcoded default -- same override `ppfn.prior.lupi.sampler.sample_pair`
+    already exposes (`warp_grid_n`, default 4 there), ported to this shared
+    sampler rather than re-derived: the warp-rejection Jacobian check
+    (`logdet_jacobian_grid`, via `declared_box`/`sample_warp_pair`) is
+    ~80-97% of per-item cost REGARDLESS of n_a/n_b (see
+    docs/labbook/2026-09-14-lupi-prior-warp-grid-speedup.md and
+    docs/labbook/2026-09-15-id-token-baseline-oom-and-progress-bugs.md),
+    and scales as `grid_n^d`, so 5->4 cuts that cost ~3x with a measured,
+    acceptable loss of band-estimate accuracy (grid_n=3 was rejected there
+    for underestimating the true log|det J| band by ~40%). Default kept at
+    5 here -- unlike the LUPI-only module, this sampler is shared by
+    arch_verification/step4_pathway/bridge_pfn/etc., so nothing changes for
+    them unless a caller explicitly opts in via `configs/prior/registration.yaml`'s
+    `warp_grid_n` field."""
     if d is None:
         d = int(rng.choice(D_CHOICES))
     assert 0.0 <= rho <= 1.0
@@ -77,21 +95,21 @@ def sample_pair(
     n_b = int(np.clip(n_b, *n_b_range))
     n_a = int(np.clip(n_a, *n_a_range))
 
-    v_a, v_b = sample_warp_pair(rng, d, s_max=s_max)
+    v_a, v_b = sample_warp_pair(rng, d, s_max=s_max, grid_n=warp_grid_n)
 
     z_a, region, volume_fraction = sample_latent_A(rng, d, n_a)
     z_b = sample_latent_B(rng, d, n_b)
 
     # Phi_0 = flow(v_a) alone -- the decoder cloud's own warp, and the
     # direction B_inA_target uses (ARCHITECTURE.md §1.3/§1.5).
-    box_a = declared_box(v_a, d)
+    box_a = declared_box(v_a, d, grid_n=warp_grid_n)
     x_a_raw = flow_rk4(v_a, z_a)
     b_ina_target_raw = flow_rk4(v_a, z_b)
 
     # Phi_rho = flow of ((1-rho) v_a + rho v_b) -- the encoder cloud's warp
     # at this pair's relative-warp coefficient.
     phi_rho = mix_velocity([v_a, v_b], [1.0 - rho, rho])
-    box_e = declared_box(phi_rho, d)
+    box_e = declared_box(phi_rho, d, grid_n=warp_grid_n)
     x_e_raw = flow_rk4(phi_rho, z_b)
     a_inb_target_raw = flow_rk4(phi_rho, z_a)
 

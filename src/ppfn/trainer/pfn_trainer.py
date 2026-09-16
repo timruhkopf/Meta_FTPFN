@@ -41,9 +41,9 @@ from typing import Callable
 
 import torch
 
-from anytimeacquisition.callbacks.handler import Callback, CallbackHandler
-from anytimeacquisition.models.pfn import PFN
-from anytimeacquisition.priors.bnn import BNNPrior
+from ppfn.callbacks.handler import Callback, CallbackHandler
+from ppfn.model.pfn.pfn import PFN
+from ppfn.prior.bnn.bnn_prior_vec import BNNPrior
 
 
 def _cosine_warmup_lr(step: int, warmup_steps: int, total_steps: int) -> float:
@@ -67,6 +67,14 @@ class PFNTrainer:
         warmup_steps: int = 50,
         log_every: int = 50,
         checkpoint_path: str | Path | None = None,
+        # Periodic checkpointing, in addition to the always-on final save
+        # below -- None (default) means "only at the very end," matching
+        # every existing smoke/reference run. Set this for any unattended
+        # run long enough that losing all progress to a mid-run crash would
+        # actually hurt (e.g. an overnight run) -- overwrites the same
+        # checkpoint_path each time rather than accumulating one file per
+        # save, so disk usage doesn't grow with run length.
+        checkpoint_every: int | None = None,
         model_config: dict | None = None,
         on_log: Callable[[int, dict], None] | None = None,
         mixed_precision: bool = False,
@@ -101,6 +109,7 @@ class PFNTrainer:
         self.warmup_steps = warmup_steps
         self.log_every = log_every
         self.checkpoint_path = checkpoint_path
+        self.checkpoint_every = checkpoint_every
         self.model_config = model_config
         self.on_log = on_log
         self.mixed_precision = mixed_precision
@@ -182,18 +191,29 @@ class PFNTrainer:
                 if self.on_log is not None:
                     self.on_log(step, metrics)
 
-        if self.checkpoint_path is not None:
-            checkpoint_path = Path(self.checkpoint_path)
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                {
-                    "model_state": self.model.state_dict(),
-                    "config": self.model_config,
-                    "history": history,
-                    **(self.extra_checkpoint_metadata or {}),
-                },
-                checkpoint_path,
-            )
-            print("saved checkpoint to", checkpoint_path)
+                if (
+                    self.checkpoint_every is not None
+                    and step > 0
+                    and step % self.checkpoint_every == 0
+                ):
+                    self._save_checkpoint(history)
+
+        self._save_checkpoint(history)
 
         return {"model": self.model, "bar_dist": self.bar_dist, "prior": self.prior, "history": history}
+
+    def _save_checkpoint(self, history: dict) -> None:
+        if self.checkpoint_path is None:
+            return
+        checkpoint_path = Path(self.checkpoint_path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model_state": self.model.state_dict(),
+                "config": self.model_config,
+                "history": history,
+                **(self.extra_checkpoint_metadata or {}),
+            },
+            checkpoint_path,
+        )
+        print("saved checkpoint to", checkpoint_path)

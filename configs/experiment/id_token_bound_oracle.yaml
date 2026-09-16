@@ -1,0 +1,57 @@
+# @package _global_
+#
+# Upper-bound reference for the LUPI id-token plot: same IDTokenPFN
+# backbone with B always replaced by its oracle (true-transport)
+# coordinates -- [A, B_inA], trained standalone rather than jointly with a
+# student + CE term, reported as a horizontal reference line.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=id_token_bound_oracle experiment_name=01-pretraining-id-token-bound-oracle ~benchmark
+
+defaults:
+  - /loss: id_token
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: id_token_bound_oracle
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: id-token-bound-oracle
+  checkpoint:
+    monitor: val/loss/pred_nll
+
+prior:
+  batch_size: 16
+  num_workers: 8
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  warp_grid_n: 4  # reuse the LUPI-found speedup -- see id_token_baseline.yaml's identical override
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 64
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

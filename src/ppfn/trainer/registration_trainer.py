@@ -143,6 +143,7 @@ class RegistrationTrainer:
         val_d = getattr(train_dataset, "d", None)
         val_n_a_range = getattr(train_dataset, "n_a_range", (8, 256))
         val_n_b_range = getattr(train_dataset, "n_b_range", (256, 1024))
+        val_warp_grid_n = getattr(train_dataset, "warp_grid_n", 5)
         val_rng = np.random.default_rng(val_seed)
         val_items = [
             build_training_item(
@@ -151,6 +152,7 @@ class RegistrationTrainer:
                 s_max=val_s_max,
                 force_rho_zero=val_force_rho_zero,
                 d=val_d,
+                warp_grid_n=val_warp_grid_n,
                 n_a_range=val_n_a_range,
                 n_b_range=val_n_b_range,
             )

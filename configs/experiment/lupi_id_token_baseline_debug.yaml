@@ -1,0 +1,52 @@
+# @package _global_
+#
+# Smoke-test config for the LUPI additive-ID-token baseline -- tiny model,
+# short run. See configs/experiment/lupi_id_token_baseline.yaml.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=lupi_id_token_baseline_debug experiment_name=00-debug-lupi-id-token ~benchmark
+
+defaults:
+  - /loss: lupi_id_token
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+  - override /prior: lupi
+  - override /model: lupi_id_token_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+callbacks:
+  mlflow:
+    tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+    experiment_name: lupi-id-token-baseline-debug
+
+prior:
+  batch_size: 4
+  s_max: 0.1
+  n_a_range: [8, 32]
+  n_b_range: [8, 32]
+  warp_grid_n: 4
+
+model:
+  d_model: 32
+  n_heads: 4
+  d_ff: 64
+  n_layers: 2
+
+trainer:
+  epochs: 2
+  steps: 5
+  trainer_class:
+    val_size: 8
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

@@ -1,3 +1,23 @@
+# FIXME (2026-09-16, flagged for the next session -- not fixed here, this
+# file belongs to the ppfn.model.lupi/lupi_bounds track): `forward` below
+# pools `enc_x_inA` (B's position, transported via T) together with
+# `batch.enc_z` (B's RAW, un-h'd value) -- this is the same bug the user
+# caught and had fixed in ppfn.model.baselines.{lupi_id_token_pfn,
+# plain_pfn_bounds}.py's own oracle/teacher pathways: pairing a
+# T-transported position with an un-h'd value means this "upper bound"
+# still has an unsolved value-calibration problem, which undercuts its role
+# as the ceiling other results get measured against. Fix: use the newly
+# added `batch.enc_z_inA` (= h(y_b_obs), sits on A's true curve up to
+# noise -- see `ppfn.prior.lupi.sampler.LUPIPair.z_b_inA`'s docstring)
+# instead of `batch.enc_z` at line ~66 below. Also worth a look while
+# there: `self.bar_dist` is a `[0,1]`-bounded `BarDistribution`
+# (`uniform_bin_borders(n_bins_predictive, 0.0, 1.0)`), which predates
+# `ppfn.prior.lupi`'s normalization being shelved -- targets are raw/
+# unnormalized now and not guaranteed to land in `[0,1]`; may want the same
+# `FullSupportBarDistribution`/`quantile_bin_borders` swap
+# `ppfn.model.pfn.bar_distribution`'s module docstring describes. Check
+# `configs/experiment/` for a config pointing at `BoundsPFN` too -- didn't
+# find one wired up as of this flag, but confirm before assuming it's unused.
 """Lower/upper bound PFN for `ppfn.prior.lupi` -- one plain, single-stream
 PFN trained on the pooled context `[A_ctx ; B_inA]` (`B_inA` =
 `ppfn.prior.lupi.dataset.LUPIBatch.enc_x_inA`, B transported into A's frame

@@ -1,0 +1,18 @@
+# ppfn.trainer.id_token_trainer.IDTokenTrainer -- see that module's
+# docstring for why this is a smaller sibling of configs/trainer/registration.yaml
+# rather than a reuse of RegistrationTrainer.
+epochs: 100
+steps: 500
+
+trainer_class:
+  _target_: ppfn.trainer.id_token_trainer.IDTokenTrainer
+  criterion: ${loss.loss_class}
+  grad_clip: 1.0
+  use_bf16: false
+  val_size: 256
+  val_seed: 999999
+  val_s_max: ${prior.s_max}
+  val_force_rho_zero: ${prior.force_rho_zero}
+  callbacks: null  # overridden to ${callbacks} in configs/config.yaml
+  checkpoint_dir: null
+  verbose: true

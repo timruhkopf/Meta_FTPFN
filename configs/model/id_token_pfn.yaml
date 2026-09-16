@@ -1,0 +1,21 @@
+# Additive-ID-token single-stream PFN baseline -- ROADMAP.md §8.1/§8.4,
+# ARCHITECTURE.md §5.5. Sized as a modest first real run, not tuned --
+# see ppfn.model.baselines.id_token_pfn's module docstring for what this
+# baseline is and why it exists.
+d_model: 256
+n_heads: 8
+n_layers: 6
+d_ff: 512
+n_bins_predictive: 64
+dropout: 0.0
+d_max: 5  # must match ppfn.prior.registration.dataset.D_MAX
+
+model_class:
+  _target_: ppfn.model.baselines.id_token_pfn.IDTokenPFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_layers: ${model.n_layers}
+  d_ff: ${model.d_ff}
+  n_bins_predictive: ${model.n_bins_predictive}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

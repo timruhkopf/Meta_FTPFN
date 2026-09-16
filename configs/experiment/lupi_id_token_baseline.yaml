@@ -1,0 +1,66 @@
+# @package _global_
+#
+# LUPI-style additive-ID-token baseline: shared IDTokenPFN backbone, student
+# [A,B] (raw, unregistered) + teacher [A,B_inA] (privileged, true-transport)
+# batch-stacked in one forward pass, student pulled toward the teacher via
+# plain cross-entropy (not forward KL -- see ppfn.loss.lupi_id_token_loss's
+# module docstring). Answers whether registering two tasks purely
+# in-context (ppfn.model.baselines.id_token_pfn.IDTokenPFN alone) is the
+# hard part, by seeing how much gap closes when the true registration is
+# available as a training-time-only signal.
+#
+# Same n_a_range/n_b_range cap as configs/experiment/id_token_baseline.yaml
+# (identical quadratic pooled-attention cost, doubled here since student and
+# teacher are batch-stacked -- effectively 2x the memory of that config at
+# the same batch_size, so batch_size is halved to compensate).
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=lupi_id_token_baseline experiment_name=01-pretraining-lupi-id-token ~benchmark
+
+defaults:
+  - /loss: lupi_id_token
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: lupi_id_token_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: lupi-id-token-baseline
+  checkpoint:
+    monitor: val/loss/nll_student
+
+prior:
+  batch_size: 8  # halved vs id_token_baseline.yaml -- student+teacher stacking doubles the effective attention batch
+  num_workers: 8
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  warp_grid_n: 4  # reuse the LUPI-found speedup -- see id_token_baseline.yaml's identical override
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 32  # halved for the same reason as batch_size above
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

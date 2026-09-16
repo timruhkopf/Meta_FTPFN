@@ -52,12 +52,13 @@ def build_training_item(
     frac_near_b: float = 0.4,
     query_eps_std: float = 0.03,
     warp_grid_n: int = 4,
+    beta_override: float | None = None,
 ) -> dict:
     rho = 0.0 if force_rho_zero else sample_rho_curriculum(rng, progress)
     pair = sample_pair(
         rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range,
         n_qry_range=n_qry_range, frac_uniform=frac_uniform, frac_near_b=frac_near_b,
-        query_eps_std=query_eps_std, warp_grid_n=warp_grid_n,
+        query_eps_std=query_eps_std, warp_grid_n=warp_grid_n, beta_override=beta_override,
     )
     return {
         "d_real": pair.d,
@@ -65,7 +66,8 @@ def build_training_item(
         "beta": np.float32(pair.beta),
         "enc_x": pair.x_b.astype(np.float32),
         "enc_z": pair.z_b.astype(np.float32),
-        "enc_x_inA": pair.x_b_inA.astype(np.float32),  # same n_b, same enc_z values, A-frame position
+        "enc_x_inA": pair.x_b_inA.astype(np.float32),  # A-frame position, same n_b as enc_x
+        "enc_z_inA": pair.z_b_inA.astype(np.float32),  # A-frame VALUE (h applied) -- pair with enc_x_inA, NOT enc_z, for a fully-registered oracle view (see LUPIPair.z_b_inA)
         "dec_ctx_x": pair.x_a_ctx.astype(np.float32),
         "dec_ctx_z": pair.z_a_ctx.astype(np.float32),
         "dec_ctx_oracle_bpos": pair.oracle_bpos_a_ctx.astype(np.float32),
@@ -97,6 +99,7 @@ class LUPIStreamDataset(IterableDataset):
         frac_near_b: float = 0.4,
         query_eps_std: float = 0.03,
         warp_grid_n: int = 4,
+        beta_override: float | None = None,
     ):
         super().__init__()
         self.seed = seed
@@ -111,6 +114,7 @@ class LUPIStreamDataset(IterableDataset):
         self.frac_near_b = frac_near_b
         self.query_eps_std = query_eps_std
         self.warp_grid_n = warp_grid_n
+        self.beta_override = beta_override
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -130,6 +134,7 @@ class LUPIStreamDataset(IterableDataset):
                 frac_near_b=self.frac_near_b,
                 query_eps_std=self.query_eps_std,
                 warp_grid_n=self.warp_grid_n,
+                beta_override=self.beta_override,
             )
 
 
@@ -156,7 +161,13 @@ class LUPIBatch:
 
     enc_x: torch.Tensor  # [B, n_enc, D_MAX]
     enc_z: torch.Tensor  # [B, n_enc]
-    enc_x_inA: torch.Tensor  # [B, n_enc, D_MAX]  B transported into A's frame (same enc_z values, enc_mask)
+    enc_x_inA: torch.Tensor  # [B, n_enc, D_MAX]  B transported into A's frame via T
+    enc_z_inA: torch.Tensor  # [B, n_enc]  B's value recalibrated into A's SCALE via h --
+    # pair with enc_x_inA (NOT enc_z) for a fully-registered oracle view: T
+    # and h both solved, so (enc_x_inA, enc_z_inA) sits on A's own true
+    # curve up to B's own observation noise. `enc_z` is deliberately kept
+    # separate -- it's B's raw value on B's own scale, for the student's
+    # raw/unregistered view and for a "T solved, h still not" ablation.
     enc_mask: torch.Tensor  # [B, n_enc] bool
 
     dec_ctx_x: torch.Tensor  # [B, n_ctx, D_MAX]
@@ -214,6 +225,7 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
     enc_x, enc_mask = _pad_stack([it["enc_x"] for it in padded], max_n_enc)
     enc_z, _ = _pad_stack([it["enc_z"] for it in padded], max_n_enc)
     enc_x_inA, _ = _pad_stack([it["enc_x_inA"] for it in padded], max_n_enc)
+    enc_z_inA, _ = _pad_stack([it["enc_z_inA"] for it in padded], max_n_enc)
     dec_ctx_x, dec_ctx_mask = _pad_stack([it["dec_ctx_x"] for it in padded], max_n_ctx)
     dec_ctx_z, _ = _pad_stack([it["dec_ctx_z"] for it in padded], max_n_ctx)
     dec_ctx_oracle_bpos, _ = _pad_stack([it["dec_ctx_oracle_bpos"] for it in padded], max_n_ctx)
@@ -228,6 +240,7 @@ def collate_lupi_batch(items: list[dict]) -> LUPIBatch:
         enc_x=torch.from_numpy(enc_x),
         enc_z=torch.from_numpy(enc_z),
         enc_x_inA=torch.from_numpy(enc_x_inA),
+        enc_z_inA=torch.from_numpy(enc_z_inA),
         enc_mask=torch.from_numpy(enc_mask),
         dec_ctx_x=torch.from_numpy(dec_ctx_x),
         dec_ctx_z=torch.from_numpy(dec_ctx_z),

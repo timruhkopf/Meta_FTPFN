@@ -12,14 +12,24 @@ are all mirrored for this project's minimize convention — the reference
 assumes maximization throughout; see each method's own docstring for the
 exact mirroring. Not ported: `smoothing`/`mean_prediction_logits` (both
 `forward()`-only training-loss features, unused so far — see
-`archive`'s own `forward()` for the shape if ever needed) and
-`FullSupportBarDistribution`'s half-normal tail extrapolation (this
-project uses fixed, bounded borders instead — see below).
+`archive`'s own `forward()` for the shape if ever needed).
 
-Fixed `[0, 1]` borders (bounded, not PFNs4BO's FullSupportBarDistribution)
-— matches M1's ECDF-normalized-to-[0,1] prior output. See
-`docs/OPEN_QUESTIONS.md` #8 for the full reasoning and the full-support
-alternative this deliberately isn't.
+`BarDistribution` above: fixed `[0, 1]` borders (bounded) — matches M1's
+ECDF-normalized-to-[0,1] prior output. See `docs/OPEN_QUESTIONS.md` #8 for
+the full reasoning.
+
+`FullSupportBarDistribution` below: half-normal tail extrapolation beyond
+the outermost borders, PORTED (2026-09-16, reassessing a call originally
+deferred in `ppfn.model.registration.heads.TailBarDistribution`'s own
+docstring) after empirical evidence that a FIXED, symmetric body range
+(that class's own `[-4, 4]`) is a poor match for `ppfn.prior.lupi`'s raw,
+unnormalized targets: most drawn pairs' informative range covers only a
+handful of a 64-bin body sized for a much larger assumed scale, giving
+visibly blocky, low-resolution predictive densities regardless of training
+quality (docs/labbook/, `notebooks/id_token_lupi_1d_comparison.ipynb`).
+Pair with `quantile_bin_borders` (fit to an actual sample of prior targets)
+rather than `uniform_bin_borders` — bins go where the data is, and the
+tails absorb whatever the fitted range didn't catch.
 """
 import torch
 from torch import nn
@@ -27,6 +37,24 @@ from torch import nn
 
 def uniform_bin_borders(n_bins: int, lo: float = 0.0, hi: float = 1.0) -> torch.Tensor:
     return torch.linspace(lo, hi, n_bins + 1)
+
+
+def quantile_bin_borders(ys: torch.Tensor, n_bins: int) -> torch.Tensor:
+    """Borders spaced by EQUAL PROBABILITY MASS under a sample `ys` of
+    actual target draws, not equal width -- ported from PFNs4BO's
+    `get_bucket_limits` (`ys` branch only; the fixed-range branch is
+    `uniform_bin_borders` above). Puts fine resolution where the data
+    actually lives instead of assuming a scale up front -- see
+    `FullSupportBarDistribution`'s docstring for why this matters when the
+    target has no fixed, known range."""
+    ys = ys.flatten()
+    ys = ys[~torch.isnan(ys)]
+    if len(ys) % n_bins:
+        ys = ys[: -(len(ys) % n_bins)]
+    ys_per_bucket = len(ys) // n_bins
+    ys_sorted, _ = ys.sort(0)
+    inner = (ys_sorted[ys_per_bucket - 1 :: ys_per_bucket][:-1] + ys_sorted[ys_per_bucket::ys_per_bucket]) / 2
+    return torch.cat([ys_sorted[:1], inner, ys_sorted[-1:]], dim=0)
 
 
 class BarDistribution(nn.Module):
@@ -168,6 +196,80 @@ class BarDistribution(nn.Module):
         return (p * bucket_cdf).sum(-1)
 
 
+class FullSupportBarDistribution(BarDistribution):
+    """Same piecewise-uniform body as `BarDistribution`, but the two
+    outermost buckets are replaced by half-normal tails extrapolating to
+    +-infinity instead of hard-clipping density at the outer borders --
+    ported from PFNs4BO's own `FullSupportBarDistribution`
+    (`pfns4bo/bar_distribution.py`). `halfnormal_with_p_weight_before(w, p)`
+    picks the half-normal's scale so exactly `p` of ITS OWN mass falls
+    within one more bucket-width `w` past the border (`p=0.5`, matching the
+    reference) -- the softmax's own outer-bucket probability then becomes
+    that tail's TOTAL mass, body and tail sharing one normalizer.
+
+    See this module's own docstring for why this pairs with
+    `quantile_bin_borders` rather than `uniform_bin_borders`.
+
+    `mean_of_square`'s outer-bucket correction fixes a units bug in the
+    reference (`side_normals[1].variance + (side_normals[1].variance +
+    borders[-2]).square()` — squaring a variance, dimensionally
+    inconsistent with the `[0]`-bucket branch two lines above it, which
+    correctly squares a MEAN); this uses `.mean` there instead, matching
+    the `[0]` branch's own structure. Not ported: `icdf`/`quantile`/`ucb`/
+    `ei`/`pi` (inherited from `BarDistribution` unchanged) treat every
+    bucket as piecewise-uniform, including the outermost two -- for those
+    inherited methods this is an approximation in the tail region (probability
+    mass is right, but the within-bucket answer isn't the continuous
+    half-normal shape). Not needed anywhere this class is currently used
+    (mean + NLL only); reintroduce the reference's continuous-tail
+    versions if that changes."""
+
+    @staticmethod
+    def halfnormal_with_p_weight_before(range_max: torch.Tensor, p: float = 0.5):
+        s = range_max / torch.distributions.HalfNormal(torch.tensor(1.0)).icdf(torch.tensor(p))
+        return torch.distributions.HalfNormal(s)
+
+    def forward(self, logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """NLL loss -- same contract as `BarDistribution.forward`, except
+        the two outermost buckets' log-density is corrected by the
+        half-normal tail's own log-density beyond the border (plain
+        piecewise-uniform density would otherwise hard-clip mass at the
+        border, which is exactly what makes `BarDistribution` bounded)."""
+        idx = self.map_to_bucket_idx(y)
+        log_probs = self.compute_scaled_log_probs(logits).gather(-1, idx[..., None]).squeeze(-1)
+
+        left_normal = self.halfnormal_with_p_weight_before(self.bucket_widths[0])
+        right_normal = self.halfnormal_with_p_weight_before(self.bucket_widths[-1])
+        left_mask = idx == 0
+        right_mask = idx == self.num_bars - 1
+
+        log_probs = log_probs.clone()
+        log_probs[left_mask] = log_probs[left_mask] + left_normal.log_prob(
+            (self.borders[1] - y[left_mask]).clamp_min(1e-8)
+        ) + torch.log(self.bucket_widths[0])
+        log_probs[right_mask] = log_probs[right_mask] + right_normal.log_prob(
+            (y[right_mask] - self.borders[-2]).clamp_min(1e-8)
+        ) + torch.log(self.bucket_widths[-1])
+        return -log_probs
+
+    def mean(self, logits: torch.Tensor) -> torch.Tensor:
+        bucket_means = self.borders[:-1] + self.bucket_widths / 2
+        left_normal = self.halfnormal_with_p_weight_before(self.bucket_widths[0])
+        right_normal = self.halfnormal_with_p_weight_before(self.bucket_widths[-1])
+        bucket_means[0] = self.borders[1] - left_normal.mean
+        bucket_means[-1] = self.borders[-2] + right_normal.mean
+        return torch.softmax(logits, -1) @ bucket_means
+
+    def mean_of_square(self, logits: torch.Tensor) -> torch.Tensor:
+        lo, hi = self.borders[:-1], self.borders[1:]
+        bucket_mean_sq = (lo.square() + hi.square() + lo * hi) / 3.0
+        left_normal = self.halfnormal_with_p_weight_before(self.bucket_widths[0])
+        right_normal = self.halfnormal_with_p_weight_before(self.bucket_widths[-1])
+        bucket_mean_sq[0] = left_normal.variance + (self.borders[1] - left_normal.mean).square()
+        bucket_mean_sq[-1] = right_normal.variance + (self.borders[-2] + right_normal.mean).square()
+        return torch.softmax(logits, -1) @ bucket_mean_sq
+
+
 if __name__ == "__main__":
     torch.manual_seed(0)
     bd = BarDistribution(uniform_bin_borders(n_bins=64))
@@ -205,3 +307,30 @@ if __name__ == "__main__":
           bd.quantile(uniform_logits[:1]).tolist())
     print("ucb (optimistic-for-min lower quantile) under uniform logits (expect ~0.159):",
           bd.ucb(uniform_logits[:1]).tolist())
+
+    # --- FullSupportBarDistribution / quantile_bin_borders ---
+    ys = torch.cat([torch.randn(9990) * 0.4 + 0.2, torch.randn(10) * 0.4 + 20.0])  # a few outliers
+    borders = quantile_bin_borders(ys, n_bins=16)
+    print("\nquantile-fit borders (expect dense near 0.2, sparse near the outliers):", borders.tolist())
+
+    # NOTE: uniform logits do NOT reproduce ys.mean() here -- bucket widths
+    # are unequal by construction (quantile-fit), and the outer bucket's
+    # mean is the half-normal tail mean (pulled well past its naive
+    # midpoint by the 10 outliers widening that bucket), not a plain
+    # average -- this is the correctly weighted mean of a MODEL that
+    # (wrongly) predicts every bucket equally likely, not a check that the
+    # borders reproduce the sample mean.
+    full_bd = FullSupportBarDistribution(borders)
+    uniform_logits_16 = torch.zeros(3, 16)
+    print("FullSupportBarDistribution mean under uniform (mis-specified) logits:",
+          full_bd.mean(uniform_logits_16).tolist(), " (for reference, ys.mean():", ys.mean().item(), ")")
+
+    # A y far beyond the fitted range must still get FINITE NLL (the whole
+    # point of the half-normal tail vs. BarDistribution's hard clip).
+    y_far = torch.tensor([1000.0, -1000.0, ys.mean().item()])
+    confident_16 = torch.full((3, 16), -10.0)
+    confident_16[:, 8] = 20.0  # a confident mid-body bucket
+    nll_far = full_bd(confident_16, y_far)
+    print("NLL at y=[1000, -1000, near-mode] under a confident mid-body distribution (expect finite, large, large, small):",
+          nll_far.tolist())
+    assert torch.isfinite(nll_far).all(), "FullSupportBarDistribution must give finite NLL everywhere on R"

@@ -1,6 +1,6 @@
 # x_dim is a placeholder — the medium-dim target isn't pinned yet (still
 # open). Override via `priors.x_dim=...` until it is.
-_target_: anytimeacquisition.priors.bnn.BNNPrior
+_target_: ppfn.prior.bnn.bnn_prior_vec.BNNPrior
 batch_size: 64
 x_dim: 5
 # PFNs4BO/ifBO never sample below depth 8 (docs/log/) — raised the floor to

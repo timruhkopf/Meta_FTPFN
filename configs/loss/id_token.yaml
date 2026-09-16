@@ -1,0 +1,5 @@
+# Single bar-distribution NLL term on A's query tokens only -- no
+# transport/coupling/affine/distillation. See ppfn.loss.id_token_loss's
+# module docstring.
+loss_class:
+  _target_: ppfn.loss.id_token_loss.IDTokenLoss

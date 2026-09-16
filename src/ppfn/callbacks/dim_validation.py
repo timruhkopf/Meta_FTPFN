@@ -57,15 +57,13 @@ def build_dim_validation_callback(
     device: str = "cpu",
 ) -> Callback:
     """One `Callback` covering every dimension in `dims`, reporting
-    `nll/val_dimN` and `mse/val_dimN` for each -- metric-type first, so
-    MLflow's dashboard groups all NLL curves together (train's own
-    `nll/train` alongside every `nll/val_dimN`), all MSE curves together,
-    rather than one folder per dimension with both metrics buried inside
-    it. Deliberately one `Callback` (not one per dimension): each probe
-    already does one forward pass per dimension computing both metrics
-    from the same `logits`, so splitting into a `Callback` per metric type
-    would mean two independent forward passes (and two independent
-    `sample_episode` draws) per dimension for no benefit.
+    `nll/val_dimN` for each -- metric-type first, so MLflow's dashboard
+    groups all NLL curves together (train's own `nll/train` alongside every
+    `nll/val_dimN`), rather than one folder per dimension. Deliberately one
+    `Callback` (not one per dimension): each probe already does one forward
+    pass per dimension, so splitting into a `Callback` per dimension would
+    mean independent forward passes (and independent `sample_episode`
+    draws) per dimension for no benefit.
 
     `ecdf_sorted`: shared normalization reference, `[1, ecdf_n_samples]`
     or `[B, ecdf_n_samples]` -- typically the TRAINING prior's own
@@ -118,7 +116,6 @@ def build_dim_validation_callback(
             with torch.no_grad():
                 logits = trainer.model(x_tr, y_tr, x_te)
                 metrics[f"nll/val_dim{d}"] = trainer.bar_dist(logits, y_te).mean().item()
-                metrics[f"mse/val_dim{d}"] = (trainer.bar_dist.mean(logits) - y_te).square().mean().item()
         return metrics
 
     return Callback(name="", fn=probe, every_n_steps=every_n_steps)
@@ -157,8 +154,8 @@ if __name__ == "__main__":
     print("per-dimension validation metrics (untrained model, sanity-check only):")
     for k, v in sorted(metrics.items()):
         print(f"  {k}: {v:.4f}")
-    print("\nnote the metric-type-first keys (nll/val_dim1, mse/val_dim1, ...) -- "
-          "all nll curves group together on a dashboard, all mse curves group together.")
+    print("\nnote the metric-type-first keys (nll/val_dim1, nll/val_dim2, ...) -- "
+          "all nll curves group together on a dashboard.")
 
     print("\nsame dedicated priors reused across two probes (architecture fixed, points resampled):")
     for step in (0, 1):

@@ -73,11 +73,23 @@ def _categorical_kl(
     teacher places high mass." Exact: both distributions are the same
     `TailBarDistribution`'s bins, so the categorical KL over bin
     probabilities equals the KL of the two piecewise-constant densities
-    (within-bin density ratio == probability ratio, since bin widths match)."""
+    (within-bin density ratio == probability ratio, since bin widths match).
+
+    Guards two float32 underflow failure modes that otherwise produce NaN
+    (see docs/labbook/ -- diagnosed via this same helper in
+    ppfn.loss.arch_verification_loss, which crashed a live run with it):
+    `log_p_s` -> -inf when the student's softmax rounds a bin to exactly 0
+    (clamped to a floor well below any meaningful probability, so the
+    *finite* penalty for a near-zero student probability still comes
+    through), and `p_t == 0` (teacher rounds a bin to exactly 0, in which
+    case that bin's KL contribution is definitionally 0, not
+    `0 * (-inf) = nan`)."""
     log_p_t = torch.log_softmax(teacher_logits, dim=-1)
-    log_p_s = torch.log_softmax(student_logits, dim=-1)
+    log_p_s = torch.log_softmax(student_logits, dim=-1).clamp_min(-50.0)
     p_t = log_p_t.exp()
-    return (p_t * (log_p_t - log_p_s)).sum(-1)
+    term = p_t * (log_p_t - log_p_s)
+    term = torch.where(p_t > 0, term, torch.zeros_like(term))
+    return term.sum(-1)
 
 
 class RegistrationLoss(nn.Module):

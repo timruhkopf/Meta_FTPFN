@@ -1,0 +1,57 @@
+# @package _global_
+#
+# Lower-bound reference, plain (untagged) PFN architecture: A's context
+# only, no B. Independent architectural cross-check of
+# id_token_bound_a_alone.yaml (same data, IDTokenPFN backbone instead).
+# See ppfn.model.baselines.plain_pfn_bounds.AAlonePlainPFN.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=plain_pfn_bound_a_alone experiment_name=01-pretraining-plain-pfn-bound-a-alone ~benchmark
+
+defaults:
+  - /loss: id_token
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: plain_pfn_bound_a_alone
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: plain-pfn-bound-a-alone
+  checkpoint:
+    monitor: val/loss/pred_nll
+
+prior:
+  batch_size: 16
+  num_workers: 8
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  warp_grid_n: 4
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 64
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

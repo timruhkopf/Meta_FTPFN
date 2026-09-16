@@ -38,11 +38,22 @@ def _categorical_kl(
     teacher_logits: torch.Tensor, student_logits: torch.Tensor
 ) -> torch.Tensor:
     """KL(teacher || student), per-token -- see
-    ppfn.loss.registration_loss's identical helper for why forward KL."""
+    ppfn.loss.registration_loss's identical helper for why forward KL.
+
+    Guards two float32 underflow failure modes that otherwise produce NaN
+    (see docs/labbook/ for the training crash this was diagnosed from,
+    ~7800 steps into an arch_verification run): `log_p_s` -> -inf when the
+    student's softmax rounds a bin to exactly 0 (clamped to a floor well
+    below any meaningful probability, so the *finite* penalty for a
+    near-zero student probability still comes through), and `p_t == 0`
+    (teacher rounds a bin to exactly 0, in which case that bin's KL
+    contribution is definitionally 0, not `0 * (-inf) = nan`)."""
     log_p_t = torch.log_softmax(teacher_logits, dim=-1)
-    log_p_s = torch.log_softmax(student_logits, dim=-1)
+    log_p_s = torch.log_softmax(student_logits, dim=-1).clamp_min(-50.0)
     p_t = log_p_t.exp()
-    return (p_t * (log_p_t - log_p_s)).sum(-1)
+    term = p_t * (log_p_t - log_p_s)
+    term = torch.where(p_t > 0, term, torch.zeros_like(term))
+    return term.sum(-1)
 
 
 class ArchVerificationLoss(nn.Module):

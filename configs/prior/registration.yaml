@@ -16,6 +16,15 @@ num_workers: 0  # see ppfn.prior.registration.dataset's module docstring on mult
 d: null
 n_a_range: [8, 256]
 n_b_range: [256, 1024]
+# Override of sample_warp_pair/declared_box's own grid_n=5 default -- kept
+# at 5 here so nothing changes for an existing experiment; the warp
+# rejection-sampling Jacobian check this controls is ~80-97% of per-item
+# cost REGARDLESS of n_a/n_b (docs/labbook/2026-09-14-lupi-prior-warp-grid-speedup.md,
+# docs/labbook/2026-09-15-id-token-baseline-oom-and-progress-bugs.md), so an
+# experiment paying that cost heavily (e.g. the id-token baselines) should
+# override this to 4 (3x cheaper, ~40% band-underestimate at grid_n=3 was
+# rejected as too inaccurate) rather than eating the full cost by default.
+warp_grid_n: 5
 
 dataset_class:
   _target_: ppfn.prior.registration.dataset.RegistrationStreamDataset
@@ -23,6 +32,7 @@ dataset_class:
   s_max: ${prior.s_max}
   force_rho_zero: ${prior.force_rho_zero}
   d: ${prior.d}
+  warp_grid_n: ${prior.warp_grid_n}
   n_a_range: ${prior.n_a_range}
   n_b_range: ${prior.n_b_range}
 
