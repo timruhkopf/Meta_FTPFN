@@ -1,0 +1,7 @@
+# Final predictive NLL + deep-supervised (w_k propto k) auxiliary transport/
+# value-recalibration losses -- see ppfn.loss.iterative_registration_loss's
+# module docstring.
+loss_class:
+  _target_: ppfn.loss.iterative_registration_loss.IterativeRegistrationLoss
+  lambda_T: 0.2
+  lambda_h: 0.2

@@ -1,0 +1,24 @@
+# Iterative Registration Transformer (IRT) -- see
+# ppfn.model.baselines.iterative_registration_pfn's module docstring and
+# docs/labbook/2026-09-16-lupi-registration-mechanism-and-architecture-survey.md.
+d_model: 256
+n_heads: 8
+n_ff: 512
+n_bins_predictive: 64
+n_iters: 4
+n_hslots: 4
+rqs_bins: 8
+dropout: 0.0
+d_max: 5
+
+model_class:
+  _target_: ppfn.model.baselines.iterative_registration_pfn.IterativeRegistrationPFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_ff: ${model.n_ff}
+  n_bins_predictive: ${model.n_bins_predictive}
+  n_iters: ${model.n_iters}
+  n_hslots: ${model.n_hslots}
+  rqs_bins: ${model.rqs_bins}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

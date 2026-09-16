@@ -1,0 +1,66 @@
+# @package _global_
+#
+# Iterative Registration Transformer (IRT) -- docs/labbook/2026-09-16-lupi-
+# registration-mechanism-and-architecture-survey.md's concrete synthesis:
+# a weight-tied (Universal Transformer), explicitly ICP-style alternating
+# refinement of B's registered position/value estimate, deeply supervised
+# (w_k propto k) with LUPI's privileged targets at every iteration, instead
+# of asking generic attention depth to discover registration implicitly
+# from a final-output loss alone (ppfn.model.baselines.id_token_pfn's own
+# track). Reuses IDTokenTrainer as-is -- IterativeRegistrationPFN does all
+# K iterations inside one forward() call, so the trainer's plain
+# `output = model(batch)` calling convention already fits, no new trainer
+# needed.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=iterative_registration experiment_name=01-pretraining-iterative-registration ~benchmark
+
+defaults:
+  - /loss: iterative_registration
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: iterative_registration_pfn
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: lupi-decoder-comparison
+    run_name: iterative-registration-irt
+  checkpoint:
+    monitor: val/loss/pred_nll
+
+prior:
+  batch_size: 32
+  num_workers: 6
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  warp_grid_n: 4
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 48
+    use_bf16: true
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}
