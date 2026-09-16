@@ -16,12 +16,18 @@ from ppfn.prior.lupi.dataset import LUPIBatch
 
 
 class IDTokenLoss(nn.Module):
-    def forward(self, model: nn.Module, batch: LUPIBatch, output: dict) -> tuple:
+    def forward(
+        self, model: nn.Module, batch: LUPIBatch, output: dict, progress: float = 1.0
+    ) -> tuple:
         """-> (loss, metrics). `model` is unused beyond
         `model.predictive_dist` -- kept as an explicit argument to match
         `RegistrationLoss.forward`'s calling convention
         (`criterion(model, batch, output, ...)`), even though this loss
-        never needs a second forward pass the way `L_distil`/`L_pathway` do."""
+        never needs a second forward pass the way `L_distil`/`L_pathway` do.
+        `progress` is accepted-but-unused -- IDTokenTrainer calls every
+        criterion with it (LUPIIDTokenLoss's own student-weight/temperature
+        curriculum needs it), and this loss has no curriculum of its own."""
+        del progress
         nll = model.predictive_dist(output["predictive_logits"], batch.dec_qry_z)  # [B, n_qry]
         mask = batch.dec_qry_mask.to(nll.dtype)
         loss = (nll * mask).sum() / mask.sum().clamp_min(1.0)

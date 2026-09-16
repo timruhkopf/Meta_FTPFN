@@ -177,7 +177,7 @@ class IDTokenTrainer:
                         self.dataset_progress.set(progress)
 
                     batch = _move_batch(next(loader_iter), self.device)
-                    metrics = self._train_step(batch)
+                    metrics = self._train_step(batch, progress)
                     metrics["train/progress"] = progress
                     last_metrics = metrics
                     self.global_step += 1
@@ -188,8 +188,16 @@ class IDTokenTrainer:
                 self.model.eval()
                 with torch.no_grad():
                     val_output = self.model(self.val_batch)
+                    # progress=1.0 (full curriculum weight) regardless of
+                    # where training actually is -- val/loss/total should
+                    # track the true, curriculum-independent objective
+                    # across epochs, not a moving target. The individual
+                    # val/loss/nll_student etc. are unweighted regardless
+                    # (see LUPIIDTokenLoss's own metrics dict), so this only
+                    # affects val/loss/total's value, not the checkpoint
+                    # monitor (val/loss/nll_student).
                     val_loss, val_metrics = self.criterion(
-                        self.model, self.val_batch, val_output
+                        self.model, self.val_batch, val_output, progress=1.0
                     )
                 self.model.train()
 
@@ -239,7 +247,7 @@ class IDTokenTrainer:
         self.epochs = None
         self.steps = None
 
-    def _train_step(self, batch: LUPIBatch) -> dict:
+    def _train_step(self, batch: LUPIBatch, progress: float) -> dict:
         device_type = self.device.type
         with torch.autocast(
             device_type=device_type,
@@ -248,7 +256,7 @@ class IDTokenTrainer:
         ):
             output = _upcast_logits(self.model(batch))
 
-        loss, metrics = self.criterion(self.model, batch, output)
+        loss, metrics = self.criterion(self.model, batch, output, progress=progress)
 
         if torch.isnan(loss) or torch.isinf(loss):
             raise FloatingPointError(
