@@ -63,7 +63,13 @@ def get_dynamic_run_name(default_prefix="run"):
             if swept_keys:
                 if full_key in swept_keys:
                     dynamic_parts.append(formatted_part)
-            elif full_key not in ("experiment_name", "run_name", "nested"):
+            # "experiment" excluded 2026-09-16: the experiment=<config_name>
+            # override is redundant clutter in a run name -- it's already
+            # the choice of _target_/defaults an experiment.yaml makes, not
+            # a sweepable value, and it made every non-multirun run name
+            # start with "run_experiment_<config_name>-..." regardless of
+            # whatever explicit run_name that experiment.yaml set.
+            elif full_key not in ("experiment_name", "run_name", "nested", "experiment"):
                 dynamic_parts.append(formatted_part)
 
         # Construct final name

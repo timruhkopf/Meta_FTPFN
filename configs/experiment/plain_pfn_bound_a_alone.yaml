@@ -29,7 +29,8 @@ mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
 callbacks:
   mlflow:
     tracking_uri: ${mlflow_tracking_uri}
-    experiment_name: plain-pfn-bound-a-alone
+    experiment_name: lupi-decoder-comparison
+    run_name: lower-bound-a-alone
   checkpoint:
     monitor: val/loss/pred_nll
 

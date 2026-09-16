@@ -44,7 +44,8 @@ mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
 callbacks:
   mlflow:
     tracking_uri: ${mlflow_tracking_uri}
-    experiment_name: id-token-baseline
+    experiment_name: lupi-decoder-comparison
+    run_name: decoder-tagged
   checkpoint:
     monitor: val/loss/pred_nll
 
