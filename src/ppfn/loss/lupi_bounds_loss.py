@@ -14,8 +14,12 @@ from ppfn.prior.lupi.dataset import LUPIBatch
 
 class BoundsLoss(nn.Module):
     def forward(self, model: nn.Module, batch: LUPIBatch, output: dict | None = None) -> tuple:
-        out_lower = model(batch, severed=True)
-        out_upper = model(batch, severed=False)
+        if output is None:
+            out_lower = model(batch, severed=True)
+            out_upper = model(batch, severed=False)
+        else:
+            out_lower = output["out_lower"]
+            out_upper = output["out_upper"]
 
         nll_lower = model.bar_dist(out_lower["predictive_logits"], batch.dec_qry_z)
         nll_upper = model.bar_dist(out_upper["predictive_logits"], batch.dec_qry_z)

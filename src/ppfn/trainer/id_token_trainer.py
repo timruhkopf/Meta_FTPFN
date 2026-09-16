@@ -51,6 +51,14 @@ def _move_batch(batch: LUPIBatch, device: torch.device) -> LUPIBatch:
     return LUPIBatch(**moved)
 
 
+def _upcast_logits(output: dict) -> dict:
+    """Keep bar-distribution ops in fp32 when model forward used bf16 autocast."""
+    return {
+        k: (v.float() if isinstance(v, torch.Tensor) and "logits" in k else v)
+        for k, v in output.items()
+    }
+
+
 class IDTokenTrainer:
     def __init__(
         self,
@@ -238,8 +246,9 @@ class IDTokenTrainer:
             dtype=torch.bfloat16,
             enabled=(self.use_bf16 and device_type == "cuda"),
         ):
-            output = self.model(batch)
-            loss, metrics = self.criterion(self.model, batch, output)
+            output = _upcast_logits(self.model(batch))
+
+        loss, metrics = self.criterion(self.model, batch, output)
 
         if torch.isnan(loss) or torch.isinf(loss):
             raise FloatingPointError(

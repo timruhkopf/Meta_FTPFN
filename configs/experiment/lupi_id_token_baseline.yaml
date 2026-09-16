@@ -9,11 +9,6 @@
 # hard part, by seeing how much gap closes when the true registration is
 # available as a training-time-only signal.
 #
-# Same n_a_range/n_b_range cap as configs/experiment/id_token_baseline.yaml
-# (identical quadratic pooled-attention cost, doubled here since student and
-# teacher are batch-stacked -- effectively 2x the memory of that config at
-# the same batch_size, so batch_size is halved to compensate).
-#
 # Run:
 #   python -m ppfn.pipelines.train experiment=lupi_id_token_baseline experiment_name=01-pretraining-lupi-id-token ~benchmark
 
@@ -44,8 +39,8 @@ callbacks:
     monitor: val/loss/nll_student
 
 prior:
-  batch_size: 8  # halved vs id_token_baseline.yaml -- student+teacher stacking doubles the effective attention batch
-  num_workers: 8
+  batch_size: 32  # scaled up 2026-09-16 (was 12) to use the GPU efficiently -- doubles internally (student+teacher stacking) to an effective 64
+  num_workers: 6  # halved from 8: two experiments now run in parallel on one 16-core box
   n_a_range: [8, 100]
   n_b_range: [8, 100]
   warp_grid_n: 4  # reuse the LUPI-found speedup -- see id_token_baseline.yaml's identical override
@@ -54,7 +49,8 @@ trainer:
   epochs: 100
   steps: 500
   trainer_class:
-    val_size: 32  # halved for the same reason as batch_size above
+    val_size: 48
+    use_bf16: true
 
 scheduler:
   warmup_epochs: 5000

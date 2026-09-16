@@ -1,33 +1,9 @@
-# FIXME (2026-09-16, flagged for the next session -- not fixed here, this
-# file belongs to the ppfn.model.lupi/lupi_bounds track): `forward` below
-# pools `enc_x_inA` (B's position, transported via T) together with
-# `batch.enc_z` (B's RAW, un-h'd value) -- this is the same bug the user
-# caught and had fixed in ppfn.model.baselines.{lupi_id_token_pfn,
-# plain_pfn_bounds}.py's own oracle/teacher pathways: pairing a
-# T-transported position with an un-h'd value means this "upper bound"
-# still has an unsolved value-calibration problem, which undercuts its role
-# as the ceiling other results get measured against. Fix: use the newly
-# added `batch.enc_z_inA` (= h(y_b_obs), sits on A's true curve up to
-# noise -- see `ppfn.prior.lupi.sampler.LUPIPair.z_b_inA`'s docstring)
-# instead of `batch.enc_z` at line ~66 below. Also worth a look while
-# there: `self.bar_dist` is a `[0,1]`-bounded `BarDistribution`
-# (`uniform_bin_borders(n_bins_predictive, 0.0, 1.0)`), which predates
-# `ppfn.prior.lupi`'s normalization being shelved -- targets are raw/
-# unnormalized now and not guaranteed to land in `[0,1]`; may want the same
-# `FullSupportBarDistribution`/`quantile_bin_borders` swap
-# `ppfn.model.pfn.bar_distribution`'s module docstring describes. Check
-# `configs/experiment/` for a config pointing at `BoundsPFN` too -- didn't
-# find one wired up as of this flag, but confirm before assuming it's unused.
-"""Lower/upper bound PFN for `ppfn.prior.lupi` -- one plain, single-stream
-PFN trained on the pooled context `[A_ctx ; B_inA]` (`B_inA` =
-`ppfn.prior.lupi.dataset.LUPIBatch.enc_x_inA`, B transported into A's frame
-via A's own warp, no inversion needed -- see that field's docstring),
-scored on A's query tokens. Reuses `ppfn.model.pfn.pfn.PFNBlock` and the
-additive-domain-tag pattern verbatim from
-`ppfn.model.baselines.id_token_pfn.IDTokenPFN` (same reuse, different pool:
-IDTokenPFN pools B in B's OWN frame to test whether an ID tag alone helps a
-B-blind-by-construction pool; this pools B ALREADY REGISTERED into A's
-frame, so there is no alignment problem left to solve here at all).
+"""Lower/upper bound PFN for `ppfn.prior.lupi` -- one plain, single-stream,
+NO-ID PFN trained on the pooled context `[A_ctx ; B_inA]` (`B_inA` =
+`ppfn.prior.lupi.dataset.LUPIBatch.enc_x_inA`/`enc_z_inA`, B fully
+registered -- position via T, value via h -- into A's frame, no inversion
+needed; see those fields' docstrings), scored on A's query tokens. Reuses
+`ppfn.model.pfn.pfn.PFNBlock`.
 
 `severed` (a forward-time argument, not a per-item prior flag) toggles
 whether the B_inA portion of the pooled context is masked out entirely:
@@ -37,17 +13,31 @@ whether the B_inA portion of the pooled context is masked out entirely:
 
 Both are computed from the SAME trained weights (`ppfn.loss.lupi_bounds_loss
 .BoundsLoss` runs both every training step, mirroring `LUPILoss`'s own
-"both modes every batch" pattern) -- "reusing the checkpoint" rather than
-training two separate models, so the bracket is guaranteed to come from one
-consistent model rather than two differently-converged ones.
-"""
+"both modes every batch" pattern) -- one checkpoint yields both bounds.
+
+No domain/additive-ID tag (2026-09-16, at the user's direction -- an
+earlier version of this class had one, copied from
+`ppfn.model.baselines.id_token_pfn.IDTokenPFN`'s pattern, matching that
+class's own naming but not its purpose here): B_inA is ALREADY fully
+registered into A's frame and scale, so there's no alignment problem left
+to distinguish a cloud identity FOR -- unlike `IDTokenPFN`, which pools B
+in B's OWN (unregistered) frame and genuinely needs the tag to keep the
+two clouds' differing scales separable. Lower and upper bound are just "a
+regular decoder-only PFN conditioned on different context compositions/
+sizes" -- exactly what a PFN already amortizes over, so ONE set of weights
+trained on a MIX of both regimes covers both, rather than two separately
+trained models (this class previously backed two separate experiments,
+`plain_pfn_bound_a_alone`/`plain_pfn_bound_oracle`, now retired in favor
+of this one, reporting both curves from a single checkpoint by varying
+`severed` at inference time)."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 
-from ppfn.model.pfn.bar_distribution import BarDistribution, uniform_bin_borders
+from ppfn.model.baselines.calibration import sample_calibration_borders
+from ppfn.model.pfn.bar_distribution import FullSupportBarDistribution
 from ppfn.model.pfn.pfn import PFNBlock
 from ppfn.prior.lupi.dataset import D_MAX, LUPIBatch
 
@@ -68,37 +58,28 @@ class BoundsPFN(nn.Module):
         self.train_embed = nn.Linear(d_max + 1, d_model)
         self.test_x_embed = nn.Linear(d_max, d_model)
         self.test_placeholder = nn.Parameter(torch.zeros(d_model))
-        # id=0 -> A_ctx, id=1 -> B_inA. Same role as IDTokenPFN's
-        # domain_embed, added to every train token and to every test token
-        # (always A, id=0).
-        self.domain_embed = nn.Embedding(2, d_model)
 
         self.blocks = nn.ModuleList(
             [PFNBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
         self.out_ln = nn.LayerNorm(d_model)
-        self.bar_dist = BarDistribution(uniform_bin_borders(n_bins_predictive, 0.0, 1.0))
+        borders = sample_calibration_borders(n_bins_predictive)
+        self.bar_dist = FullSupportBarDistribution(borders)
         self.pred_head = nn.Linear(d_model, self.bar_dist.num_bars)
 
     def forward(self, batch: LUPIBatch, severed: bool) -> dict:
         """-> {"predictive_logits": [B, n_qry, n_bins]}."""
         pooled_x = torch.cat([batch.dec_ctx_x, batch.enc_x_inA], dim=1)
-        pooled_z = torch.cat([batch.dec_ctx_z, batch.enc_z], dim=1)
-        n_ctx = batch.dec_ctx_x.shape[1]
+        pooled_z = torch.cat([batch.dec_ctx_z, batch.enc_z_inA], dim=1)
 
         b_mask = torch.zeros_like(batch.enc_mask) if severed else batch.enc_mask
         pooled_mask = torch.cat([batch.dec_ctx_mask, b_mask], dim=1)
 
-        domain_ids = pooled_mask.new_zeros(pooled_mask.shape, dtype=torch.long)
-        domain_ids[:, n_ctx:] = 1
-
         train_tok = self.train_embed(
             torch.cat([pooled_x, pooled_z.unsqueeze(-1)], dim=-1)
-        ) + self.domain_embed(domain_ids)
+        )
 
-        test_tok = self.test_x_embed(batch.dec_qry_x) + self.test_placeholder.view(
-            1, 1, -1
-        ) + self.domain_embed.weight[0].view(1, 1, -1)
+        test_tok = self.test_x_embed(batch.dec_qry_x) + self.test_placeholder.view(1, 1, -1)
 
         for block in self.blocks:
             train_tok, test_tok = block(
@@ -146,10 +127,10 @@ if __name__ == "__main__":
     print(f"params with grad=None: {n_none}")
 
     padded_enc_x_inA = torch.cat([batch.enc_x_inA, torch.zeros_like(batch.enc_x_inA[:, :1])], dim=1)
-    padded_enc_z = torch.cat([batch.enc_z, torch.zeros_like(batch.enc_z[:, :1])], dim=1)
+    padded_enc_z_inA = torch.cat([batch.enc_z_inA, torch.zeros_like(batch.enc_z_inA[:, :1])], dim=1)
     padded_enc_mask = torch.cat([batch.enc_mask, torch.zeros_like(batch.enc_mask[:, :1])], dim=1)
     padded_batch = dataclasses.replace(
-        batch, enc_x_inA=padded_enc_x_inA, enc_z=padded_enc_z, enc_mask=padded_enc_mask
+        batch, enc_x_inA=padded_enc_x_inA, enc_z_inA=padded_enc_z_inA, enc_mask=padded_enc_mask
     )
     out_padded = model(padded_batch, severed=False)
     diff = (out_upper["predictive_logits"] - out_padded["predictive_logits"]).abs().max().item()

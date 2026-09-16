@@ -1,31 +1,12 @@
 # @package _global_
 #
-# FIXME (2026-09-16, flagged for the next session): the model this trains,
-# ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN, pools B_inA's position
-# (enc_x_inA, via T) with its RAW value (enc_z, no h applied) instead of the
-# newly added enc_z_inA (= h(y_b_obs)) -- so the "upper bound" this produces
-# still has an unsolved value-calibration problem baked in. See that
-# module's own top-of-file FIXME for the full explanation and the fix
-# (ppfn.prior.lupi.sampler.LUPIPair.z_b_inA's docstring). Any checkpoint
-# from this config trained before that fix lands should be re-trained.
-#
 # Lower/upper bound PFN for the ppfn.prior.lupi prior --
 # ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN. One model, trained on
 # both severed (A_ctx alone, the LOWER bound) and pooled ([A_ctx ; B_inA],
-# the UPPER bound) every batch -- see that module's docstring. Reports
-# loss/lower_nll and loss/upper_nll to the SAME MLflow experiment as
-# configs/experiment/lupi_baseline.yaml (lupi-alignment-pfn), for direct
-# comparison against that run's loss/student_nll and loss/oracle_nll:
-# lower <= student <~ oracle <= upper is the bracket read as a "standing
-# view" (ppfn.monitor.lupi's bounds report, once this checkpoint exists).
-#
-# Same n_a_range/n_b_range/n_qry_range as lupi_baseline.yaml -- same
-# quadratic-context-cost guardrail applies (the pooled context here is
-# [A_ctx ; B_inA], same size as lupi_baseline's [A_ctx] + B read).
+# the UPPER bound) every batch -- see that module's docstring.
 #
 # Run:
-#   python -m ppfn.pipelines.train experiment=lupi_bounds experiment_name=01-pretraining-lupi-bounds \
-#     callbacks.mlflow.run_name=lupi-bounds-pfn ~benchmark
+#   python -m ppfn.pipelines.train experiment=lupi_bounds experiment_name=01-pretraining-lupi-bounds ~benchmark
 
 defaults:
   - /loss: lupi_bounds
@@ -48,23 +29,25 @@ mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
 callbacks:
   mlflow:
     tracking_uri: ${mlflow_tracking_uri}
-    experiment_name: lupi-alignment-pfn
-    run_name: lupi-bounds-pfn
+    experiment_name: lupi-decoder-comparison
+    run_name: no-id-shared-bounds
   checkpoint:
     monitor: val/loss/upper_nll
 
 prior:
-  batch_size: 16
-  num_workers: 8
+  batch_size: 64  # scaled up 2026-09-16 to use the GPU efficiently -- 24 alone used ~2.7GB/24GB; running alongside lupi_id_token_baseline, not sequentially
+  num_workers: 6  # halved from 8: two experiments now run in parallel on one 16-core box
   n_a_range: [8, 100]
   n_b_range: [8, 100]
   n_qry_range: [8, 64]
+  warp_grid_n: 4
 
 trainer:
   epochs: 100
   steps: 500
   trainer_class:
     val_size: 64
+    use_bf16: true
 
 scheduler:
   warmup_epochs: 5000

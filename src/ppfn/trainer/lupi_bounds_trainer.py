@@ -43,6 +43,14 @@ def _move_batch(batch: LUPIBatch, device: torch.device) -> LUPIBatch:
     return LUPIBatch(**moved)
 
 
+def _upcast_logits(output: dict) -> dict:
+    """Keep bar-distribution ops in fp32 when model forward used bf16 autocast."""
+    return {
+        k: (v.float() if isinstance(v, torch.Tensor) and "logits" in k else v)
+        for k, v in output.items()
+    }
+
+
 class BoundsTrainer:
     def __init__(
         self,
@@ -181,7 +189,14 @@ class BoundsTrainer:
             dtype=torch.bfloat16,
             enabled=(self.use_bf16 and device_type == "cuda"),
         ):
-            loss, metrics = self.criterion(self.model, batch)
+            out_lower = _upcast_logits(self.model(batch, severed=True))
+            out_upper = _upcast_logits(self.model(batch, severed=False))
+
+        loss, metrics = self.criterion(
+            self.model,
+            batch,
+            output={"out_lower": out_lower, "out_upper": out_upper},
+        )
 
         if torch.isnan(loss) or torch.isinf(loss):
             raise FloatingPointError(
