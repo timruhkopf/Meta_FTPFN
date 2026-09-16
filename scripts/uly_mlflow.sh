@@ -23,3 +23,10 @@ ssh -tt -L 5000:127.0.0.1:5000 ulysses '
       --backend-store-uri file://$HOME/PycharmProjects/Meta_FTPFN/mlruns \
       --host 127.0.0.1 --port 5000
 '
+
+
+# kill:
+# ssh ulysses 'ss -ltnp | grep 5000
+# ps -fp <pid>
+# kill the parent gunicorn process (the lowest PID, or match the one whose PPID the others share) with a plain kill
+  #  <pid> — no need for -9, gunicorn shuts down its workers cleanly on SIGTERM.
