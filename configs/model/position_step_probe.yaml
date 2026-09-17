@@ -1,0 +1,21 @@
+# Component-isolation probe: h pinned to ground truth (enc_z_inA) at every
+# iteration -- verifies the position-refinement mechanism (value-informed
+# correspondence + A-anchor pull + B-smoothness pull) alone. See
+# ppfn.model.baselines.iterative_registration_probes.PositionStepProbePFN.
+d_model: 128
+n_heads: 4
+n_ff: 256
+n_iters: 4
+n_hslots: 4
+dropout: 0.0
+d_max: 5
+
+model_class:
+  _target_: ppfn.model.baselines.iterative_registration_probes.PositionStepProbePFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_ff: ${model.n_ff}
+  n_iters: ${model.n_iters}
+  n_hslots: ${model.n_hslots}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

@@ -83,6 +83,11 @@ class IterativeRegistrationLoss(nn.Module):
             + log_sigma
             + 0.5 * ((batch.enc_z_inA - mu) / sigma) ** 2
         )  # [B, n_B]
+        # beta-NLL reweighting (Seitzer et al. 2022) -- see
+        # ppfn.loss.iterative_registration_probe_losses.ValueStepProbeLoss's
+        # own comment for the empirically-confirmed runaway-variance
+        # pathology this fixes (same head, same mechanism, here too).
+        gaussian_nll = (sigma.detach() ** 2).pow(0.5) * gaussian_nll
         final_h = (gaussian_nll * enc_mask).sum() / enc_denom
 
         loss_T = deep_T + final_T

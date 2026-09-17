@@ -277,7 +277,10 @@ class IterativeRegistrationPFN(nn.Module):
         transport_logits = self.transport_head(b_hidden_final, teacher_targets=batch.enc_x_inA)
         hslot_summary_final = hidden[:, n_A + n_B :, :].mean(dim=1)
         aux_mu = self.aux_value_head(hslot_summary_final, batch.enc_z)
-        aux_log_sigma = self.aux_value_log_sigma(b_hidden_final).squeeze(-1)
+        # Clamped -- see ppfn.model.baselines.iterative_registration_probes'
+        # ValueStepProbePFN, same head, same empirically-confirmed runaway-
+        # variance instability without this.
+        aux_log_sigma = self.aux_value_log_sigma(b_hidden_final).squeeze(-1).clamp(-5.0, 3.0)
 
         # --- final predictive readout: query cross-attends into the last iteration's pooled state ---
         test_tok = self.readout_x_embed(batch.dec_qry_x)

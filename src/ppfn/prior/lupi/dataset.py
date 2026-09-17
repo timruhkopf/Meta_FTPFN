@@ -53,12 +53,14 @@ def build_training_item(
     query_eps_std: float = 0.03,
     warp_grid_n: int = 4,
     beta_override: float | None = None,
+    force_h_identity: bool = False,
 ) -> dict:
     rho = 0.0 if force_rho_zero else sample_rho_curriculum(rng, progress)
     pair = sample_pair(
         rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range,
         n_qry_range=n_qry_range, frac_uniform=frac_uniform, frac_near_b=frac_near_b,
         query_eps_std=query_eps_std, warp_grid_n=warp_grid_n, beta_override=beta_override,
+        force_h_identity=force_h_identity,
     )
     return {
         "d_real": pair.d,
@@ -100,6 +102,7 @@ class LUPIStreamDataset(IterableDataset):
         query_eps_std: float = 0.03,
         warp_grid_n: int = 4,
         beta_override: float | None = None,
+        force_h_identity: bool = False,
     ):
         super().__init__()
         self.seed = seed
@@ -115,6 +118,7 @@ class LUPIStreamDataset(IterableDataset):
         self.query_eps_std = query_eps_std
         self.warp_grid_n = warp_grid_n
         self.beta_override = beta_override
+        self.force_h_identity = force_h_identity
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -135,6 +139,7 @@ class LUPIStreamDataset(IterableDataset):
                 query_eps_std=self.query_eps_std,
                 warp_grid_n=self.warp_grid_n,
                 beta_override=self.beta_override,
+                force_h_identity=self.force_h_identity,
             )
 
 

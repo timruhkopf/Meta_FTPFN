@@ -26,7 +26,10 @@ ssh -tt -L 5000:127.0.0.1:5000 ulysses '
 
 
 # kill:
-# ssh ulysses 'ss -ltnp | grep 5000
+# ssh ulysses 'ss -ltnp | grep 5000'
 # ps -fp <pid>
 # kill the parent gunicorn process (the lowest PID, or match the one whose PPID the others share) with a plain kill
   #  <pid> — no need for -9, gunicorn shuts down its workers cleanly on SIGTERM.
+
+# or simply do it in one step
+#ss -ltnp 'sport = :5000' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u | xargs -r kill -9

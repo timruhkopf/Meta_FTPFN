@@ -1,0 +1,68 @@
+# @package _global_
+#
+# Component-isolation verification (2026-09-17): h pinned to ground truth
+# (enc_z_inA) at every iteration, force_h_identity in the prior so that
+# pinning is trivially exact -- isolates whether the position-refinement
+# mechanism (value-informed correspondence + A-anchor pull + B-smoothness
+# pull) alone converges to the true registered position, before trusting it
+# coupled in the full IterativeRegistrationPFN. d=1 throughout so the 1D
+# notebook can plot it directly. Unlike value_step_probe.yaml's rho=0 (which
+# trivializes T entirely), force_h_identity does NOT trivialize T -- rho is
+# NOT forced to zero here, so this probe genuinely exercises a non-identity
+# warp. See ppfn.model.baselines.iterative_registration_probes' module
+# docstring.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=position_step_probe experiment_name=01-pretraining-position-step-probe ~benchmark
+
+defaults:
+  - /loss: position_step_probe
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: position_step_probe
+  - override /optimizer: adamw_registration
+  - override /trainer: id_token
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: lupi-decoder-comparison
+    run_name: irt-position-step-probe
+  checkpoint:
+    monitor: val/loss/T_final_nll
+
+prior:
+  batch_size: 32
+  num_workers: 4
+  d: 1
+  force_h_identity: true
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  warp_grid_n: 4
+
+trainer:
+  epochs: 40
+  steps: 500
+  trainer_class:
+    val_size: 48
+    use_bf16: true
+
+scheduler:
+  warmup_epochs: 2000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ppfn.prior.lupi.acquisition import sample_beta, sample_latent_A_acquired
-from ppfn.prior.lupi.monotone import sample_monotone_map
+from ppfn.prior.lupi.monotone import MonotoneMap, sample_monotone_map
 from ppfn.prior.registration.function_prior import sample_function_prior
 from ppfn.prior.registration.normalize import normalize
 from ppfn.prior.registration.region import sample_latent_B, sample_region
@@ -169,6 +169,7 @@ def sample_pair(
     query_eps_std: float = 0.03,
     warp_grid_n: int = 4,
     beta_override: float | None = None,
+    force_h_identity: bool = False,
     return_internals: bool = False,
 ) -> LUPIPair | tuple[LUPIPair, LUPIPairInternals]:
     """One draw at relative-warp coefficient `rho`. `frac_near_b`: set to 0.0
@@ -180,6 +181,15 @@ def sample_pair(
     bias" ablation) instead of `sample_beta`'s own per-draw sampling --
     added 2026-09-15 since the only prior way to get an unbiased draw was
     `sample_beta`'s own 20% chance of landing on beta=0.
+
+    `force_h_identity`: skip `sample_monotone_map` and use `h = identity`
+    (a=1, b=0, c=0) instead -- added 2026-09-17 for the same reason
+    `force_rho_zero` exists (`ppfn.prior.lupi.dataset.build_training_item`):
+    isolating one of the two unknowns (`T` via `rho=0`, `h` via this flag)
+    to verify a single component (e.g. the position-refinement step) in
+    training against ground truth without the other unknown confounding the
+    result -- see docs/labbook/2026-09-16-lupi-registration-mechanism-and-
+    architecture-survey.md's own recommended incremental verification path.
 
     `warp_grid_n`: LUPI-local override of `sample_warp_pair`/`declared_box`'s
     own `grid_n=5` default (never touches `ppfn.prior.registration`, which
@@ -234,7 +244,7 @@ def sample_pair(
     x_b_inA = to_a(zlat_b)  # B transported into A's frame -- no inversion, see field docstring
 
     f = sample_function_prior(rng, d, probe_z=zlat_b)
-    h = sample_monotone_map(rng)
+    h = MonotoneMap(a=1.0, b=0.0, c=0.0, d=1.0) if force_h_identity else sample_monotone_map(rng)
 
     y_b_clean = f(zlat_b)  # noiseless, B's own scale -- h is NOT applied to B
     y_b_obs = y_b_clean + rng.normal(0.0, f.sigma_obs, size=n_b)

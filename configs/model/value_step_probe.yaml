@@ -1,0 +1,23 @@
+# Component-isolation probe: T pinned to ground truth (enc_x_inA) at every
+# iteration -- verifies the value-recalibration mechanism (evidence
+# formation, h-slot update, RQS readout) alone. See
+# ppfn.model.baselines.iterative_registration_probes.ValueStepProbePFN.
+d_model: 128
+n_heads: 4
+n_ff: 256
+n_iters: 4
+n_hslots: 4
+rqs_bins: 8
+dropout: 0.0
+d_max: 5
+
+model_class:
+  _target_: ppfn.model.baselines.iterative_registration_probes.ValueStepProbePFN
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_ff: ${model.n_ff}
+  n_iters: ${model.n_iters}
+  n_hslots: ${model.n_hslots}
+  rqs_bins: ${model.rqs_bins}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

@@ -1,0 +1,2 @@
+loss_class:
+  _target_: ppfn.loss.iterative_registration_probe_losses.ValueStepProbeLoss
