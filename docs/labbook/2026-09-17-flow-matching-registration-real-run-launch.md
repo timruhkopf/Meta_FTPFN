@@ -130,4 +130,82 @@ First on-disk checkpoint not expected until epoch 5 (`min_save_epoch: 5`,
 (`scripts/plot_bounds_vs_flow_matching_registration_1d.py`) can't run
 against a real checkpoint before then.
 
+## Epochs 0-5: `upper1_gap` is GROWING, not shrinking -- read this as curriculum, not a bad sign, yet
+
+```
+epoch 0: nll_student=-0.066  nll_teacher=-0.093  upper1_gap=0.027  flow/total=0.0116  progress=0.010
+epoch 3: nll_student=-0.974  nll_teacher=-1.122  upper1_gap=0.147  flow/total=0.0094  progress=0.040
+epoch 4: nll_student=-0.970  nll_teacher=-1.279  upper1_gap=0.309  flow/total=0.0054  progress=0.050
+epoch 5: nll_student=-1.010  nll_teacher=-1.344  upper1_gap=0.334  flow/total=0.0048  progress=0.060
+```
+
+Both `nll_student` and `nll_teacher` are improving fast (both networks are
+learning the general predictive task on this still-easy curriculum stage) --
+but `upper1_gap` is climbing, the OPPOSITE of the "should shrink over
+training" framing in this entry's own pre-registration above. Read this as
+an artifact of `sample_rho_curriculum`'s ~30%-of-training ramp
+(`train/progress` is still only 0.01-0.06), not evidence against the
+mechanism yet: harder `rho` draws are being introduced into the batch
+faster than `v_φ`'s own registration quality can keep pace, while the
+TEACHER pathway can trivially exploit the true `B_inA` handed to it
+regardless of how hard `rho` gets -- so the teacher pulling ahead early in
+the ramp is exactly what a curriculum-shaped registration problem should
+look like, not necessarily a sign the student mechanism is failing. The
+number that will actually distinguish "curriculum artifact" from "the
+mechanism isn't working" is `upper1_gap`'s trajectory PAST the ~30% mark
+(epoch ~30) once `rho`'s distribution stops getting harder -- if it's still
+climbing or flat there, that's the real warning sign; before that, growth
+is not informative either way. `flow/total` continuing to fall (0.0116 ->
+0.0048) at least confirms `v_φ` itself is still making progress on the
+velocity regression during this window.
+
+`best_01-pretraining-lupi-flow-matching-registration.pt` (epoch 5, 77MB)
+now exists on disk, alongside the peer session's own
+`best_01-pretraining-lupi-bounds.pt` (epoch 12, from their post-bugfix
+relaunch at 14:20 -- confirmed by process start time, not just file
+mtime, since a stale pre-bugfix checkpoint at the same path would be a real
+risk here). Cross-checked provenance the cheap way, without a dedicated
+"read the training prior config" tool (not built): both checkpoints' saved
+`val/loss/*_nll` sidecar values land in the same small-magnitude,
+NEGATIVE-nats range (`-1.0` to `-2.4`) that `bounded01=True`'s narrow
+`[0,1]`-bin continuous density produces -- a pre-`bounded01` checkpoint
+scored on the old large-scale targets would not plausibly land in this
+same range. Not a substitute for an actual provenance check, but enough to
+proceed with the comparison plot below.
+
+## First real comparison plot: encouraging, with an honest caveat
+
+Ran `scripts/plot_bounds_vs_flow_matching_registration_1d.py` against both
+checkpoints (`--seed 1`, `d=1`, draw realized at `rho=0.61, beta=6.62`) --
+smoke-tested against fresh weights in the previous entry, this is its first
+run against real ones.
+
+**What it shows**: the severed lower-bound panel is visibly blurry --
+density spreads wide around the true curve except where `A`'s
+(acquisition-biased, clustered near `x∈[0.55,0.8]`) context happens to sit,
+consistent with the peer checkpoint's own logged `bounds_gap=0.35` at save
+time. The oracle upper-bound panel (true `B_inA`, plotted `B_inA` points
+sitting almost exactly on the true curve, as they must) is sharp and tracks
+the true curve tightly across the whole domain. **This thread's own
+student panel -- raw `B` only, no privileged information -- is visibly
+about as sharp as the oracle panel**, tracking the true curve closely
+end to end, clearly better than the severed lower bound, even though the
+plotted raw `B` scatter is visibly NOT sitting on the true curve (the thing
+the student has to correct for internally, unlike the oracle which is
+handed the correction already).
+
+**The honest caveat, not to be skipped past**: the two checkpoints are NOT
+wall-clock- or epoch-matched -- the bounds checkpoint is epoch 12 (~9800s
+of training) against this model's epoch 5 (~2600s), roughly 3.7x more
+elapsed training for the bounds model, yet its severed panel is the
+blurrier one here. That's suggestive, genuinely encouraging for a
+single-draw qualitative check this early, but it is ONE draw, at
+mismatched training budgets, from two architecturally different objectives
+(a 2-mode single loss vs. a 4-term multi-pathway one) -- not yet a
+controlled result. Worth re-running this exact plot (same `--seed`, for a
+fixed, comparable draw) at matched epoch counts once both runs are further
+along, and eventually over several seeds rather than eyeballing one, before
+treating "the student panel looks about as good as the oracle panel" as an
+actual finding rather than an early, favorable-looking snapshot.
+
 commit: pending
