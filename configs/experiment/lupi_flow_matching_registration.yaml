@@ -66,7 +66,7 @@ callbacks:
     monitor: val/loss/nll_student  # the deployable pathway (v_phi's own registration), not the teacher/upper-1 oracle -- same choice as lupi_id_token_baseline.yaml
 
 prior:
-  batch_size: 24  # conservative first guess, see note above -- lupi_bounds/lupi_id_token_baseline use 32-64, but neither pays integrate()'s extra sequential cost
+  batch_size: 32  # bumped from 24 (2026-09-17 relaunch) -- matches lupi_id_token_baseline's own 32 (also 2x-stacked), first cut's conservatism wasn't needed at observed ~530-560s/epoch wall-clock
   num_workers: 6
   n_a_range: [8, 100]
   n_b_range: [8, 100]
@@ -74,7 +74,7 @@ prior:
   warp_grid_n: 4
 
 model:
-  n_integration_steps: 10  # halved from the model's own default (20) -- training-time cost, not final-eval precision; revisit once wall-clock is known
+  n_integration_steps: 16  # bumped from 10 (2026-09-17 relaunch) -- the first run's own evidence (upper1_gap plateauing noisily rather than shrinking) doesn't rule out coarse SDE discretization as a contributing cause; 16 is a moderate step up, not yet the model's own default of 20, revisit again once this run's own numbers are in
 
 trainer:
   epochs: 100

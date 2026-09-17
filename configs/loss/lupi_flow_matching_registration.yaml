@@ -1,10 +1,16 @@
 # Four-term loss for FlowMatchingRegistrationPFN: velocity regression
-# (v_phi) + student-mixture NLL + teacher (upper-1) NLL + CE distillation.
-# See ppfn.loss.lupi_flow_matching_registration_loss's module docstring.
-# lambda_flow/lambda_ce fixed at 1.0 -- first cut, no curriculum, matching
-# this repo's own "isolate whether this helps before tuning a schedule"
-# precedent (docs/labbook/2026-09-16-lupi-registration-mechanism-and-architecture-survey.md).
+# (v_phi) + student-mixture NLL (ramped) + teacher (upper-1) NLL + CE
+# distillation (temperature-annealed). See
+# ppfn.loss.lupi_flow_matching_registration_loss's module docstring --
+# student_weight_floor/temperature_max/ramp_frac added 2026-09-17 after the
+# first (fixed-weight) real run showed ce_distil dominating loss/total's
+# magnitude while upper1_gap plateaued rather than shrinking; values reused
+# verbatim from LUPIIDTokenLoss's own precedent for the analogous failure
+# mode, not re-derived.
 loss_class:
   _target_: ppfn.loss.lupi_flow_matching_registration_loss.FlowMatchingRegistrationLoss
   lambda_flow: 1.0
   lambda_ce: 1.0
+  student_weight_floor: 0.15
+  temperature_max: 2.0
+  ramp_frac: 0.2
