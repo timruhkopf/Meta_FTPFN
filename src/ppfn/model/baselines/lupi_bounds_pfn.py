@@ -52,6 +52,7 @@ class BoundsPFN(nn.Module):
         d_ff: int = 512,
         n_bins_predictive: int = 64,
         dropout: float = 0.0,
+        bounded01: bool = False,
     ):
         super().__init__()
         self.d_max = d_max
@@ -63,7 +64,9 @@ class BoundsPFN(nn.Module):
             [PFNBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
         self.out_ln = nn.LayerNorm(d_model)
-        borders = sample_calibration_borders(n_bins_predictive)
+        # bounded01 MUST match whatever ppfn.prior.lupi.sampler.sample_pair
+        # was actually called with -- see calibration.py's own docstring.
+        borders = sample_calibration_borders(n_bins_predictive, bounded01=bounded01)
         self.bar_dist = FullSupportBarDistribution(borders)
         self.pred_head = nn.Linear(d_model, self.bar_dist.num_bars)
 

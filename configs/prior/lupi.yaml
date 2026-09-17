@@ -34,6 +34,38 @@ beta_override: null
 # unknown confounding the result. false (default) preserves the original
 # sampled-h behavior.
 force_h_identity: false
+# Bounds h's CALIBRATED amplitude to this multiple range of f's own realized
+# scale on each draw (ppfn.prior.lupi.monotone.calibrate_amplitude), added
+# 2026-09-17 after notebooks/id_token_lupi_1d_comparison.ipynb's binning
+# investigation found sample_monotone_map's raw, uncontrolled (a,b,c)
+# compounding made FullSupportBarDistribution's one shared, globally-fit bin
+# geometry badly mismatched for most individual draws (~4 of 64 bins
+# covering a typical draw's own value range) -- see
+# docs/labbook/2026-09-17-lupi-h-amplitude-calibration.md. h's SHAPE
+# diversity is untouched; only the realized scale/location are bounded.
+# IGNORED when bounded01=True below (calibrate_amplitude/MonotoneMap are
+# superseded there by KumaraswamyMap -- see bounded01's own comment).
+h_gain_range: [0.5, 2.0]
+# Superseding construction (2026-09-17, default ON): every reported value
+# lands in [0,1] BY CONSTRUCTION (self-normalized f + a global, cached,
+# prior-design-time-fixed reference + a KumaraswamyMap h), not just a
+# bounded-diversity real-valued range -- closes the granularity/step-artifact
+# problem h_gain_range only partially closed (verified: median calibration-
+# bin coverage of a draw's own local range 4/64 -> ~23/32, i.e. roughly full
+# resolution, every draw). See docs/labbook/2026-09-17-lupi-bounded01-prior.md
+# and ppfn.prior.lupi.sampler.sample_pair's own bounded01 docstring. Set
+# false to fall back to the h_gain_range scheme above (e.g. for comparing
+# against an already-trained pre-bounded01 checkpoint).
+bounded01: true
+# h's distortion severity, [0,1], DELIBERATELY INDEPENDENT of rho (T's own
+# severity) -- both meant to be swept across their full range for controlled
+# experiments, matching classical HPO's ability to observe the complete
+# relatedness spectrum. null (default): sample per-draw from
+# h_severity_range. Set to a fixed float (e.g. 0.0) for a deterministic
+# severity ablation, mirroring beta_override's pattern. IGNORED when
+# bounded01=False.
+h_severity: null
+h_severity_range: [0.0, 1.0]
 
 dataset_class:
   _target_: ppfn.prior.lupi.dataset.LUPIStreamDataset
@@ -50,6 +82,10 @@ dataset_class:
   warp_grid_n: ${prior.warp_grid_n}
   beta_override: ${prior.beta_override}
   force_h_identity: ${prior.force_h_identity}
+  h_gain_range: ${prior.h_gain_range}
+  bounded01: ${prior.bounded01}
+  h_severity: ${prior.h_severity}
+  h_severity_range: ${prior.h_severity_range}
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader

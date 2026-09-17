@@ -54,13 +54,18 @@ def build_training_item(
     warp_grid_n: int = 4,
     beta_override: float | None = None,
     force_h_identity: bool = False,
+    h_gain_range: tuple[float, float] = (0.5, 2.0),
+    bounded01: bool = False,
+    h_severity: float | None = None,
+    h_severity_range: tuple[float, float] = (0.0, 1.0),
 ) -> dict:
     rho = 0.0 if force_rho_zero else sample_rho_curriculum(rng, progress)
     pair = sample_pair(
         rng, rho=rho, s_max=s_max, d=d, n_a_range=n_a_range, n_b_range=n_b_range,
         n_qry_range=n_qry_range, frac_uniform=frac_uniform, frac_near_b=frac_near_b,
         query_eps_std=query_eps_std, warp_grid_n=warp_grid_n, beta_override=beta_override,
-        force_h_identity=force_h_identity,
+        force_h_identity=force_h_identity, h_gain_range=h_gain_range,
+        bounded01=bounded01, h_severity=h_severity, h_severity_range=h_severity_range,
     )
     return {
         "d_real": pair.d,
@@ -103,6 +108,10 @@ class LUPIStreamDataset(IterableDataset):
         warp_grid_n: int = 4,
         beta_override: float | None = None,
         force_h_identity: bool = False,
+        h_gain_range: tuple[float, float] = (0.5, 2.0),
+        bounded01: bool = False,
+        h_severity: float | None = None,
+        h_severity_range: tuple[float, float] = (0.0, 1.0),
     ):
         super().__init__()
         self.seed = seed
@@ -119,6 +128,10 @@ class LUPIStreamDataset(IterableDataset):
         self.warp_grid_n = warp_grid_n
         self.beta_override = beta_override
         self.force_h_identity = force_h_identity
+        self.h_gain_range = h_gain_range
+        self.bounded01 = bounded01
+        self.h_severity = h_severity
+        self.h_severity_range = h_severity_range
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -140,6 +153,10 @@ class LUPIStreamDataset(IterableDataset):
                 warp_grid_n=self.warp_grid_n,
                 beta_override=self.beta_override,
                 force_h_identity=self.force_h_identity,
+                h_gain_range=self.h_gain_range,
+                bounded01=self.bounded01,
+                h_severity=self.h_severity,
+                h_severity_range=self.h_severity_range,
             )
 
 

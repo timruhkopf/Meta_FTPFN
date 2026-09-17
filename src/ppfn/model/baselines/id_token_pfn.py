@@ -69,6 +69,7 @@ class IDTokenPFN(nn.Module):
         d_ff: int = 512,
         n_bins_predictive: int = 64,
         dropout: float = 0.0,
+        bounded01: bool = False,
     ):
         super().__init__()
         self.d_max = d_max
@@ -120,7 +121,10 @@ class IDTokenPFN(nn.Module):
         # ppfn.model.pfn.bar_distribution's module docstring (2026-09-16):
         # the fixed body was a poor match for this prior's raw, unnormalized
         # target scale, giving coarse, blocky predictive densities.
-        borders = sample_calibration_borders(n_bins_predictive)
+        # bounded01 MUST match whatever ppfn.prior.lupi.sampler.sample_pair
+        # was actually called with -- see calibration.py's own docstring
+        # and docs/labbook/2026-09-17-lupi-bounded01-prior.md.
+        borders = sample_calibration_borders(n_bins_predictive, bounded01=bounded01)
         self.predictive_dist = FullSupportBarDistribution(borders)
         self.predictive_head = nn.Linear(d_model, self.predictive_dist.num_bars)
 

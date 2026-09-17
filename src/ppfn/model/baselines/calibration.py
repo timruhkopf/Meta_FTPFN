@@ -23,11 +23,22 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from ppfn.model.pfn.bar_distribution import quantile_bin_borders
+from ppfn.model.pfn.bar_distribution import quantile_bin_borders, uniform_bin_borders
 from ppfn.prior.lupi.sampler import D_CHOICES, sample_pair
 
 
-def sample_calibration_borders(n_bins: int, n_draws: int = 80, seed: int = 0) -> torch.Tensor:
+def sample_calibration_borders(n_bins: int, n_draws: int = 80, seed: int = 0, bounded01: bool = False) -> torch.Tensor:
+    """`bounded01=True` (2026-09-17, see `docs/labbook/2026-09-17-lupi-bounded01-prior.md`):
+    under `sample_pair(..., bounded01=True)`, every reported value already
+    lands in `[0,1]` BY CONSTRUCTION (self-normalized `f` + a global,
+    prior-design-time-fixed reference + a `KumaraswamyMap` `h`) -- there is
+    no per-draw scale/location diversity left for a data-driven quantile fit
+    to correct for, so this just returns PLAIN uniform `[0,1]` bins
+    (`uniform_bin_borders`), matching `ppfn.prior.bnn.bnn_prior_vec.BNNPrior`'s
+    own convention exactly. Skips sampling any calibration draws at all --
+    the bins are a closed-form function of `n_bins` alone in this mode."""
+    if bounded01:
+        return uniform_bin_borders(n_bins, 0.0, 1.0)
     rng = np.random.default_rng(seed)
     zs = []
     for _ in range(n_draws):

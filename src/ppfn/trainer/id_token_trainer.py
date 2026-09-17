@@ -127,6 +127,23 @@ class IDTokenTrainer:
         val_query_eps_std = getattr(train_dataset, "query_eps_std", 0.03)
         val_beta_override = getattr(train_dataset, "beta_override", None)
         val_force_h_identity = getattr(train_dataset, "force_h_identity", False)
+        # bounded01/h_gain_range/h_severity/h_severity_range (2026-09-17,
+        # ppfn.prior.lupi's [0,1]-normalization work): read off train_dataset
+        # the same way every other prior kwarg above already is, NOT left to
+        # build_training_item's own defaults (bounded01=False) -- missing
+        # this produced a real bug, caught empirically: a bounded01=True
+        # training run's val_batch was silently built on the OLD unbounded
+        # scale, so the model's [0,1]-fixed-bin bar distribution scored real
+        # (large-scale) validation targets as wildly out-of-distribution
+        # (val/loss/nll_student ~51 nats vs. ~0.15 in training on the exact
+        # same debug config) -- a train/val prior mismatch of the same
+        # SHAPE as checkpoints.md's own "prior/checkpoint provenance"
+        # concern, just at the validation-batch stage instead of the
+        # checkpoint-reuse stage.
+        val_bounded01 = getattr(train_dataset, "bounded01", False)
+        val_h_gain_range = getattr(train_dataset, "h_gain_range", (0.5, 2.0))
+        val_h_severity = getattr(train_dataset, "h_severity", None)
+        val_h_severity_range = getattr(train_dataset, "h_severity_range", (0.0, 1.0))
         val_rng = np.random.default_rng(val_seed)
         val_items = [
             build_training_item(
@@ -144,6 +161,10 @@ class IDTokenTrainer:
                 query_eps_std=val_query_eps_std,
                 beta_override=val_beta_override,
                 force_h_identity=val_force_h_identity,
+                bounded01=val_bounded01,
+                h_gain_range=val_h_gain_range,
+                h_severity=val_h_severity,
+                h_severity_range=val_h_severity_range,
             )
             for _ in range(val_size)
         ]

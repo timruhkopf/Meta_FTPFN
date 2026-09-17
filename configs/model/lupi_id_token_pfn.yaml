@@ -18,3 +18,6 @@ model_class:
   n_bins_predictive: ${model.n_bins_predictive}
   dropout: ${model.dropout}
   d_max: ${model.d_max}
+  # MUST match prior.bounded01 -- see configs/model/lupi_bounds_pfn.yaml's
+  # identical comment.
+  bounded01: ${prior.bounded01}

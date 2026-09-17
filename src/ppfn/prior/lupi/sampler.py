@@ -21,7 +21,13 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ppfn.prior.lupi.acquisition import sample_beta, sample_latent_A_acquired
-from ppfn.prior.lupi.monotone import MonotoneMap, sample_monotone_map
+from ppfn.prior.lupi.ecdf import apply_ecdf, load_or_fit_f_ecdf, normalize_f_probe
+from ppfn.prior.lupi.monotone import (
+    MonotoneMap,
+    calibrate_amplitude,
+    sample_kumaraswamy_h,
+    sample_monotone_map,
+)
 from ppfn.prior.registration.function_prior import sample_function_prior
 from ppfn.prior.registration.normalize import normalize
 from ppfn.prior.registration.region import sample_latent_B, sample_region
@@ -100,15 +106,27 @@ class LUPIPairInternals:
     to_a: object  # Callable[[np.ndarray], np.ndarray] -- z [N,d] -> A-frame x [N,d]
     to_b: object  # Callable[[np.ndarray], np.ndarray] -- z [N,d] -> B-frame x [N,d]
     f: object  # FunctionPrior -- f(z) noiseless
-    h: object  # MonotoneMap -- h(y)
+    h: object  # MonotoneMap or KumaraswamyMap -- h(y)
     z_a_ctx: np.ndarray  # [n_a, d] -- the actual latents behind pair.x_a_ctx/z_a_ctx (A's small, acquisition-biased sample)
     z_b: np.ndarray  # [n_b, d] -- the actual latents behind pair.x_b/x_b_inA/z_b (B's large, uniform sample)
+    # Only set when sample_pair(..., bounded01=True) produced this pair --
+    # true_value_as_a/b need these to replicate the SAME self-normalize ->
+    # global-ECDF -> h pipeline sample_pair itself used, or they'd silently
+    # evaluate h on RAW (un-normalized) f(z), which is wrong under this mode
+    # (KumaraswamyMap expects a [0,1]-scale input, not f's raw output).
+    f_mean: float | None = None
+    f_std: float | None = None
+    f_ecdf_ref: np.ndarray | None = None
 
     def true_value_as_a(self, z: np.ndarray) -> np.ndarray:
         """z [N,d] -> noiseless value [N] AS A WOULD OBSERVE IT (h applied)
-        -- the "true function" curve on A's own (h-distorted) scale.
-        Values are raw/unnormalized now (see sample_pair's normalization-
-        shelving comment) -- no further rescaling here."""
+        -- the "true function" curve on A's own (h-distorted) scale. Under
+        `bounded01`, replicates sample_pair's self-normalize -> global-ECDF
+        -> h pipeline exactly; otherwise raw/unnormalized (h applied to f
+        directly), matching sample_pair's own non-bounded01 path."""
+        if self.f_ecdf_ref is not None:
+            normed = (self.f(z) - self.f_mean) / self.f_std
+            return self.h(apply_ecdf(self.f_ecdf_ref, normed))
         return self.h(self.f(z))
 
     def true_value_as_b(self, z: np.ndarray) -> np.ndarray:
@@ -116,6 +134,9 @@ class LUPIPairInternals:
         the same underlying f, on B's own (undistorted) scale. Comparing
         this to `true_value_as_a` at the SAME z is exactly h's effect,
         isolated from any acquisition-bias or normalization confound."""
+        if self.f_ecdf_ref is not None:
+            normed = (self.f(z) - self.f_mean) / self.f_std
+            return apply_ecdf(self.f_ecdf_ref, normed)
         return self.f(z)
 
 
@@ -170,6 +191,10 @@ def sample_pair(
     warp_grid_n: int = 4,
     beta_override: float | None = None,
     force_h_identity: bool = False,
+    h_gain_range: tuple[float, float] = (0.5, 2.0),
+    bounded01: bool = False,
+    h_severity: float | None = None,
+    h_severity_range: tuple[float, float] = (0.0, 1.0),
     return_internals: bool = False,
 ) -> LUPIPair | tuple[LUPIPair, LUPIPairInternals]:
     """One draw at relative-warp coefficient `rho`. `frac_near_b`: set to 0.0
@@ -190,6 +215,53 @@ def sample_pair(
     training against ground truth without the other unknown confounding the
     result -- see docs/labbook/2026-09-16-lupi-registration-mechanism-and-
     architecture-survey.md's own recommended incremental verification path.
+
+    `h_gain_range`: bounds `h`'s CALIBRATED amplitude relative to `f`'s own
+    realized scale on this draw (`ppfn.prior.lupi.monotone.calibrate_amplitude`,
+    added 2026-09-17 -- see that function's docstring for the full root-cause
+    writeup and `docs/labbook/2026-09-17-lupi-h-amplitude-calibration.md`).
+    `sample_monotone_map`'s raw (a,b,c) compounding has no scale control at
+    all (its own docstring: "not calibrated against any target statistic"),
+    which made `FullSupportBarDistribution`'s one shared, globally-fit bin
+    geometry (`ppfn.model.baselines.calibration.sample_calibration_borders`)
+    badly mismatched for most individual draws (measured: ~4 of 64 bins
+    covering a typical draw's own value range). `h`'s SHAPE diversity (the
+    raw a,c,d sampling ranges) is untouched -- only the realized
+    scale/location get bounded, still genuinely random per draw within
+    `h_gain_range`'s ratio (default 4x) and an f-scale-anchored `N(0,1)`
+    offset, respectively. IGNORED when `bounded01=True` (below) -- superseded
+    by `KumaraswamyMap`/`h_severity` there.
+
+    `bounded01` (2026-09-17): opt-in successor to the `h_gain_range` scheme
+    above -- every reported value lands in `[0,1]` BY CONSTRUCTION (the way
+    `ppfn.prior.bnn.bnn_prior_vec.BNNPrior`'s own output already does), not
+    just a bounded-diversity real-valued range. See
+    `ppfn.prior.lupi.ecdf.normalize_f_probe`/`fit_global_f_ecdf` and
+    `ppfn.prior.lupi.monotone.KumaraswamyMap` for the mechanism and why it
+    closes the granularity/step-artifact problem `calibrate_amplitude` only
+    partially closed (root cause: `calibrate_amplitude` bounded `h`'s
+    composed SCALE but preserved its LOCATION diversity, and a fixed/shared
+    bar-distribution geometry needs BOTH controlled to give every draw good
+    local resolution). Both `f` and `h`'s roles change under this flag:
+    `f`'s raw output is self-normalized (via ITS OWN probe, `zlat_b`, no
+    oracle/cross-draw information) then mapped through a global,
+    prior-design-time-fixed reference; `h` becomes a `KumaraswamyMap`
+    (`[0,1]->[0,1]` exactly, any `(a,b)`) instead of `MonotoneMap`.
+    `force_h_identity=True` still works under `bounded01` (gives `a=b=1`,
+    the Kumaraswamy identity). `h_gain_range` is ignored in this mode.
+
+    `h_severity`/`h_severity_range` (only used when `bounded01=True`):
+    `h`'s distortion severity, DELIBERATELY INDEPENDENT of `rho` (T's own
+    severity) -- both are meant to be swept independently across their full
+    range for controlled experiments (matching classical HPO's ability to
+    observe the complete relatedness range, and this project's general
+    "sweep axes independently" discipline, e.g.
+    `oracle-and-baseline-ladder.md`'s Controls section for d/cardinality/
+    severity). `h_severity`: force a fixed severity in `[0,1]` (0 = exact
+    identity) instead of `h_severity_range`'s own per-draw sampling --
+    mirrors `beta_override`'s pattern, for a deterministic severity sweep.
+    `h_severity_range` (default `(0.0, 1.0)`): the range `h_severity` is
+    drawn from per draw when `h_severity` itself is `None`.
 
     `warp_grid_n`: LUPI-local override of `sample_warp_pair`/`declared_box`'s
     own `grid_n=5` default (never touches `ppfn.prior.registration`, which
@@ -244,62 +316,120 @@ def sample_pair(
     x_b_inA = to_a(zlat_b)  # B transported into A's frame -- no inversion, see field docstring
 
     f = sample_function_prior(rng, d, probe_z=zlat_b)
-    h = MonotoneMap(a=1.0, b=0.0, c=0.0, d=1.0) if force_h_identity else sample_monotone_map(rng)
+    y_b_raw = f(zlat_b)  # noiseless, B's own scale -- h is NOT applied to B
 
-    y_b_clean = f(zlat_b)  # noiseless, B's own scale -- h is NOT applied to B
-    y_b_obs = y_b_clean + rng.normal(0.0, f.sigma_obs, size=n_b)
-    y_b_obs_inA = h(y_b_obs)  # B's observation recalibrated into A's scale -- the "fully registered" oracle value, see LUPIPair.z_b_inA's docstring
+    if bounded01:
+        # 2026-09-17: everything lands in [0,1] BY CONSTRUCTION, the way
+        # BNNPrior's own output already does -- see
+        # `ppfn.prior.lupi.ecdf.normalize_f_probe`/`fit_global_f_ecdf` and
+        # `ppfn.prior.lupi.monotone.KumaraswamyMap` for the full writeup.
+        # `f_mean`/`f_std` are computed PURELY from THIS draw's own probe
+        # (zlat_b, already uniform over the full domain) -- self-referential,
+        # no cloud-role distinction, no oracle/deployment dependency.
+        y_b_clean01, f_mean, f_std = normalize_f_probe(y_b_raw)
+        f_ecdf_ref = load_or_fit_f_ecdf(d)
+        y_b_clean01 = apply_ecdf(f_ecdf_ref, y_b_clean01)
 
-    # Value normalization SHELVED (2026-09-15, at the user's direction) --
-    # both the original per-cloud ECDF quantile-normalization AND its
-    # replacement (z-scoring against B's own (mean, std)) are gone. Two
-    # reasons, not just one:
-    #   1. Same as before: A's own ECDF couldn't self-diagnose its own
-    #      acquisition bias (spec §3.2(b)'s pathology).
-    #   2. Newly identified: standardizing against B's reference is itself
-    #      a form of privileged leakage -- the STUDENT model only ever sees
-    #      B's NOISY observations (enc_z), never B's true (y_mean, y_std),
-    #      so handing the prior's own oracle statistics to both clouds
-    #      quietly pre-solves part of the calibration problem the
-    #      experiment exists to test. A real deployment wouldn't have that
-    #      reference either.
-    # `z_b`/`z_a_ctx`/`z_a_qry` (the LUPIPair fields, not the zlat_*
-    # latents above) are now simply the raw observed values -- unnormalized,
-    # scale set entirely by `f`'s and `h`'s own sampled parameters, nothing
-    # divided out. This also DIRECTLY addresses the extreme (~20) z-scores
-    # observed under the z-scoring version: those were partly an artifact
-    # of dividing by a possibly-small estimated std, not just h's own
-    # nonlinearity -- removing the division should narrow the realized
-    # range, not widen it. Revisit normalization later if the model
-    # struggles with cross-item scale variation (each draw's f/h are
-    # independent, so raw scale genuinely differs draw to draw) -- the
-    # fixed-bin bar-distribution head has no adaptive rescaling of its own.
+        severity = 0.0 if force_h_identity else (
+            h_severity if h_severity is not None else float(rng.uniform(*h_severity_range))
+        )
+        h = sample_kumaraswamy_h(rng, severity)
 
-    # A's own noise scale, resolved against std(h(f(.))) over B's (full-domain)
-    # probe -- same "relative to std(f) over the domain" convention
-    # `function_prior.sample_function_prior` uses for f itself.
-    hf_probe = h(y_b_clean)
-    std_hf = max(float(hf_probe.std()), 1e-6)
-    sigma_obs_a = float(np.exp(rng.uniform(np.log(0.01), np.log(0.3)))) * std_hf
+        # Small, ABSOLUTE noise directly in [0,1] units -- no "relative to
+        # std(f)" dance needed anymore, since both clouds' clean values are
+        # already unit-scaled by construction.
+        obs_noise_b = float(np.exp(rng.uniform(np.log(0.005), np.log(0.05))))
+        y_b_obs = np.clip(y_b_clean01 + rng.normal(0.0, obs_noise_b, size=n_b), 1e-4, 1.0 - 1e-4)
+        y_b_obs_inA = np.clip(h(y_b_obs), 1e-4, 1.0 - 1e-4)
 
-    # beta_override: force a fixed acquisition aggressiveness instead of
-    # sampling one -- e.g. 0.0 for a clean "no acquisition bias" ablation,
-    # rather than relying on sample_beta's own 20% chance of beta=0. None
-    # (default) preserves the existing sampled-beta behavior exactly.
-    beta = sample_beta(rng) if beta_override is None else float(beta_override)
-    zlat_a_ctx = sample_latent_A_acquired(rng, region, d, n_a, score_fn=f, beta=beta)
-    x_a_ctx = to_a(zlat_a_ctx)
-    y_a_ctx_clean = h(f(zlat_a_ctx))
-    y_a_ctx_obs = y_a_ctx_clean + rng.normal(0.0, sigma_obs_a, size=n_a)
-    oracle_bpos_a_ctx = to_b(zlat_a_ctx)
+        sigma_obs_a = float(np.exp(rng.uniform(np.log(0.005), np.log(0.05))))
 
-    zlat_qry, qry_source = _sample_query_z(
-        rng, d, n_qry, zlat_b, zlat_a_ctx, frac_uniform, frac_near_b, query_eps_std
-    )
-    x_a_qry = to_a(zlat_qry)
-    y_qry_clean = h(f(zlat_qry))
-    y_qry_obs = y_qry_clean + rng.normal(0.0, sigma_obs_a, size=n_qry)
-    oracle_bpos_a_qry = to_b(zlat_qry)
+        beta = sample_beta(rng) if beta_override is None else float(beta_override)
+        zlat_a_ctx = sample_latent_A_acquired(rng, region, d, n_a, score_fn=f, beta=beta)
+        x_a_ctx = to_a(zlat_a_ctx)
+        y_a_ctx_norm = (f(zlat_a_ctx) - f_mean) / f_std
+        y_a_ctx_clean = h(apply_ecdf(f_ecdf_ref, y_a_ctx_norm))
+        y_a_ctx_obs = np.clip(y_a_ctx_clean + rng.normal(0.0, sigma_obs_a, size=n_a), 1e-4, 1.0 - 1e-4)
+        oracle_bpos_a_ctx = to_b(zlat_a_ctx)
+
+        zlat_qry, qry_source = _sample_query_z(
+            rng, d, n_qry, zlat_b, zlat_a_ctx, frac_uniform, frac_near_b, query_eps_std
+        )
+        x_a_qry = to_a(zlat_qry)
+        y_qry_norm = (f(zlat_qry) - f_mean) / f_std
+        y_qry_clean = h(apply_ecdf(f_ecdf_ref, y_qry_norm))
+        y_qry_obs = np.clip(y_qry_clean + rng.normal(0.0, sigma_obs_a, size=n_qry), 1e-4, 1.0 - 1e-4)
+        oracle_bpos_a_qry = to_b(zlat_qry)
+    else:
+        y_b_clean = y_b_raw
+        # h's amplitude is CALIBRATED against y_b_clean (B's own noiseless probe,
+        # always available regardless of encoder/decoder role -- not privileged-
+        # cloud leakage) so its composed scale/location stay a BOUNDED multiple
+        # of f's own realized scale on THIS draw, rather than sample_monotone_map's
+        # raw, uncontrolled compounding -- see calibrate_amplitude's docstring.
+        if force_h_identity:
+            h = MonotoneMap(a=1.0, b=0.0, c=0.0, d=1.0)
+        else:
+            h = calibrate_amplitude(sample_monotone_map(rng), y_b_clean, rng, gain_range=h_gain_range)
+
+        y_b_obs = y_b_clean + rng.normal(0.0, f.sigma_obs, size=n_b)
+        y_b_obs_inA = h(y_b_obs)  # B's observation recalibrated into A's scale -- the "fully registered" oracle value, see LUPIPair.z_b_inA's docstring
+
+        # Value normalization SHELVED (2026-09-15, at the user's direction) --
+        # both the original per-cloud ECDF quantile-normalization AND its
+        # replacement (z-scoring against B's own (mean, std)) are gone. Two
+        # reasons, not just one:
+        #   1. Same as before: A's own ECDF couldn't self-diagnose its own
+        #      acquisition bias (spec §3.2(b)'s pathology).
+        #   2. Newly identified: standardizing against B's reference is itself
+        #      a form of privileged leakage -- the STUDENT model only ever sees
+        #      B's NOISY observations (enc_z), never B's true (y_mean, y_std),
+        #      so handing the prior's own oracle statistics to both clouds
+        #      quietly pre-solves part of the calibration problem the
+        #      experiment exists to test. A real deployment wouldn't have that
+        #      reference either.
+        # `z_b`/`z_a_ctx`/`z_a_qry` (the LUPIPair fields, not the zlat_*
+        # latents above) are now simply the raw observed values -- unnormalized,
+        # scale set entirely by `f`'s and `h`'s own sampled parameters, nothing
+        # divided out. This also DIRECTLY addresses the extreme (~20) z-scores
+        # observed under the z-scoring version: those were partly an artifact
+        # of dividing by a possibly-small estimated std, not just h's own
+        # nonlinearity -- removing the division should narrow the realized
+        # range, not widen it. Revisit normalization later if the model
+        # struggles with cross-item scale variation (each draw's f/h are
+        # independent, so raw scale genuinely differs draw to draw) -- the
+        # fixed-bin bar-distribution head has no adaptive rescaling of its own.
+        #
+        # `bounded01=True` (2026-09-17) is the successor that DOES normalize
+        # -- but self-referentially (each draw's own probe / a global,
+        # prior-design-time reference), never against a privileged cloud's
+        # true statistics. See the `bounded01` branch above.
+
+        # A's own noise scale, resolved against std(h(f(.))) over B's (full-domain)
+        # probe -- same "relative to std(f) over the domain" convention
+        # `function_prior.sample_function_prior` uses for f itself.
+        hf_probe = h(y_b_clean)
+        std_hf = max(float(hf_probe.std()), 1e-6)
+        sigma_obs_a = float(np.exp(rng.uniform(np.log(0.01), np.log(0.3)))) * std_hf
+
+        # beta_override: force a fixed acquisition aggressiveness instead of
+        # sampling one -- e.g. 0.0 for a clean "no acquisition bias" ablation,
+        # rather than relying on sample_beta's own 20% chance of beta=0. None
+        # (default) preserves the existing sampled-beta behavior exactly.
+        beta = sample_beta(rng) if beta_override is None else float(beta_override)
+        zlat_a_ctx = sample_latent_A_acquired(rng, region, d, n_a, score_fn=f, beta=beta)
+        x_a_ctx = to_a(zlat_a_ctx)
+        y_a_ctx_clean = h(f(zlat_a_ctx))
+        y_a_ctx_obs = y_a_ctx_clean + rng.normal(0.0, sigma_obs_a, size=n_a)
+        oracle_bpos_a_ctx = to_b(zlat_a_ctx)
+
+        zlat_qry, qry_source = _sample_query_z(
+            rng, d, n_qry, zlat_b, zlat_a_ctx, frac_uniform, frac_near_b, query_eps_std
+        )
+        x_a_qry = to_a(zlat_qry)
+        y_qry_clean = h(f(zlat_qry))
+        y_qry_obs = y_qry_clean + rng.normal(0.0, sigma_obs_a, size=n_qry)
+        oracle_bpos_a_qry = to_b(zlat_qry)
 
     meta = {
         "region_type": region.kind,
@@ -330,6 +460,9 @@ def sample_pair(
     internals = LUPIPairInternals(
         to_a=to_a, to_b=to_b, f=f, h=h,
         z_a_ctx=zlat_a_ctx, z_b=zlat_b,
+        f_mean=f_mean if bounded01 else None,
+        f_std=f_std if bounded01 else None,
+        f_ecdf_ref=f_ecdf_ref if bounded01 else None,
     )
     return pair, internals
 

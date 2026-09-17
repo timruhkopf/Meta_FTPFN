@@ -86,11 +86,13 @@ class LUPIIDTokenPFN(nn.Module):
         d_ff: int = 512,
         n_bins_predictive: int = 64,
         dropout: float = 0.0,
+        bounded01: bool = False,
     ):
         super().__init__()
         self.backbone = IDTokenPFN(
             d_max=d_max, d_model=d_model, n_heads=n_heads, n_layers=n_layers,
             d_ff=d_ff, n_bins_predictive=n_bins_predictive, dropout=dropout,
+            bounded01=bounded01,
         )
 
     @property

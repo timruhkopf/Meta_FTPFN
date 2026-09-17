@@ -19,3 +19,9 @@ model_class:
   n_bins_predictive: ${model.n_bins_predictive}
   dropout: ${model.dropout}
   d_max: ${model.d_max}
+  # MUST match prior.bounded01 -- picks plain uniform [0,1] calibration
+  # bins instead of the (now-superseded) quantile-fit ones. See
+  # ppfn.model.baselines.calibration.sample_calibration_borders and
+  # .claude/rules/hydra.md's "meta info baked into config" convention for
+  # why this reads from the prior group rather than duplicating the value.
+  bounded01: ${prior.bounded01}

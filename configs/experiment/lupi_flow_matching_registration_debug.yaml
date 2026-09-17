@@ -1,0 +1,60 @@
+# @package _global_
+#
+# Smoke-test config for FlowMatchingRegistrationPFN -- the model that closes
+# the loop left open by lupi_flow_matching_debug.yaml (bare v_phi transport
+# only): tiny model, short run, to confirm the data path, the K-sample
+# mixture-PPD readout, and all four loss terms wire up correctly before a
+# real-sized run.
+#
+# Run (needs `~benchmark` on the CLI, same as every pipeline.train experiment):
+#   python -m ppfn.pipelines.train experiment=lupi_flow_matching_registration_debug experiment_name=00-debug-lupi-flow-matching-registration ~benchmark
+
+defaults:
+  - /loss: lupi_flow_matching_registration
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+  - override /prior: lupi
+  - override /model: lupi_flow_matching_registration
+  - override /optimizer: adamw_registration
+  - override /trainer: lupi_flow_matching_registration
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+callbacks:
+  mlflow:
+    tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+    experiment_name: lupi-flow-matching-registration-debug
+
+prior:
+  batch_size: 8
+  s_max: 0.1
+  n_a_range: [8, 32]
+  n_b_range: [8, 32]
+  warp_grid_n: 4
+
+model:
+  d_model: 32
+  n_heads: 4
+  d_ff: 64
+  n_layers: 2
+  n_bins_predictive: 16
+  fm_d_model: 32
+  fm_n_heads: 4
+  fm_d_ff: 64
+  fm_n_layers: 2
+
+trainer:
+  epochs: 2
+  steps: 5
+  trainer_class:
+    val_size: 8
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

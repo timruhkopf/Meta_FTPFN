@@ -1,0 +1,53 @@
+# Closes the loop `configs/model/lupi_flow_matching.yaml` (the bare v_phi
+# transport field) leaves open: wraps FlowMatchingVelocityField with
+# BoundsPFN's pooled-[A_ctx;B_inA] decoder-only readout so the pipeline
+# produces a calibrated PPD for dec_qry_x, not just a registered B cloud.
+# See ppfn.model.baselines.lupi_flow_matching_pfn.FlowMatchingRegistrationPFN's
+# docstring. `fm_*` sizes match configs/model/lupi_flow_matching.yaml's own
+# (modest, untuned) sizing; predictor sizes match configs/model/id_token_pfn.yaml
+# for a fair comparison against that baseline.
+d_max: 5  # must match ppfn.prior.lupi.dataset.D_MAX
+d_model: 256
+n_heads: 8
+n_layers: 6
+d_ff: 512
+n_bins_predictive: 64
+dropout: 0.0
+
+fm_d_model: 256
+fm_n_heads: 8
+fm_n_layers: 6
+fm_d_ff: 512
+
+# n_transport_samples=1, sde_sigma=0.0 -> deterministic ODE mean transport
+# (K=1 mixture is a no-op). The genuinely stochastic SDE (sigma>0,
+# n_transport_samples>1) is the NEXT isolated experiment on top of this one,
+# per this repo's own "isolate before trusting coupled" convention -- get
+# the deterministic pipeline correct first.
+n_transport_samples: 1
+sde_sigma: 0.0
+n_integration_steps: 20
+
+# MUST match prior.bounded01 -- picks plain uniform [0,1] calibration bins
+# for the predictor's bar distribution instead of the (now-superseded)
+# quantile-fit ones. See ppfn.model.baselines.calibration.sample_calibration_borders
+# and configs/model/lupi_bounds_pfn.yaml's identical comment/convention.
+bounded01: ${prior.bounded01}
+
+model_class:
+  _target_: ppfn.model.baselines.lupi_flow_matching_pfn.FlowMatchingRegistrationPFN
+  d_max: ${model.d_max}
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_layers: ${model.n_layers}
+  d_ff: ${model.d_ff}
+  n_bins_predictive: ${model.n_bins_predictive}
+  dropout: ${model.dropout}
+  fm_d_model: ${model.fm_d_model}
+  fm_n_heads: ${model.fm_n_heads}
+  fm_n_layers: ${model.fm_n_layers}
+  fm_d_ff: ${model.fm_d_ff}
+  n_transport_samples: ${model.n_transport_samples}
+  sde_sigma: ${model.sde_sigma}
+  n_integration_steps: ${model.n_integration_steps}
+  bounded01: ${model.bounded01}

@@ -1,0 +1,94 @@
+# @package _global_
+#
+# Real-sized run for FlowMatchingRegistrationPFN -- closes the loop on
+# docs/labbook/2026-09-17-lupi-registration-sde-flow-matching-direction.md:
+# v_phi (conditional flow matching) transports B -> hat{B_inA}, BoundsPFN's
+# pooled-[A_ctx;B_inA] readout turns that into a calibrated PPD for A's
+# queries. See docs/labbook/2026-09-17-flow-matching-registration-predictive-readout.md
+# for what was built and verified (smoke-tested only, 2 epochs x 5 steps on
+# CPU) -- this is that model's FIRST real-sized run.
+#
+# Sizing modeled on the sibling lupi_bounds.yaml/lupi_id_token_baseline.yaml
+# real runs (same prior ranges, same optimizer/scheduler), NOT yet tuned for
+# this model's higher per-step cost: `integrate()` adds `n_integration_steps`
+# sequential no_grad forward passes through v_phi on top of BoundsPFN's own
+# cost, and n_transport_samples=1 still means the predictor sees a 2x
+# (student+teacher) stacked batch, same as lupi_id_token_baseline's own
+# student/teacher stacking. batch_size and n_integration_steps below are a
+# conservative first guess (halved integration-step count relative to the
+# model's own default of 20) -- revisit both once one epoch's wall-clock on
+# ulysses is known.
+#
+# n_transport_samples=1, sde_sigma=0.0 (deterministic ODE mean transport,
+# mixture is a no-op at K=1) is DELIBERATE for this first run -- the
+# genuinely stochastic SDE (K>1, sigma>0) is the next isolated experiment on
+# top of this one, per this repo's "isolate before trusting coupled"
+# convention (see configs/model/lupi_flow_matching_registration.yaml).
+#
+# Depends on the prior's in-flight [0,1]-normalization change (see the
+# labbook entry above) landing and passing its own rho=0/force_h_identity
+# invariant tests first -- launching against a mid-edit prior would burn
+# compute against a data-generating process that's about to change under it
+# (checkpoints.md's "prior/checkpoint provenance" concern, one level
+# earlier: before the checkpoint stage, at the run-launch stage). Nothing in
+# this config hardcodes an assumed target range: FullSupportBarDistribution's
+# borders are quantile-fit from a fresh prior sample at model-construction
+# time (ppfn.model.baselines.calibration.sample_calibration_borders), so no
+# config value here needs to change once the prior's output scale does.
+#
+# Run:
+#   python -m ppfn.pipelines.train experiment=lupi_flow_matching_registration experiment_name=01-pretraining-lupi-flow-matching-registration ~benchmark
+
+defaults:
+  - /loss: lupi_flow_matching_registration
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+      - checkpoint
+  - override /prior: lupi
+  - override /model: lupi_flow_matching_registration
+  - override /optimizer: adamw_registration
+  - override /trainer: lupi_flow_matching_registration
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+
+callbacks:
+  mlflow:
+    tracking_uri: ${mlflow_tracking_uri}
+    experiment_name: lupi-decoder-comparison
+    run_name: flow-matching-registration
+  checkpoint:
+    monitor: val/loss/nll_student  # the deployable pathway (v_phi's own registration), not the teacher/upper-1 oracle -- same choice as lupi_id_token_baseline.yaml
+
+prior:
+  batch_size: 24  # conservative first guess, see note above -- lupi_bounds/lupi_id_token_baseline use 32-64, but neither pays integrate()'s extra sequential cost
+  num_workers: 6
+  n_a_range: [8, 100]
+  n_b_range: [8, 100]
+  n_qry_range: [8, 64]
+  warp_grid_n: 4
+
+model:
+  n_integration_steps: 10  # halved from the model's own default (20) -- training-time cost, not final-eval precision; revisit once wall-clock is known
+
+trainer:
+  epochs: 100
+  steps: 500
+  trainer_class:
+    val_size: 48
+    use_bf16: true
+
+scheduler:
+  warmup_epochs: 5000
+  eta_min: 3e-5
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}

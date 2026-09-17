@@ -51,9 +51,13 @@ states.
 
 from __future__ import annotations
 
+import dataclasses
+
 import torch
 import torch.nn as nn
 
+from ppfn.model.baselines.lupi_bounds_pfn import BoundsPFN
+from ppfn.model.baselines.lupi_id_token_pfn import _cat_batches
 from ppfn.model.pfn.pfn import MaskedMHA
 from ppfn.prior.lupi.dataset import D_MAX, LUPIBatch
 
@@ -225,6 +229,134 @@ class FlowMatchingVelocityField(nn.Module):
         return {"x1": torch.stack(x1_samples, dim=0), "y1": torch.stack(y1_samples, dim=0)}
 
 
+class FlowMatchingRegistrationPFN(nn.Module):
+    """Closes the loop the labbook entry above left explicitly open
+    ("coupling to the predictive stack"): `FlowMatchingVelocityField` alone
+    only produces a registered B cloud, `\\hat{z}_1 = (\\hat x^{B->A}, \\hat
+    y^{B->A})` -- it is not itself a predictive model over A's queries. This
+    wraps it with `ppfn.model.baselines.lupi_bounds_pfn.BoundsPFN`'s
+    pooled-`[A_ctx; B_inA]` decoder-only readout (reused as-is, unmodified)
+    so the pipeline actually produces a calibrated PPD for `dec_qry_x`.
+
+    Student pathway: `flow_field.integrate()` (already `@torch.no_grad()` --
+    left that way here on purpose, see below) draws `n_transport_samples`
+    independent SDE trajectories per B token, each substituted for
+    `enc_x_inA`/`enc_z_inA` and read out by the SAME `BoundsPFN` backbone
+    (`severed=False`), then mixed in PROBABILITY space -- never logit space,
+    averaging logits does not average the distributions they parameterize --
+    into one final mixture PPD, `log(mean_k softmax(logits_k))`. That
+    quantity is idempotent under `BarDistribution`'s own internal
+    `log_softmax` (`log_softmax(log p) == log p` when `p` already sums to
+    1), so it can be handed straight to `bar_dist`'s existing NLL/mean/etc.
+    machinery as if it were ordinary logits -- no new distribution-mixing
+    code needed anywhere else.
+
+    Teacher pathway: `BoundsPFN(batch, severed=False)` against the TRUE
+    `enc_x_inA`/`enc_z_inA` -- exactly upper-1, CLAUDE.md decision #10
+    ("distil against upper-1 at rho>0"). Student and teacher share ONE
+    `BoundsPFN` backbone, `K+1` copies of the batch stacked along dim 0 for
+    a single forward call (`LUPIIDTokenPFN`'s own student/teacher stacking
+    trick, generalized from 2 stacked copies to `K+1`).
+
+    `v_phi` (`flow_field`) gets gradient ONLY from its own `FlowMatchingLoss`
+    term -- `integrate()` runs under `no_grad`, deliberately, not an
+    oversight. Backpropagating the predictive NLL through `n_steps` of
+    Euler-Maruyama would reintroduce exactly the slow, simulation-in-the-
+    loop training flow matching exists to avoid (this module's own
+    docstring, "why this avoids Neural-ODE instability"); the predictive
+    backbone instead learns directly against the SAME stochastic, imperfect
+    registration it will see at inference (no train/test mismatch), while
+    `v_phi` improves independently via its own simulation-free regression."""
+
+    def __init__(
+        self,
+        d_max: int = D_MAX,
+        d_model: int = 256,
+        n_heads: int = 8,
+        n_layers: int = 6,
+        d_ff: int = 512,
+        n_bins_predictive: int = 64,
+        dropout: float = 0.0,
+        fm_d_model: int = 256,
+        fm_n_heads: int = 8,
+        fm_n_layers: int = 6,
+        fm_d_ff: int = 512,
+        n_transport_samples: int = 1,
+        sde_sigma: float = 0.0,
+        n_integration_steps: int = 20,
+        bounded01: bool = False,
+    ):
+        super().__init__()
+        self.flow_field = FlowMatchingVelocityField(
+            d_max=d_max, d_model=fm_d_model, n_heads=fm_n_heads,
+            n_layers=fm_n_layers, d_ff=fm_d_ff, dropout=dropout,
+        )
+        # bounded01 MUST match whatever ppfn.prior.lupi.sampler.sample_pair
+        # was actually called with -- see calibration.py's own docstring and
+        # docs/labbook/2026-09-17-lupi-bounded01-prior.md. Only threaded to
+        # `predictor` (BoundsPFN, which owns the bar-distribution head this
+        # affects) -- `flow_field` has no bar distribution of its own, its
+        # velocity regression target is whatever raw scale the prior emits,
+        # bounded01 or not.
+        self.predictor = BoundsPFN(
+            d_max=d_max, d_model=d_model, n_heads=n_heads, n_layers=n_layers,
+            d_ff=d_ff, n_bins_predictive=n_bins_predictive, dropout=dropout,
+            bounded01=bounded01,
+        )
+        self.n_transport_samples = n_transport_samples
+        self.sde_sigma = sde_sigma
+        self.n_integration_steps = n_integration_steps
+
+    def dim_mask(self, d_real: torch.Tensor, n: int) -> torch.Tensor:
+        """Delegates to `flow_field.dim_mask` -- `FlowMatchingLoss` calls
+        `model.dim_mask` on whatever model it's given; passing `self` (not
+        `self.flow_field`) to that loss also works via this passthrough."""
+        return self.flow_field.dim_mask(d_real, n)
+
+    @property
+    def bar_dist(self):
+        return self.predictor.bar_dist
+
+    def forward(self, batch: LUPIBatch) -> dict:
+        """-> {"fm_output": FlowMatchingVelocityField.forward's own dict (for
+        L_flow), "student_logits": [B,n_qry,n_bins] (K-sample mixture PPD),
+        "teacher_logits": [B,n_qry,n_bins] (true-B_inA oracle PPD),
+        "student_logits_per_sample": [K,B,n_qry,n_bins] (diagnostic only,
+        not scored by the loss)}."""
+        fm_out = self.flow_field(batch)
+
+        K = self.n_transport_samples
+        integrated = self.flow_field.integrate(
+            batch, n_steps=self.n_integration_steps, sigma=self.sde_sigma, n_samples=K,
+        )  # no_grad -> {"x1": [K,B,n_enc,d_max], "y1": [K,B,n_enc]}
+
+        b = batch.dec_ctx_x.shape[0]
+        stacked = dataclasses.replace(
+            batch, enc_x_inA=integrated["x1"][0], enc_z_inA=integrated["y1"][0],
+        )
+        for k in range(1, K):
+            stacked = _cat_batches(stacked, dataclasses.replace(
+                batch, enc_x_inA=integrated["x1"][k], enc_z_inA=integrated["y1"][k],
+            ))
+        stacked = _cat_batches(stacked, batch)  # teacher: TRUE enc_x_inA/enc_z_inA, appended last
+
+        out = self.predictor(stacked, severed=False)
+        logits = out["predictive_logits"]  # [(K+1)*b, n_qry, n_bins]
+        student_logits = logits[: K * b].view(K, b, *logits.shape[1:])
+        teacher_logits = logits[K * b :]
+
+        student_mixture_logits = torch.logsumexp(
+            torch.log_softmax(student_logits, dim=-1), dim=0
+        ) - torch.log(torch.tensor(float(K), device=logits.device, dtype=logits.dtype))
+
+        return {
+            "fm_output": fm_out,
+            "student_logits": student_mixture_logits,
+            "teacher_logits": teacher_logits,
+            "student_logits_per_sample": student_logits,
+        }
+
+
 if __name__ == "__main__":
     """Diagnostic per .claude/rules/research-demos.md: build a small model,
     run it on a real batch from LUPIStreamDataset, print shapes, confirm the
@@ -282,3 +414,41 @@ if __name__ == "__main__":
     integrated_sde = model.integrate(batch, n_steps=5, sigma=0.1, n_samples=3)
     spread = integrated_sde["y1"].std(dim=0).mean().item()
     print(f"mean per-point std across the 3 SDE samples (expect > 0): {spread:.4f}")
+
+    print("\n--- FlowMatchingRegistrationPFN: closes the loop to a predictive PPD ---")
+    from ppfn.loss.lupi_flow_matching_registration_loss import FlowMatchingRegistrationLoss
+
+    reg_model = FlowMatchingRegistrationPFN(
+        d_model=32, n_heads=4, n_layers=2, d_ff=64, n_bins_predictive=16,
+        fm_d_model=32, fm_n_heads=4, fm_n_layers=2, fm_d_ff=64,
+        n_transport_samples=3, sde_sigma=0.1, n_integration_steps=5,
+    )
+    reg_trainable = sum(p.numel() for p in reg_model.parameters() if p.requires_grad)
+    print(f"trainable params: {reg_trainable:,}")
+
+    reg_out = reg_model(batch)
+    print("student_logits (K-sample mixture PPD):", reg_out["student_logits"].shape)
+    print("teacher_logits (upper-1, true B_inA):", reg_out["teacher_logits"].shape)
+    print("mixture logits sum to a valid distribution "
+          "(logsumexp over bins, expect ~0.0 everywhere):",
+          torch.logsumexp(reg_out["student_logits"], dim=-1).abs().max().item())
+
+    reg_criterion = FlowMatchingRegistrationLoss()
+    reg_loss, reg_metrics = reg_criterion(reg_model, batch, reg_out)
+    print("loss/metrics:", reg_metrics)
+
+    reg_model.zero_grad()
+    reg_loss.backward()
+    n_none_reg = sum(1 for p in reg_model.parameters() if p.requires_grad and p.grad is None)
+    print(f"params with grad=None (expect 0 -- every param has a live path: "
+          f"predictor via NLL/CE on the *integrated* (no_grad) B_inA samples, "
+          f"flow_field via its OWN L_flow term computed from the separate, "
+          f"grad-tracked `flow_field(batch)` call above, never through "
+          f"`integrate()` itself): {n_none_reg}")
+
+    print("\nrho=0, force_h_identity: teacher upper-1 collapses toward the "
+          "severed lower bound (B_inA == B raw exactly), a cheap end-to-end "
+          "sanity check before trusting this on real (rho>0, real h) draws:")
+    with torch.no_grad():
+        reg_degenerate_out = reg_model(degenerate_batch)
+    print("teacher_logits on the degenerate batch:", reg_degenerate_out["teacher_logits"].shape)
