@@ -27,6 +27,13 @@ warp_grid_n: 4
 # bias" ablation. null (default) preserves the original sampled-beta
 # behavior (including its own 20% chance of landing on beta=0).
 beta_override: null
+# h -> identity (a=1,b=0,c=0) instead of sample_monotone_map -- the h-analog
+# of force_rho_zero above, added 2026-09-17 for the same reason: isolating
+# one of the two unknowns (T via force_rho_zero, h via this) to verify a
+# single registration component against ground truth without the other
+# unknown confounding the result. false (default) preserves the original
+# sampled-h behavior.
+force_h_identity: false
 
 dataset_class:
   _target_: ppfn.prior.lupi.dataset.LUPIStreamDataset
@@ -42,6 +49,7 @@ dataset_class:
   query_eps_std: ${prior.query_eps_std}
   warp_grid_n: ${prior.warp_grid_n}
   beta_override: ${prior.beta_override}
+  force_h_identity: ${prior.force_h_identity}
 
 dataloader_class:
   _target_: torch.utils.data.DataLoader

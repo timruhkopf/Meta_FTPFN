@@ -126,6 +126,7 @@ class IDTokenTrainer:
         val_frac_near_b = getattr(train_dataset, "frac_near_b", 0.4)
         val_query_eps_std = getattr(train_dataset, "query_eps_std", 0.03)
         val_beta_override = getattr(train_dataset, "beta_override", None)
+        val_force_h_identity = getattr(train_dataset, "force_h_identity", False)
         val_rng = np.random.default_rng(val_seed)
         val_items = [
             build_training_item(
@@ -142,6 +143,7 @@ class IDTokenTrainer:
                 frac_near_b=val_frac_near_b,
                 query_eps_std=val_query_eps_std,
                 beta_override=val_beta_override,
+                force_h_identity=val_force_h_identity,
             )
             for _ in range(val_size)
         ]
