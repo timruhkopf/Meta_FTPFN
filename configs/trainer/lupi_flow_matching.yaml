@@ -1,0 +1,21 @@
+# Reuses ppfn.trainer.id_token_trainer.IDTokenTrainer as-is -- its interface
+# (`model(batch)` -> output dict, `criterion(model, batch, output, progress)`
+# -> (loss, metrics), both against ppfn.prior.lupi.dataset.LUPIBatch) already
+# fits FlowMatchingVelocityField/FlowMatchingLoss exactly; nothing about
+# IDTokenTrainer is specific to IDTokenPFN. Not duplicating it under a new
+# name/class for one config-level reuse.
+epochs: 100
+steps: 500
+
+trainer_class:
+  _target_: ppfn.trainer.id_token_trainer.IDTokenTrainer
+  criterion: ${loss.loss_class}
+  grad_clip: 1.0
+  use_bf16: false
+  val_size: 256
+  val_seed: 999999
+  val_s_max: ${prior.s_max}
+  val_force_rho_zero: ${prior.force_rho_zero}
+  callbacks: null  # overridden to ${callbacks} in configs/config.yaml
+  checkpoint_dir: null
+  verbose: true

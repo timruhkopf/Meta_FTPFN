@@ -1,0 +1,6 @@
+# Conditional flow-matching regression loss (position + value velocity,
+# masked to real B tokens and real coordinate channels) -- no
+# transport/coupling/distillation terms. See
+# ppfn.loss.lupi_flow_matching_loss's module docstring.
+loss_class:
+  _target_: ppfn.loss.lupi_flow_matching_loss.FlowMatchingLoss

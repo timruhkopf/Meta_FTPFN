@@ -1,0 +1,18 @@
+# Flow-matching/SDE registration -- docs/labbook/2026-09-17-lupi-registration-sde-flow-matching-direction.md.
+# Sized to match configs/model/id_token_pfn.yaml (a modest first real run,
+# not tuned) for a fair comparison against that baseline.
+d_model: 256
+n_heads: 8
+n_layers: 6
+d_ff: 512
+dropout: 0.0
+d_max: 5  # must match ppfn.prior.lupi.dataset.D_MAX
+
+model_class:
+  _target_: ppfn.model.baselines.lupi_flow_matching_pfn.FlowMatchingVelocityField
+  d_model: ${model.d_model}
+  n_heads: ${model.n_heads}
+  n_layers: ${model.n_layers}
+  d_ff: ${model.d_ff}
+  dropout: ${model.dropout}
+  d_max: ${model.d_max}

@@ -1,0 +1,54 @@
+# @package _global_
+#
+# Smoke-test config for the flow-matching/SDE registration model
+# (docs/labbook/2026-09-17-lupi-registration-sde-flow-matching-direction.md)
+# -- tiny model, short run, to confirm the data path and loss wire up
+# correctly before a real-sized run.
+#
+# Run (needs `~benchmark` on the CLI, same as every pipeline.train experiment):
+#   python -m ppfn.pipelines.train experiment=lupi_flow_matching_debug experiment_name=00-debug-lupi-flow-matching ~benchmark
+
+defaults:
+  - /loss: lupi_flow_matching
+  - /deployment: local
+  - /callbacks:
+      - mlflow
+      - clip
+  - override /prior: lupi
+  - override /model: lupi_flow_matching
+  - override /optimizer: adamw_registration
+  - override /trainer: lupi_flow_matching
+  - _self_
+
+experiment_name: ???
+run_name: Null
+
+callbacks:
+  mlflow:
+    tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, file://${root:}/mlruns}
+    experiment_name: lupi-flow-matching-debug
+
+prior:
+  batch_size: 8
+  s_max: 0.1
+  n_a_range: [8, 32]
+  n_b_range: [8, 32]
+  warp_grid_n: 4
+
+model:
+  d_model: 32
+  n_heads: 4
+  d_ff: 64
+  n_layers: 2
+
+trainer:
+  epochs: 2
+  steps: 5
+  trainer_class:
+    val_size: 8
+
+hydra:
+  run:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/${run_name}
+  sweep:
+    dir: ${oc.env:ROOT}/outputs/${experiment_name}/sweeps/${run_name}
