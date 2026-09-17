@@ -93,8 +93,41 @@ Launched `2026-09-17 14:37 UTC` (ulysses local log timestamp),
 `lupi-decoder-comparison` (same umbrella experiment the sibling
 `lupi_bounds`/`lupi_id_token_baseline` runs report to, for direct
 side-by-side comparison), checkpoint monitor `val/loss/nll_student`.
-Confirmed alive and past the first CUDA/dataloader warm-up at launch+90s;
-first full epoch (500 steps) not yet observed at the time of this entry --
-follow-up entry once training curves are in.
+
+## Epoch 0 (first data point, ~530s/epoch -> ~14.7h projected for the full 100 epochs)
+
+```
+loss/total=3.8786  loss/nll_student=-0.0661  loss/nll_teacher=-0.0931
+loss/ce_distil=4.0263  loss/upper1_gap=0.0269  flow/total=0.0116
+flow/velocity_pos=0.0032  flow/velocity_val=0.0084  train/progress=0.0100
+val/loss/nll_student=-0.0848  val/loss/nll_teacher=-0.1134  val/loss/upper1_gap=0.0287
+```
+
+Nothing conclusive yet (epoch 0 of 100), three things worth flagging while
+watching the rest of the run:
+
+- **Negative NLL is expected, not a bug**: under a continuous density (this
+  `FullSupportBarDistribution`, bounded01's narrow `[0,1]` bins), `-log p(y)`
+  goes negative wherever the density exceeds 1 -- unlike a discrete NLL,
+  there's no floor at 0. Not investigated further, just noting it so a
+  future reader doesn't mistake it for an error.
+- **`flow/total` starting this low (0.0116) is very likely a curriculum
+  artifact, not early mastery of hard registration**: `train/progress=0.01`
+  means `sample_rho_curriculum` is still drawing from its easiest regime
+  (low `rho`, close to the `rho=0` identity), so the target velocities
+  themselves are small at this stage. The metric to actually judge "is
+  `v_φ` learning" is its trend as `progress` climbs through the curriculum
+  over the next several epochs, not its epoch-0 value in isolation.
+- **`ce_distil` (4.03) dominates `loss/total`'s magnitude completely**,
+  while both NLL terms are already near zero/negative. This is exactly the
+  "inconclusive" failure mode flagged above before launch -- worth
+  confirming over the next several epochs that `nll_student`/`upper1_gap`
+  are moving because registration is improving, not just riding the CE
+  term down while the student's own predictive quality stays flat.
+
+First on-disk checkpoint not expected until epoch 5 (`min_save_epoch: 5`,
+~44 min from launch at this pace) -- the comparison plot script
+(`scripts/plot_bounds_vs_flow_matching_registration_1d.py`) can't run
+against a real checkpoint before then.
 
 commit: pending
